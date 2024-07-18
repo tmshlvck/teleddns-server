@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "teleddns-server"
+version = "0.1.0"
+description = "DDNS API server"
+authors = ["Tomas Hlavacek <tmshlvck@gmail.com>"]
+license = "GPL-3.0-or-later"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.111.0"
+uvicorn = "^0.30.1"
+starlette-admin = "^0.14.0"
+sqlmodel = "^0.0.19"
+itsdangerous = "^2.2.0"
+passlib = "^1.7.4"
+pydantic-settings = "^2.3.3"
+aiohttp = "^3.9.5"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+teleddns_server = "teleddns_server:main"
