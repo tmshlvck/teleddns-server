@@ -21,14 +21,14 @@ from fastapi.responses import RedirectResponse
 from starlette_admin.contrib.sqlmodel import Admin, ModelView
 from starlette_admin.views import Link, CustomView
 from starlette_admin import PasswordField, EmailField, action, row_action, RowActionsDisplayType
-#from starlette_admin.exceptions import FormValidationError
+from starlette_admin.exceptions import ActionFailed
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from teleddns_server.model import *
 from teleddns_server.auth import AdminAuthProvider
 
-from teleddns_server.view import defer_update_zone, defer_update_config
+from teleddns_server.view import defer_update_zone, defer_update_config, run_check_zone
 
 
 class RRView(ModelView):
@@ -91,7 +91,7 @@ class ServerView(ModelView):
         affected = []
         for pk in pks:
             server: Server = await self.find_by_pk(request, pk)
-            #defer_update_config(server)
+            await defer_update_config(server)
             affected.append(server.name)
         return f"Started config update for servers {', '.join(affected)}"
 
@@ -108,7 +108,7 @@ class ServerView(ModelView):
         #session = request.state.session
         affected = []
         server: Server = await self.find_by_pk(request, pk)
-        #defer_update_config(server)
+        await defer_update_config(server)
         return f"Started config update for server {server.name}"
 
 
@@ -133,7 +133,7 @@ class MasterZoneView(ModelView):
         ]
     
     actions = ["update_many", "delete"]
-    row_actions = ["update_one", "view", "edit", "delete"]
+    row_actions = ["check_one", "update_one", "view", "edit", "delete"]
     #row_actions_display_type = RowActionsDisplayType.DROPDOWN
 
     @action(
@@ -148,10 +148,25 @@ class MasterZoneView(ModelView):
         affected = []
         for pk in pks:
             zone: MasterZone = await self.find_by_pk(request, pk)
-            #defer_update_zone(zone)
+            await defer_update_zone(zone)
             affected.append(zone.origin)
         return f"Started zone update for zones {', '.join(affected)}"
 
+    @row_action(
+        name="check_one",
+        text="Check Zone on Master Server",
+        icon_class="fas fa-check-circle",
+        action_btn_class="btn-info",
+    )
+    async def check_one(self, request: Request, pk: Any) -> str:
+        zone: MasterZone = await self.find_by_pk(request, pk)
+        result = await run_check_zone(zone)
+        sdo = result.get('stdout', '').replace("\n", "<br>")
+        if result.get('retcode', 1) != 0:
+            raise ActionFailed(f"Zone check failed for {zone.origin}:<br>{sdo}")
+        else:
+            return f"Zone check succeeded for {zone.origin}:<br>{sdo}"
+    
     @row_action(
         name="update_one",
         text="Update Zones on Master Server",
@@ -164,7 +179,7 @@ class MasterZoneView(ModelView):
     async def update_one(self, request: Request, pk: Any) -> str:
         #session = request.state.session
         zone: MasterZone = await self.find_by_pk(request, pk)
-        #defer_update_zone(zone)
+        await defer_update_zone(zone)
         return f"Started zone update for zone {zone.origin}"
 
 #    async def after_create(self, request: Request, obj: Any) -> None:

@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 from fastapi.exceptions import HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
 from fastapi import status
@@ -24,7 +24,7 @@ import logging
 import asyncio
 
 from .model import *
-from .backend import update_zone, update_config
+from .backend import update_zone, update_config, check_zone
 
 # helper functions not bound to web views
 def verify_user(username: str, password: str) -> Optional[User]:
@@ -57,6 +57,7 @@ async def defer_update_zone(zone: MasterZone):
             statement = select(rrclass).where(rrclass.zone == zone)
             for rr in session.exec(statement).all():
                 zone_data.append(rr.format_bind_zone())
+    zone_data.append('')
 
     await asyncio.create_task(update_zone(zone.origin.rstrip('.').strip(),
                                           '\n'.join(zone_data),
@@ -75,17 +76,23 @@ async def defer_update_config(server: Server):
   file: {zobj.origin.rstrip('.').strip()}.zone
 """)
     
-        statement = select(MasterZone).where(server in MasterZone.slave_servers)
-        for zobj in session.exec(statement).all():
+        statement = select(MasterZone, SlaveZoneServer).where(MasterZone.id == SlaveZoneServer.zone_id).where(SlaveZoneServer.server_id == server.id)
+        for zobj, _ in session.exec(statement).all():
             config_data.append(f"""zone:
 - domain: {zobj.origin}
   template: {server.slave_template}
   file: {zobj.origin.rstrip('.').strip()}.zone
 """)
+    config_data.append('')
     
     await asyncio.create_task(update_config('\n'.join(config_data),
                                             server.api_url,
                                             server.api_key))
+    
+async def run_check_zone(zone: MasterZone) -> Any:
+    return await check_zone(zone.origin.rstrip('.').strip(),
+                            zone.master_server.api_url,
+                            zone.master_server.api_key)
 
 
 #async def get_zones() -> List[MasterZone]:
