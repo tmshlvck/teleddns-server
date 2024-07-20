@@ -27,8 +27,9 @@ from pydantic import BaseModel
 from .admin import add_admin
 from .view import ddns_update
 from .model import User
+from .settings import settings
 
-app = FastAPI()
+app = FastAPI(root_path=settings.ROOT_PATH)
 security = HTTPBasic()
 add_admin(app)
 
@@ -47,7 +48,11 @@ def get_root() -> Status:
 #async def get_zone(zonename: str) -> PlainTextResponse:
 #    # TODO: API key auth
 #    return PlainTextResponse(content=await gen_bind_zone(zonename))
-    
+
+
+@app.get('/robots.txt', response_class=PlainTextResponse)
+async def robots():
+    return """User-agent: *\nDisallow: /"""
 
 
 # DynDNS Example HTTP query:

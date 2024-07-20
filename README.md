@@ -4,7 +4,8 @@ Simple DDNS API server with Starlette Admin webapp for management.
 
 Features:
 * The best client for this server is [TeleDDNS](https://github.com/tmshlvck/teleddns), although DDNS over HTTP(S) protocol is implemented to largest extent I could manage and I am committed to support any other cliets that may have issues sending updates to this API.
-* This server explects to work with one or more Knot DNS 3.x servers with the [TeleAPI](This is a server for) connectors
+* This server works with one or more Knot DNS 3.x servers with the [TeleAPI](https://github.com/tmshlvck/teleapi) connector.
+* There is a Starlette Admin webapp at `/admin` that can be used to manually mange DNS records and trigger Knot config and zone synchronization.
 
 ## Deployment
 
@@ -52,12 +53,39 @@ To build, deploy, install and inspect logs of the Podman container run
 the following as `root`:
 ```
 podman build -f Dockerfile -t teleddns-server:0.1
-podman run -d --network=host --name teleddns-server teleddns-server:0.1
+podman run -d --network=host --name teleddns-server -e ROOT_PATH="/ddns" teleddns-server:0.1
 podman logs teleddns-server
-podman generate systemd
+podman generate systemd teleddns-server >/etc/systemd/system/teleddns-server.service
+systemctl daemon-reload
+systemctl enable teleddns-server
 ```
 
-Reset admin password:
+Reset admin password to `xyz123`:
 ```
 podman exec -e ADMIN_PASSWORD=xyz123 -it teleddns-server teleddns_server
 ```
+
+Create NGINX proxy and use Certbot to create SSL certificate for the domain. The DDNS update protocol uses Basic Authentication that transmits passwords as plain-text and therefore it would be absolutely insecure and prone to all kinds of MITM attacks without HTTPS.
+
+Add proxy section to your NGINX site (i.e. `/etc/nginx/sites-enabled/default`):
+```
+server {
+...
+  location /ddns/ {
+    proxy_pass http://localhost:8000/;
+    proxy_http_version 1.1;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_redirect off;
+    proxy_buffering off;
+  }
+...
+}
+```
+
+## Use guide
+
+Before the server can accept updates few things need to be configured:
