@@ -48,13 +48,16 @@ sudo systemctl enable teleapi
 sudo systemctl restart teleapi
 ```
 
-Build and deploy Podman container:
+To build, deploy, install and inspect logs of the Podman container run
+the following as `root`:
 ```
 podman build -f Dockerfile -t teleddns-server:0.1
-podman run --network=host -e ADMIN_PASSWORD=xyz1234 --name teleddns-server teleddns-server:0.1
+podman run -d --network=host --name teleddns-server teleddns-server:0.1
+podman logs teleddns-server
+podman generate systemd
 ```
 
 Reset admin password:
 ```
-podman exec -it teleddns-server /bin/bash
+podman exec -e ADMIN_PASSWORD=xyz123 -it teleddns-server teleddns_server
 ```

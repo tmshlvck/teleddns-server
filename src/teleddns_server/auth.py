@@ -30,10 +30,6 @@ class AdminAuthProvider(AuthProvider):
                 {"username": "Ensure username has at least 3 characters"}
             )
 
-        if username == 'admin' and password == settings.ADMIN_PASSWORD:
-            request.session.update({"username": username})
-            return response
-        
         if user := verify_user(username, password):
             if user.is_admin:
                 request.session.update({"username": user.username})

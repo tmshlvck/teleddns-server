@@ -16,13 +16,17 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
 import uvicorn
 import sys
 
 from .settings import settings
+from .view import set_password
 
 def main():
+    if settings.ADMIN_PASSWORD:
+        set_password('admin', settings.ADMIN_PASSWORD, True)
+        return 0
+
     uvicorn.run("teleddns_server.main:app", host=settings.LISTEN_ADDRESS, port=settings.LISTEN_PORT, proxy_headers=True, reload=True)
     return 0
 

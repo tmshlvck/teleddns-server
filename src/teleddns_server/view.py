@@ -14,11 +14,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import Dict, Optional, Tuple, Any
+from typing import Optional, Any
 from fastapi.exceptions import HTTPException
-from fastapi.responses import PlainTextResponse, JSONResponse
 from fastapi import status
-from pydantic import BaseModel
 from sqlmodel import Session, select
 import logging
 import asyncio
@@ -35,6 +33,20 @@ def verify_user(username: str, password: str) -> Optional[User]:
             return user
         else:
             return None
+
+
+def set_password(username: str, password: str, admin: bool = False):
+    with Session(engine) as session:
+        statement = select(User).where(User.username == username)
+        user = session.exec(statement).one_or_none()
+        if user:
+            user.password = user.gen_hash(password)
+            logging.info(f"New password set to the existing user {username}")
+        else:
+            session.add(User(username=username, password=User.gen_hash(password),
+                             is_admin=admin))
+            logging.info(f"Created new user {username} and password with admin flag {admin}")
+        session.commit()
 
 
 def can_write_to_zone(user: User, zone: MasterZone, label: str) -> bool:

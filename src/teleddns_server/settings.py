@@ -14,8 +14,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional
+from pydantic import Field
+from pydantic_settings import BaseSettings
 import secrets
 import logging
 from enum import IntEnum
@@ -42,9 +43,9 @@ class LogLevel(IntEnum):
 
 
 class Settings(BaseSettings, cli_parse_args=True):
+    ADMIN_PASSWORD: Optional[str] = None
     LOG_LEVEL: LogLevel = LogLevel.INFO
     SESSION_SECRET: str = secrets.token_urlsafe(16)
-    ADMIN_PASSWORD: str
     DB_URL: str = "sqlite:///teleddns.sqlite"
     LISTEN_ADDRESS: str = "127.0.0.1"
     LISTEN_PORT: int = 8085
