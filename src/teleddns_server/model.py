@@ -32,14 +32,6 @@ from passlib.context import CryptContext
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-
-def fqdn(name):
-    if name.strip().endswith('.'):
-        return name.strip().lower()
-    else:
-        return f"{name.strip()}.".lower()
-
-
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(min_length=2)
@@ -140,9 +132,9 @@ class MasterZone(SQLModel, table=True):
         return f"<span>{escape(await self.__admin_repr__(request))}</span>"
     
     def format_bind_zone(self):
-        return f"""$ORIGIN {fqdn(self.origin)};
+        return f"""$ORIGIN {self.origin};
 $TTL {settings.DEFAULT_TTL};
-{fqdn(self.soa_NAME) : <63} {self.soa_TTL : <5} {self.soa_CLASS: <2} SOA {fqdn(self.soa_MNAME)} {fqdn(self.soa_RNAME.replace('@', '.'))} {self.soa_SERIAL} {self.soa_REFRESH} {self.soa_RETRY} {self.soa_EXPIRE} {self.soa_MINIMUM}"""
+{self.soa_NAME : <63} {self.soa_TTL : <5} {self.soa_CLASS: <2} SOA {self.soa_MNAME} {self.soa_RNAME.replace('@', '.')} {self.soa_SERIAL} {self.soa_REFRESH} {self.soa_RETRY} {self.soa_EXPIRE} {self.soa_MINIMUM}"""
 
 
 class AccessRule(SQLModel, table=True):
