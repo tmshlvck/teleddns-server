@@ -27,7 +27,7 @@ def main():
         set_password('admin', settings.ADMIN_PASSWORD, True)
         return 0
 
-    uvicorn.run("teleddns_server.main:app", host=settings.LISTEN_ADDRESS, port=settings.LISTEN_PORT, proxy_headers=True, reload=True)
+    uvicorn.run("teleddns_server.main:app", host=settings.LISTEN_ADDRESS, port=settings.LISTEN_PORT, reload=True, forwarded_allow_ips="*", root_path=settings.ROOT_PATH)
     return 0
 
 if __name__ == '__main__':
