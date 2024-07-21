@@ -129,7 +129,7 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
     if not user:
         raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect email or password",
+                detail="Incorrect username or password",
                 headers={"WWW-Authenticate": "Basic"})
 
     search_labels = fqdn(domain_name).split('.')
