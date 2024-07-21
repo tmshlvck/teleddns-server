@@ -188,5 +188,6 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
             zone.soa_SERIAL += 1
             session.commit()
             await defer_update_zone(zone)
-
-        return f"DDNS update {table.__name__} {label=} {zone.origin=} -> {norm_ipaddr}"
+            return f"DDNS updated {table.__name__} {label=} {zone.origin=} -> {norm_ipaddr}"
+        else:
+            return f"DDNS noop {table.__name__} {label=} {zone.origin=} -> {norm_ipaddr}"

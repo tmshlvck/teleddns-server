@@ -66,5 +66,11 @@ ddns_responses={400:{'model': Status, 'description': 'Bad request'},
 @app.get("/update", response_model=Status, responses=ddns_responses)
 async def get_ddns_update(creds: Annotated[HTTPBasicCredentials, Depends(security)], hostname: str, myip: str) -> Status:
     logging.info(f"DYNDNS GET update: user {creds.username} hostname {hostname} myip: {myip}")
-    update_status = await ddns_update(creds.username, creds.password, hostname, myip)
-    return Status(detail=update_status)
+    try:
+        update_status = await ddns_update(creds.username, creds.password, hostname, myip)
+        return Status(detail=update_status)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Unexpected exception in ddns_update:")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
