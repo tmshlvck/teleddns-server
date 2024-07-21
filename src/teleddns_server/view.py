@@ -173,7 +173,7 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
         for rr in session.exec(statement):
             if rr.label == label and rr.rrclass == RRClass.IN and rr.zone == zone and rr.value == str(norm_ipaddr):
                 found = True
-                logging.info("Found matching RR: {table.__name__} {rr.label=} {zone.origin} {rr.value=}")
+                logging.info(f"Found matching RR: {table.__name__} {rr.label=} {zone.origin} {rr.value=}")
             else:
                 logging.info(f"Deleting {table.__name__} {rr.label=} {zone.origin} {rr.value=}")
                 rr.delete()
