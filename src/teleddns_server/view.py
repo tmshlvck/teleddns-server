@@ -122,7 +122,9 @@ async def run_check_zone(zone: MasterZone) -> Any:
 # HTTP endpoints
 
 async def ddns_update(username: str, password: str, domain_name: str, ipaddr: str) -> str:
-    norm_domain_name = fqdn(domain_name)
+    def fqdn(domain: str) -> str:
+        return domain.rstrip('.').strip() + '.'
+
     user = verify_user(username, password)
     if not user:
         raise HTTPException(
@@ -130,7 +132,7 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
                 detail="Incorrect email or password",
                 headers={"WWW-Authenticate": "Basic"})
 
-    search_labels = fqdn(norm_domain_name).split('.')
+    search_labels = fqdn(domain_name).split('.')
     with Session(engine) as session:
         for i in range(1,len(search_labels)):
             statement = select(MasterZone).where(MasterZone.origin == fqdn('.'.join(search_labels[i:])))
