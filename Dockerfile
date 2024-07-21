@@ -8,7 +8,7 @@ ARG POETRY_CACHE_DIR=/tmp/poetry_cache
 
 ENV LOG_LEVEL="DEBUG"
 #ENV LOG_LEVEL="INFO"
-ENV DB_URL="sqlite:///data/teleddns.sqlite"
+ENV DB_URL="sqlite:////data/teleddns.sqlite"
 ENV LISTEN_PORT=8085
 ENV ROOT_PATH="/"
 

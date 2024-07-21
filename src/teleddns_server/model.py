@@ -293,7 +293,7 @@ class SRV(RR, table=True):
         return f'{self.label : <63} {self.ttl : <5} {self.rrclass : <2} SRV	{self.priority} {self.weight} {self.port} {self.value}'
 
 
-engine = create_engine("sqlite:///test.sqlite", connect_args={"check_same_thread": False})
+engine = create_engine(settings.DB_URL, connect_args={"check_same_thread": False})
 SQLModel.metadata.create_all(engine)
 
 RR_CLASSES = [A, AAAA, NS, PTR, CNAME, TXT, CAA, MX, SRV]
