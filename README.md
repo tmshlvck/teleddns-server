@@ -87,6 +87,37 @@ server {
 }
 ```
 
-## Use guide
+Install and configure Knot: `apt-get install knot` and configure `/etc/knot/knot.conf`:
+```
+server:
+    rundir: "/run/knot"
+    user: knot:knot
+    listen: [0.0.0.0@53, ::@53]
 
-Before the server can accept updates few things need to be configured:
+log:
+  - target: syslog
+    any: info
+
+database:
+    storage: "/var/lib/knot"
+
+template:
+  - id: t_master
+    storage: "/var/lib/knot"
+  - id: t_slave
+    storage: "/var/lib/knot"
+
+include: knot-ddnsm.conf
+```
+
+## Usage guide
+
+Before the server can accept updates few items need to be configured:
+
+* Create admin user (using `podman exec` call above) and/or reset the admin password over web interface
+* Create other non-admin users
+* Create Server(s), configure API URL, API key and template names
+* Create MasterZone(s) with the values needed for SOA RR
+* Create Access Rules to give access for non-admin users to specific zones or specific RRs in specific zones
+* Test server config sync for each server
+* Test zone upload for each zone
