@@ -55,6 +55,8 @@ class UserView(ModelView):
         PasswordField("password", exclude_from_list=True, ),
         "is_admin",
         "access_rules",
+        "created_at",
+        "updated_at",
     ]
 
     async def before_create(self, request: Request, data: Dict[str, Any], obj: Any) -> None:
@@ -65,15 +67,18 @@ class UserView(ModelView):
 
 
 class ServerView(ModelView):
-    fields = ["id",
-              "name",
-              "api_url",
-              "api_key",
-              "master_template",
-              "slave_template",
-              "master_zones",
-              "slave_zones"
-              ]
+    fields = [
+        "id",
+        "name",
+        "api_url",
+        "api_key",
+        "master_template",
+        "slave_template",
+        "master_zones",
+        "slave_zones",
+        "created_at",
+        "updated_at",
+    ]
     
     actions = ["update_many", "delete"]
     row_actions = ["update_one", "view", "edit", "delete"]
@@ -129,7 +134,9 @@ class MasterZoneView(ModelView):
         "soa_MINIMUM",
         "access_rules",
         "master_server",
-        "slave_servers"
+        "slave_servers",
+        "created_at",
+        "updated_at",
         ]
     
     actions = ["update_many", "delete"]

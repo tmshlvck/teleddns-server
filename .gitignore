@@ -1,6 +1,5 @@
-test/server-config.yaml
-dist/
 __pycache__/
 *.py[cod]
 *$py.class
 poetry.lock
+*.sqlite
