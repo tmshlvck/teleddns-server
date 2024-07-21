@@ -20,7 +20,10 @@ from enum import StrEnum
 from fastapi import Request
 from markupsafe import escape
 
+from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, create_engine
+from sqlalchemy.sql import func
+from sqlalchemy import DateTime
 from pydantic import field_validator
 
 
@@ -38,6 +41,17 @@ class User(SQLModel, table=True):
     password: str
     is_admin: bool
     access_rules: List["AccessRule"] = Relationship(back_populates="user")
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"server_default": func.now()},
+        nullable=False,
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
+    )
 
     @classmethod
     def gen_hash(cls, passwd: str):
@@ -50,6 +64,17 @@ class User(SQLModel, table=True):
 class SlaveZoneServer(SQLModel, table=True):
     server_id: int | None = Field(default=None, foreign_key="server.id", primary_key=True)
     zone_id: int | None = Field(default=None, foreign_key="masterzone.id", primary_key=True)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"server_default": func.now()},
+        nullable=False,
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
+    )
 
 
 class Server(SQLModel, table=True):
@@ -61,6 +86,17 @@ class Server(SQLModel, table=True):
     slave_template: str
     master_zones: List["MasterZone"] = Relationship(back_populates="master_server")
     slave_zones: List["MasterZone"] = Relationship(back_populates="slave_servers", link_model=SlaveZoneServer)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"server_default": func.now()},
+        nullable=False,
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
+    )
 
 
 class RRClass(StrEnum):
@@ -86,6 +122,17 @@ class MasterZone(SQLModel, table=True):
     master_server_id: int | None = Field(default=None, foreign_key="server.id")
     master_server: Server | None = Relationship(back_populates="master_zones")
     slave_servers: List[Server] = Relationship(back_populates="slave_zones", link_model=SlaveZoneServer)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"server_default": func.now()},
+        nullable=False,
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
+    )
 
     @field_validator("origin")
     def validate_origin(cls, value):
@@ -144,6 +191,17 @@ class AccessRule(SQLModel, table=True):
     zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id")
     zone: Optional[MasterZone] = Relationship(back_populates="access_rules")
     pattern: Optional[str]
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"server_default": func.now()},
+        nullable=False,
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
+    )
 
     def verify_access(self, label):
         if not self.pattern: # no pattern means allow all
@@ -162,6 +220,17 @@ class RR(SQLModel):
     ttl: int = Field(default=3600)
     rrclass: RRClass
     value: str
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"server_default": func.now()},
+        nullable=False,
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
+    )
 
     @field_validator("label")
     def validate_label(cls, value):

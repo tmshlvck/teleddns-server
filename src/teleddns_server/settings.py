@@ -44,7 +44,7 @@ class LogLevel(IntEnum):
 
 class Settings(BaseSettings, cli_parse_args=True):
     ADMIN_PASSWORD: Optional[str] = None
-    ROOT_PATH: str = '/'
+    ROOT_PATH: str = ''
     LOG_LEVEL: LogLevel = LogLevel.INFO
     SESSION_SECRET: str = secrets.token_urlsafe(16)
     DB_URL: str = "sqlite:///teleddns.sqlite"
