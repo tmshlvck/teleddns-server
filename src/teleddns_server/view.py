@@ -168,20 +168,25 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
                 detail=f"Invalid protocol version {norm_ipaddr.version}")
         
         statement = select(table).where(table.label == label, table.zone == zone)
+        matched_rrs = [rr for rr in session.exec(statement).all()]
         changed = False
-        found = False
-        for rr in session.exec(statement):
-            if rr.label == label and rr.rrclass == RRClass.IN and rr.zone == zone and rr.value == str(norm_ipaddr):
-                found = True
-                logging.info(f"Found matching RR: {table.__name__} {rr.label=} {zone.origin} {rr.value=}")
-            else:
-                logging.info(f"Deleting {table.__name__} {rr.label=} {zone.origin} {rr.value=}")
-                rr.delete()
-                changed = False
+        if len(matched_rrs) > 1:
+            for rr in matched_rrs[1:]:
+                logging.info(f"Deleting {table.__name__} RR {rr.label=} {zone.origin} {rr.value=}")
+                session.delete(rr)
+                changed = True
         
-        if not found:
-            session.add(table(label=label, rrclass=RRClass.IN, ttl=settings.DDNS_RR_TTL, zone=zone, value=str(norm_ipaddr)))
+        if len(matched_rrs) >= 1:
+            rr = matched_rrs[0]
+            if rr.label == label and rr.rrclass == RRClass.IN and rr.zone == zone and rr.value == str(norm_ipaddr):
+                logging.info(f"Found matching {table.__name__} RR {rr.label=} {zone.origin} {rr.value=}")
+            else:
+                logging.info(f"Updating {table.__name__} RR {label=} {zone.origin} {rr.value} -> {norm_ipaddr}")
+                rr.value = str(norm_ipaddr)
+                changed = True
+        else:
             logging.info(f"Creating {table.__name__} RR {label=} {zone.origin} {norm_ipaddr}")
+            session.add(table(label=label, rrclass=RRClass.IN, ttl=settings.DDNS_RR_TTL, zone=zone, value=str(norm_ipaddr)))
             changed = True
 
         if changed:
