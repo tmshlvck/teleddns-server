@@ -49,18 +49,6 @@ def set_password(username: str, password: str, admin: bool = False):
         session.commit()
 
 
-def can_write_to_zone(user: User, zone: MasterZone, label: str) -> bool:
-    if user.is_admin:
-        return True
-    else:
-        with Session(engine) as session:
-            statement = select(AccessRule).where(AccessRule.user == user, AccessRule.zone == zone)
-            for r in session.exec(statement).all():
-                if r.verify_access(label):
-                    return True
-    return False
-
-
 async def defer_update_zone(zone: MasterZone):
     zone_data = []
     with Session(engine) as session:
@@ -107,16 +95,15 @@ async def run_check_zone(zone: MasterZone) -> Any:
                             zone.master_server.api_key)
 
 
-#async def get_zones() -> List[MasterZone]:
-#    with Session(engine) as session:
-#        statement = select(MasterZone)
-#        return session.exec(statement).all()
-#
-#
-#async def get_servers() -> List[Server]:
-#    with Session(engine) as session:
-#        statement = select(Server)
-#        return session.exec(statement).all()
+def can_write_to_zone(session: Session, user: User, zone: MasterZone, label: str) -> bool:
+    if user.is_admin:
+        return True
+    else:
+        statement = select(AccessRule).where(AccessRule.user == user, AccessRule.zone == zone)
+        for r in session.exec(statement).all():
+            if r.verify_access(label):
+                return True
+    return False
 
     
 # HTTP endpoints
@@ -133,7 +120,7 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
                 headers={"WWW-Authenticate": "Basic"})
 
     search_labels = fqdn(domain_name).split('.')
-    with Session(engine) as session:
+    with Session(engine, expire_on_commit=False) as session:
         for i in range(1,len(search_labels)):
             statement = select(MasterZone).where(MasterZone.origin == fqdn('.'.join(search_labels[i:])))
             if zone := session.exec(statement).one_or_none():
@@ -144,20 +131,19 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Zone not found for domain {domain_name}")
     
-    if not can_write_to_zone(user, zone, label):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Unauthorized access to zone {zone.origin}",
-            headers={"WWW-Authenticate": "Basic"})
+        if not can_write_to_zone(session, user, zone, label):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Unauthorized access to zone {zone.origin}",
+                headers={"WWW-Authenticate": "Basic"})
+
+        try:
+            norm_ipaddr = ipaddress.ip_address(ipaddr)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e))
     
-    try:
-        norm_ipaddr = ipaddress.ip_address(ipaddr)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e))
-    
-    with Session(engine) as session:
         if norm_ipaddr.version == 6:
             table = AAAA
         elif norm_ipaddr.version == 4:
