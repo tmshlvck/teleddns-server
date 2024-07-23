@@ -158,7 +158,7 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
         changed = False
         if len(matched_rrs) > 1:
             for rr in matched_rrs[1:]:
-                logging.info(f"Deleting {table.__name__} RR {rr.label=} {zone.origin} {rr.value=}")
+                logging.info(f"Deleting {table.__name__} RR {rr.label=} {zone.origin=} {rr.value=}")
                 session.delete(rr)
                 changed = True
         
@@ -167,11 +167,11 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
             if rr.label == label and rr.rrclass == RRClass.IN and rr.zone == zone and rr.value == str(norm_ipaddr):
                 logging.info(f"Found matching {table.__name__} RR {rr.label=} {zone.origin} {rr.value=}")
             else:
-                logging.info(f"Updating {table.__name__} RR {label=} {zone.origin} {rr.value} -> {norm_ipaddr}")
+                logging.info(f"Updating {table.__name__} RR {label=} {zone.origin=} {rr.value} -> {norm_ipaddr}")
                 rr.value = str(norm_ipaddr)
                 changed = True
         else:
-            logging.info(f"Creating {table.__name__} RR {label=} {zone.origin} {norm_ipaddr}")
+            logging.info(f"Creating {table.__name__} RR {label=} {zone.origin=} {norm_ipaddr}")
             session.add(table(label=label, rrclass=RRClass.IN, ttl=settings.DDNS_RR_TTL, zone=zone, value=str(norm_ipaddr)))
             changed = True
 
