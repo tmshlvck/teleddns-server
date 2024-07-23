@@ -52,7 +52,7 @@ async def update_zone(zone_name: str, zone_data: str, server_api_endpoint: str, 
 
     lurl = urllib.parse.urljoin(server_api_endpoint, f'/zonereload?zonename={zone_name}')
     status, response = await _api_call_get(lurl, server_api_key)
-    logging.info(f"Call to {furl} finished {status=}, {response=}")
+    logging.info(f"Call to {lurl} finished {status=}, {response=}")
 
 
 async def check_zone(zone_name: str, server_api_endpoint: str, server_api_key: str) -> str:
