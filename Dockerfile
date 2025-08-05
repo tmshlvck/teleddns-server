@@ -1,24 +1,42 @@
-FROM python:3.12-bookworm
-VOLUME /data
+# TeleDDNS Server - Simplified Dockerfile
+FROM python:3.12-slim
 
-ARG POETRY_NO_INTERACTION=1
-ARG POETRY_VIRTUALENVS_IN_PROJECT=0
-ARG POETRY_VIRTUALENVS_CREATE=0
-ARG POETRY_CACHE_DIR=/tmp/poetry_cache
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-ENV LOG_LEVEL="DEBUG"
-#ENV LOG_LEVEL="INFO"
-ENV DB_URL="sqlite:////data/teleddns.sqlite"
-ENV LISTEN_PORT=8085
-ENV ROOT_PATH="/"
+# Create non-root user
+RUN groupadd -r teleddns && useradd -r -g teleddns teleddns
 
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DJANGO_SETTINGS_MODULE=teleddns_server.settings \
+    PATH="/home/teleddns/.local/bin:$PATH"
+
+# Create application directories
+RUN mkdir -p /app /data && \
+    chown -R teleddns:teleddns /app /data
+
+# Set working directory
 WORKDIR /app
-RUN pip install poetry
-COPY src/ /app
-COPY pyproject.toml ./
-COPY README.md ./
 
-RUN poetry install && rm -rf $POETRY_CACHE_DIR
+# Switch to non-root user
+USER teleddns
 
-EXPOSE $LISTEN_PORT
-CMD ["teleddns_server"]
+# Copy requirements first for better caching
+COPY --chown=teleddns:teleddns requirements.txt ./
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY --chown=teleddns:teleddns . .
+
+# Create volume for SQLite database
+VOLUME ["/data"]
+
+# Expose port
+EXPOSE 8000
+
+# Run migrations and start uvicorn
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && uvicorn teleddns_server.asgi:application --host 0.0.0.0 --port 8000"]
