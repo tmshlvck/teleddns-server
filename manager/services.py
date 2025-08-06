@@ -19,10 +19,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import logging
 import requests
 from typing import List, Dict, Any, Optional, Tuple
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Zone, Server, RR_MODELS
+from .models import Zone, Server, RR_MODELS, SlaveOnlyZone
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,20 @@ def generate_zone_file(zone: Zone) -> str:
     lines = []
 
     # Add zone header and SOA record
-    lines.append(zone.format_bind_zone())
+    # Check if zone has a separate SOA record
+    if hasattr(zone, 'soa'):
+        # Use the new SOA model
+        lines.append(f"$ORIGIN {zone.origin};\n$TTL {settings.DDNS_DEFAULT_TTL};")
+        lines.append(zone.soa.format_bind_zone())
+    else:
+        # Fall back to zone's built-in SOA fields (backward compatibility)
+        lines.append(zone.format_bind_zone())
 
     # Add all resource records
     for rr_model in RR_MODELS:
+        # Skip SOA model since it's already handled above
+        if rr_model.__name__ == 'SOA':
+            continue
         records = rr_model.objects.filter(zone=zone).order_by('label', 'created_at')
         for record in records:
             lines.append(record.format_bind_zone())
@@ -79,7 +90,7 @@ def push_zone_to_server(zone: Zone, server: Server) -> bool:
 
         # Prepare the API request
         zone_name = zone.origin.rstrip('.').strip()
-        url = f"{server.api_url.rstrip('/')}/zones/{zone_name}"
+        url = f"{server.api_url.rstrip('/')}/zonewrite?zonename={zone_name}"
 
         headers = {
             'Authorization': f'Bearer {server.api_key}',
@@ -95,7 +106,7 @@ def push_zone_to_server(zone: Zone, server: Server) -> bool:
             timeout=30
         )
 
-        if response.status_code == 200:
+        if response.status_code == 201:
             logger.info(f"Successfully pushed zone {zone.origin} to server {server.name}")
             return True
         else:
@@ -171,12 +182,25 @@ def generate_server_config(server: Server) -> str:
   file: {zone.origin.rstrip('.').strip()}.zone
 """)
 
-    # Add slave zones
+    # Add slave zones (internal master)
     slave_zones = server.slave_zones.all().order_by('origin')
     for zone in slave_zones:
+        # For internal zones, the master is the zone's master_server
         config_lines.append(f"""zone:
 - domain: {zone.origin}
   template: {server.slave_template}
+  master: {zone.master_server.name}
+  file: {zone.origin.rstrip('.').strip()}.zone
+""")
+
+    # Add slave-only zones (external master)
+    slave_only_zones = server.slave_only_zones.all().order_by('origin')
+    for zone in slave_only_zones:
+        # For slave-only zones, use the external master
+        config_lines.append(f"""zone:
+- domain: {zone.origin}
+  template: {server.slave_template}
+  master: {zone.external_master}
   file: {zone.origin.rstrip('.').strip()}.zone
 """)
 
@@ -204,7 +228,7 @@ def push_server_config(server: Server) -> bool:
         config_content = generate_server_config(server)
 
         # Prepare the API request
-        url = f"{server.api_url.rstrip('/')}/config"
+        url = f"{server.api_url.rstrip('/')}/configwrite"
 
         headers = {
             'Authorization': f'Bearer {server.api_key}',
@@ -220,7 +244,7 @@ def push_server_config(server: Server) -> bool:
             timeout=30
         )
 
-        if response.status_code == 200:
+        if response.status_code == 201:
             logger.info(f"Successfully pushed configuration to server {server.name}")
             return True
         else:
@@ -253,7 +277,7 @@ def check_zone_on_server(zone: Zone, server: Server) -> Dict[str, Any]:
     """
     try:
         zone_name = zone.origin.rstrip('.').strip()
-        url = f"{server.api_url.rstrip('/')}/zones/{zone_name}/check"
+        url = f"{server.api_url.rstrip('/')}/zonecheck?zonename={zone_name}"
 
         headers = {
             'Authorization': f'Bearer {server.api_key}',
@@ -265,7 +289,7 @@ def check_zone_on_server(zone: Zone, server: Server) -> Dict[str, Any]:
             timeout=30
         )
 
-        if response.status_code == 200:
+        if response.status_code == 201:
             return response.json()
         else:
             return {
@@ -324,6 +348,78 @@ def sync_all_dirty_zones() -> Dict[str, Any]:
     return results
 
 
+def update_slave_only_zone(zone: SlaveOnlyZone) -> Tuple[bool, List[str]]:
+    """
+    Update slave-only zone configuration on all its slave servers.
+
+    Args:
+        zone: The SlaveOnlyZone object to update
+
+    Returns:
+        A tuple of (success: bool, errors: List[str])
+    """
+    errors = []
+    success = True
+
+    # Update configuration on all slave servers
+    for server in zone.slave_servers.all():
+        try:
+            if push_server_config(server):
+                logger.info(f"Updated configuration on slave server {server.name} for zone {zone.origin}")
+            else:
+                success = False
+                errors.append(f"Failed to update configuration on slave server {server.name}")
+        except Exception as e:
+            success = False
+            errors.append(f"Slave server {server.name}: {str(e)}")
+
+    # Mark zone as clean if successful
+    if success:
+        with transaction.atomic():
+            zone.is_dirty = False
+            zone.save(update_fields=['is_dirty', 'updated_at'])
+            logger.info(f"Marked slave-only zone {zone.origin} as clean")
+
+    return success, errors
+
+
+def sync_all_dirty_slave_only_zones() -> Dict[str, Any]:
+    """
+    Synchronize all slave-only zones marked as dirty to their respective servers.
+
+    Returns:
+        A dictionary with synchronization results
+    """
+    results = {
+        'total': 0,
+        'success': 0,
+        'failed': 0,
+        'errors': []
+    }
+
+    dirty_zones = SlaveOnlyZone.objects.filter(is_dirty=True).prefetch_related('slave_servers')
+    results['total'] = dirty_zones.count()
+
+    for zone in dirty_zones:
+        try:
+            success, errors = update_slave_only_zone(zone)
+            if success:
+                results['success'] += 1
+                logger.info(f"Successfully synchronized slave-only zone {zone.origin}")
+            else:
+                results['failed'] += 1
+                for error in errors:
+                    results['errors'].append(f"{zone.origin}: {error}")
+                    logger.error(f"Failed to synchronize slave-only zone {zone.origin}: {error}")
+        except Exception as e:
+            results['failed'] += 1
+            error_msg = f"{zone.origin}: Unexpected error: {str(e)}"
+            results['errors'].append(error_msg)
+            logger.error(error_msg)
+
+    return results
+
+
 def validate_zone_consistency(zone: Zone) -> List[str]:
     """
     Validate the consistency of a zone's data.
@@ -373,9 +469,15 @@ def increment_zone_serial(zone: Zone) -> int:
         The new serial number
     """
     with transaction.atomic():
-        zone.soa_serial += 1
-        zone.is_dirty = True
-        zone.save(update_fields=['soa_serial', 'is_dirty', 'updated_at'])
+        # Increment serial through SOA record
+        if hasattr(zone, 'soa'):
+            zone.soa.increment_serial()
+            new_serial = zone.soa.serial
+        else:
+            raise ValueError(f"Zone {zone.origin} has no associated SOA record")
 
-    logger.info(f"Incremented serial for zone {zone.origin} to {zone.soa_serial}")
-    return zone.soa_serial
+        zone.is_dirty = True
+        zone.save(update_fields=['is_dirty', 'updated_at'])
+
+    logger.info(f"Incremented serial for zone {zone.origin} to {new_serial}")
+    return new_serial

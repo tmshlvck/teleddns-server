@@ -148,6 +148,36 @@ curl -u username:password "https://ddns.example.com/ddns/update/?hostname=home.e
 
 ### REST API
 
+The TeleDDNS Server provides a comprehensive RESTful API with auto-generated interactive documentation.
+
+#### API Documentation
+
+- **Swagger UI**: http://localhost:8000/api/docs/ - Interactive API documentation with "Try it out" functionality
+- **ReDoc**: http://localhost:8000/api/redoc/ - Alternative clean documentation interface
+- **OpenAPI Schema**: http://localhost:8000/api/schema/ - Machine-readable API specification (OpenAPI 3.0)
+
+#### Authentication
+
+The API supports two authentication methods:
+
+1. **Token Authentication** (recommended for programmatic access):
+   ```bash
+   curl -H "Authorization: Token YOUR_TOKEN_HERE" http://localhost:8000/api/zones/
+   ```
+
+2. **Session Authentication** (automatically used in Swagger UI when logged into Django admin)
+
+To obtain an API token:
+```bash
+# Get or create token (requires basic auth)
+curl -u username:password -X GET http://localhost:8000/api/token/
+
+# Regenerate token (invalidates old token)
+curl -u username:password -X POST http://localhost:8000/api/token/
+```
+
+#### API Endpoints
+
 All API endpoints are under `/api/`:
 
 - `/api/servers/` - DNS server management (superuser only)
@@ -167,13 +197,32 @@ All API endpoints are under `/api/`:
 - `/api/token/` - API token management
 - `/api/audit-logs/` - Audit log viewing
 
-Example API usage:
+#### Example API Usage
+
 ```bash
 # Get API token
 curl -u username:password -X GET https://ddns.example.com/api/token/
 
 # List zones
 curl -H "Authorization: Token your-api-token" https://ddns.example.com/api/zones/
+
+# Create a new A record
+curl -X POST https://ddns.example.com/api/records/a/ \
+  -H "Authorization: Token your-api-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "zone": 1,
+    "label": "www",
+    "ttl": 3600,
+    "value": "192.168.1.100"
+  }'
+
+# Synchronize a zone to DNS servers
+curl -X POST https://ddns.example.com/api/zones/1/sync/ \
+  -H "Authorization: Token your-api-token"
+```
+
+For detailed API documentation and to test endpoints interactively, visit the Swagger UI at `/api/docs/` when the server is running.
 
 # Create an A record
 curl -H "Authorization: Token your-api-token" \

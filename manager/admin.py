@@ -27,7 +27,7 @@ from rest_framework.authtoken.admin import TokenAdmin
 
 from .models import (
     Server, Zone, A, AAAA, CNAME, MX, NS, PTR, SRV, TXT,
-    CAA, DS, DNSKEY, TLSA, AuditLog, RR_MODELS
+    CAA, DS, DNSKEY, TLSA, AuditLog, RR_MODELS, SOA, SlaveOnlyZone
 )
 
 logger = logging.getLogger(__name__)
@@ -38,17 +38,17 @@ if admin.site.is_registered(Token):
     admin.site.unregister(Token)
 
 
-@admin.register(Token)
-class CustomTokenAdmin(TokenAdmin):
-    """Enhanced Token admin with better display"""
-    list_display = ('key', 'user', 'created')
-    fields = ('user',)
-    ordering = ('-created',)
-    readonly_fields = ('key', 'created')
-
-    def has_add_permission(self, request):
-        """Disable add permission - tokens should be created via API"""
-        return False
+#@admin.register(Token)
+#class CustomTokenAdmin(TokenAdmin):
+#    """Enhanced Token admin with better display"""
+#    list_display = ('key', 'user', 'created')
+#    fields = ('user',)
+#    ordering = ('-created',)
+#    readonly_fields = ('key', 'created')
+#
+#    def has_add_permission(self, request):
+#        """Disable add permission - tokens should be created via API"""
+#        return False
 
 
 class TokenInline(admin.TabularInline):
@@ -204,29 +204,47 @@ class TLSAInline(ResourceRecordInline):
     verbose_name_plural = "TLSA Records"
 
 
+class SOAInline(admin.StackedInline):
+    model = SOA
+    verbose_name = "SOA Record"
+    verbose_name_plural = "SOA Record"
+    max_num = 1
+    extra = 1
+    can_delete = False
+    fields = (
+        'name', 'rrclass', 'ttl',
+        'mname', 'rname', 'serial',
+        'refresh', 'retry', 'expire', 'minimum'
+    )
+    readonly_fields = ('serial',)
+
+    def has_add_permission(self, request, obj):
+        """Only allow adding if no SOA exists"""
+        if obj and hasattr(obj, 'soa'):
+            return False
+        return super().has_add_permission(request, obj)
+
+
 @admin.register(Zone)
 class ZoneAdmin(admin.ModelAdmin):
     """Admin interface for DNS zones with all resource records"""
     list_display = (
-        'origin', 'soa_serial', 'master_server', 'status_indicator',
+        'origin', 'get_soa_serial', 'master_server', 'status_indicator',
         'owner', 'group', 'updated_at'
     )
     list_filter = ('is_dirty', 'master_server', 'owner', 'group', 'created_at')
-    search_fields = ('origin', 'soa_mname', 'soa_rname')
+    search_fields = ('origin',)
     autocomplete_fields = ('owner', 'group', 'master_server')
     filter_horizontal = ('slave_servers',)
-    readonly_fields = ('created_at', 'updated_at', 'soa_serial')
+    readonly_fields = ('created_at', 'updated_at', 'get_soa_info')
 
     fieldsets = (
         (None, {
             'fields': ('origin', 'owner', 'group')
         }),
-        ('SOA Record', {
-            'fields': (
-                'soa_name', 'soa_class', 'soa_ttl',
-                'soa_mname', 'soa_rname', 'soa_serial',
-                'soa_refresh', 'soa_retry', 'soa_expire', 'soa_minimum'
-            )
+        ('SOA Information', {
+            'fields': ('get_soa_info',),
+            'description': 'SOA record is managed separately. <a href="../soa/">View SOA records</a>'
         }),
         ('Servers', {
             'fields': ('master_server', 'slave_servers')
@@ -241,6 +259,7 @@ class ZoneAdmin(admin.ModelAdmin):
     )
 
     inlines = [
+        SOAInline,  # SOA should be first as it's the most important
         AInline, AAAAInline, CNAMEInline, MXInline, NSInline,
         PTRInline, SRVInline, TXTInline, CAAInline,
         DSInline, DNSKEYInline, TLSAInline
@@ -269,6 +288,33 @@ class ZoneAdmin(admin.ModelAdmin):
             color, text
         )
     status_indicator.short_description = 'Status'
+
+    def get_soa_serial(self, obj):
+        """Get SOA serial number from related SOA record"""
+        if hasattr(obj, 'soa'):
+            return obj.soa.serial
+        return '-'
+    get_soa_serial.short_description = 'Serial'
+    get_soa_serial.admin_order_field = 'soa__serial'
+
+    def get_soa_info(self, obj):
+        """Display SOA record information"""
+        if hasattr(obj, 'soa'):
+            soa = obj.soa
+            return format_html(
+                '<strong>Primary NS:</strong> {}<br>'
+                '<strong>Contact:</strong> {}<br>'
+                '<strong>Serial:</strong> {}<br>'
+                '<strong>Refresh:</strong> {} / <strong>Retry:</strong> {} / '
+                '<strong>Expire:</strong> {} / <strong>Minimum:</strong> {}',
+                soa.mname, soa.rname, soa.serial,
+                soa.refresh, soa.retry, soa.expire, soa.minimum
+            )
+        return format_html(
+            '<em>No SOA record found. <a href="../soa/add/?zone={}">Create SOA record</a></em>',
+            obj.pk
+        )
+    get_soa_info.short_description = 'SOA Record Details'
 
     @admin.action(description="Increment serial number")
     def increment_serial(self, request, queryset):
@@ -430,3 +476,123 @@ class AuditLogAdmin(admin.ModelAdmin):
             json.dumps(obj.changed_data, indent=2)
         )
     changed_data_pretty.short_description = 'Changed Data'
+
+
+@admin.register(SOA)
+class SOAAdmin(admin.ModelAdmin):
+    """Admin interface for SOA records"""
+    list_display = ('zone', 'mname', 'rname', 'serial', 'ttl', 'updated_at')
+    list_filter = ('updated_at', 'zone')
+    search_fields = ('zone__origin', 'mname', 'rname')
+    readonly_fields = ('created_at', 'updated_at')
+    autocomplete_fields = ['zone']
+
+    fieldsets = (
+        (None, {
+            'fields': ('zone', 'name', 'rrclass', 'ttl')
+        }),
+        ('SOA Fields', {
+            'fields': ('mname', 'rname', 'serial', 'refresh', 'retry', 'expire', 'minimum')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def get_queryset(self, request):
+        """Optimize query with select_related"""
+        qs = super().get_queryset(request)
+        return qs.select_related('zone')
+
+
+@admin.register(SlaveOnlyZone)
+class SlaveOnlyZoneAdmin(admin.ModelAdmin):
+    """Admin interface for slave-only zones"""
+    list_display = ('origin', 'external_master', 'slave_servers_count', 'owner', 'is_dirty', 'updated_at')
+    list_filter = ('is_dirty', 'updated_at', 'owner', 'group')
+    search_fields = ('origin', 'external_master')
+    readonly_fields = ('created_at', 'updated_at')
+    autocomplete_fields = ['owner', 'group', 'slave_servers']
+    filter_horizontal = ('slave_servers',)
+
+    fieldsets = (
+        (None, {
+            'fields': ('origin', 'external_master')
+        }),
+        ('Servers', {
+            'fields': ('slave_servers',)
+        }),
+        ('Ownership', {
+            'fields': ('owner', 'group')
+        }),
+        ('Status', {
+            'fields': ('is_dirty',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def slave_servers_count(self, obj):
+        return obj.slave_servers.count()
+    slave_servers_count.short_description = 'Slave Servers'
+
+    def get_queryset(self, request):
+        """Optimize query with prefetch_related"""
+        qs = super().get_queryset(request)
+        return qs.prefetch_related('slave_servers')
+
+    actions = ['mark_dirty', 'sync_zones']
+
+    def mark_dirty(self, request, queryset):
+        """Mark selected zones as dirty"""
+        count = queryset.update(is_dirty=True)
+        self.message_user(
+            request,
+            f"Marked {count} slave-only zone(s) as dirty.",
+            messages.SUCCESS
+        )
+    mark_dirty.short_description = "Mark selected zones as dirty"
+
+    def sync_zones(self, request, queryset):
+        """Synchronize selected zones"""
+        success_count = 0
+        fail_count = 0
+
+        for zone in queryset.filter(is_dirty=True):
+            try:
+                from .services import update_slave_only_zone
+                success, errors = update_slave_only_zone(zone)
+                if success:
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    for error in errors:
+                        self.message_user(
+                            request,
+                            f"Error syncing {zone.origin}: {error}",
+                            messages.ERROR
+                        )
+            except Exception as e:
+                fail_count += 1
+                self.message_user(
+                    request,
+                    f"Error syncing {zone.origin}: {str(e)}",
+                    messages.ERROR
+                )
+
+        if success_count > 0:
+            self.message_user(
+                request,
+                f"Successfully synchronized {success_count} zone(s).",
+                messages.SUCCESS
+            )
+        if fail_count > 0:
+            self.message_user(
+                request,
+                f"Failed to synchronize {fail_count} zone(s).",
+                messages.ERROR
+            )
+    sync_zones.short_description = "Synchronize selected zones to slave servers"

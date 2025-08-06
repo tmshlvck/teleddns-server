@@ -121,62 +121,6 @@ class Zone(models.Model):
         help_text="Zone origin (e.g., example.com.)"
     )
 
-    # SOA fields
-    soa_name = models.CharField(
-        max_length=255,
-        default='@',
-        validators=[validate_dns_name],
-        db_column='soa_NAME',
-        help_text="SOA record name (usually @)"
-    )
-    soa_class = models.CharField(
-        max_length=2,
-        choices=RRCLASS_CHOICES,
-        default='IN',
-        db_column='soa_CLASS'
-    )
-    soa_ttl = models.PositiveIntegerField(
-        default=3600,
-        db_column='soa_TTL',
-        help_text="SOA record TTL in seconds"
-    )
-    soa_mname = models.CharField(
-        max_length=255,
-        validators=[validate_dns_name],
-        db_column='soa_MNAME',
-        help_text="Primary name server"
-    )
-    soa_rname = models.CharField(
-        max_length=255,
-        validators=[validate_dns_name],
-        db_column='soa_RNAME',
-        help_text="Responsible person email (replace @ with .)"
-    )
-    soa_serial = models.PositiveBigIntegerField(
-        db_column='soa_SERIAL',
-        help_text="Zone serial number"
-    )
-    soa_refresh = models.PositiveIntegerField(
-        default=86400,
-        db_column='soa_REFRESH',
-        help_text="Refresh interval in seconds"
-    )
-    soa_retry = models.PositiveIntegerField(
-        default=7200,
-        db_column='soa_RETRY',
-        help_text="Retry interval in seconds"
-    )
-    soa_expire = models.PositiveIntegerField(
-        default=3600000,
-        db_column='soa_EXPIRE',
-        help_text="Expire time in seconds"
-    )
-    soa_minimum = models.PositiveIntegerField(
-        default=172800,
-        db_column='soa_MINIMUM',
-        help_text="Minimum TTL in seconds"
-    )
-
     # Ownership and permissions
     owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name='owned_zones')
     group = models.ForeignKey(Group, on_delete=models.PROTECT, related_name='zones')
@@ -218,19 +162,161 @@ class Zone(models.Model):
 
     def format_bind_zone(self):
         """Format zone header in BIND format"""
-        return (
-            f"$ORIGIN {self.origin};\n"
-            f"$TTL {settings.DDNS_DEFAULT_TTL};\n"
-            f"{self.soa_name:<63} {self.soa_ttl:<5} {self.soa_class:<2} SOA "
-            f"{self.soa_mname} {self.soa_rname.replace('@', '.')} "
-            f"{self.soa_serial} {self.soa_refresh} {self.soa_retry} "
-            f"{self.soa_expire} {self.soa_minimum}"
-        )
+        # This method is deprecated - use SOA model instead
+        if hasattr(self, 'soa'):
+            return (
+                f"$ORIGIN {self.origin};\n"
+                f"$TTL {settings.DDNS_DEFAULT_TTL};\n"
+                f"{self.soa.format_bind_zone()}"
+            )
+        else:
+            # Return basic zone header without SOA
+            return f"$ORIGIN {self.origin};\n$TTL {settings.DDNS_DEFAULT_TTL};"
 
     def increment_serial(self):
         """Increment zone serial number"""
-        self.soa_serial += 1
-        self.save(update_fields=['soa_serial', 'updated_at'])
+        # Increment serial through SOA record
+        if hasattr(self, 'soa'):
+            self.soa.increment_serial()
+        else:
+            raise ValueError(f"Zone {self.origin} has no associated SOA record")
+
+
+class SOA(models.Model):
+    """SOA (Start of Authority) record for a zone"""
+    RRCLASS_CHOICES = [
+        ('IN', 'IN'),
+    ]
+
+    zone = models.OneToOneField(
+        Zone,
+        on_delete=models.CASCADE,
+        related_name='soa',
+        help_text="Zone this SOA record belongs to"
+    )
+
+    # SOA fields
+    name = models.CharField(
+        max_length=255,
+        default='@',
+        validators=[validate_dns_name],
+        help_text="SOA record name (usually @)"
+    )
+    rrclass = models.CharField(
+        max_length=2,
+        choices=RRCLASS_CHOICES,
+        default='IN',
+        db_column='class'
+    )
+    ttl = models.PositiveIntegerField(
+        default=3600,
+        help_text="SOA record TTL in seconds"
+    )
+    mname = models.CharField(
+        max_length=255,
+        validators=[validate_dns_name],
+        help_text="Primary name server"
+    )
+    rname = models.CharField(
+        max_length=255,
+        validators=[validate_dns_name],
+        help_text="Responsible person email (replace @ with .)"
+    )
+    serial = models.PositiveBigIntegerField(
+        help_text="Zone serial number"
+    )
+    refresh = models.PositiveIntegerField(
+        default=86400,
+        help_text="Refresh interval in seconds"
+    )
+    retry = models.PositiveIntegerField(
+        default=7200,
+        help_text="Retry interval in seconds"
+    )
+    expire = models.PositiveIntegerField(
+        default=3600000,
+        help_text="Expire time in seconds"
+    )
+    minimum = models.PositiveIntegerField(
+        default=172800,
+        help_text="Minimum TTL in seconds"
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "SOA Record"
+        verbose_name_plural = "SOA Records"
+
+    def __str__(self):
+        return f"SOA for {self.zone.origin}"
+
+    def format_bind_zone(self):
+        """Format SOA record in BIND format"""
+        return (
+            f"{self.name:<63} {self.ttl:<5} {self.rrclass:<2} SOA "
+            f"{self.mname} {self.rname.replace('@', '.')} "
+            f"{self.serial} {self.refresh} {self.retry} "
+            f"{self.expire} {self.minimum}"
+        )
+
+    def increment_serial(self):
+        """Increment the serial number"""
+        self.serial += 1
+        self.save(update_fields=['serial', 'updated_at'])
+
+
+class SlaveOnlyZone(models.Model):
+    """DNS Zone that only has slave servers with external master"""
+
+    # Zone identification
+    origin = models.CharField(
+        max_length=255,
+        unique=True,
+        validators=[validate_origin],
+        help_text="Zone origin (e.g., example.com.)"
+    )
+
+    # External master server
+    external_master = models.CharField(
+        max_length=255,
+        validators=[validate_dns_hostname],
+        help_text="External master server hostname or IP address"
+    )
+
+    # Slave servers
+    slave_servers = models.ManyToManyField(
+        Server,
+        related_name='slave_only_zones',
+        help_text="Slave DNS servers for this zone"
+    )
+
+    # Ownership and permissions
+    owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name='owned_slave_only_zones')
+    group = models.ForeignKey(Group, on_delete=models.PROTECT, related_name='slave_only_zones')
+
+    # Status
+    is_dirty = models.BooleanField(
+        default=False,
+        help_text="Zone configuration has pending changes that need to be synchronized"
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Slave Only Zone"
+        verbose_name_plural = "Slave Only Zones"
+        ordering = ['origin']
+        permissions = [
+            ("sync_slave_only_zone", "Can synchronize slave only zone to DNS server"),
+        ]
+
+    def __str__(self):
+        return f"{self.origin} (slave only)"
 
 
 class ResourceRecord(models.Model):

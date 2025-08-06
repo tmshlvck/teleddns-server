@@ -117,21 +117,40 @@ def create_audit_log(instance, action, changed_fields=None, old_values=None):
     elif action == 'UPDATE' and changed_fields:
         # For update, only log changed fields
         for field in changed_fields:
-            changed_data[field] = {
-                'old': old_values.get(field) if old_values else None,
-                'new': getattr(instance, field, None)
-            }
+            old_value = old_values.get(field) if old_values else None
+
+            # Get the field object to check field type
+            field_obj = instance._meta.get_field(field)
+
+            # Get new value in the same format as old value
+            if field_obj.many_to_many:
+                # For ManyToMany fields, get list of IDs
+                new_value = list(getattr(instance, field).values_list('pk', flat=True))
+            elif field_obj.many_to_one or field_obj.one_to_one:
+                # For ForeignKey/OneToOne fields, get the ID
+                related_obj = getattr(instance, field, None)
+                new_value = related_obj.pk if related_obj else None
+            else:
+                # For regular fields, get the actual value
+                new_value = getattr(instance, field, None)
+
+            # Only include if actually changed
+            if old_value != new_value:
+                changed_data[field] = {
+                    'old': old_value,
+                    'new': new_value
+                }
     elif action == 'DELETE':
         # For delete, log all fields
         changed_data = model_to_dict(instance, exclude=['id'])
 
-    # Convert any model instances in changed_data to their string representation
+    # Convert any model instances in changed_data to their ID representation
     def serialize_value(val):
         """Recursively serialize values for JSON storage"""
         if hasattr(val, 'pk'):
-            return str(val)
+            return val.pk
         elif hasattr(val, 'all'):  # ManyRelatedManager
-            return [str(item) for item in val.all()]
+            return [item.pk for item in val.all()]
         elif isinstance(val, dict):
             return {k: serialize_value(v) for k, v in val.items()}
         elif isinstance(val, (list, tuple)):
@@ -190,9 +209,29 @@ def audit_zone_save(sender, instance, created, **kwargs):
         if hasattr(instance, '_original_values') and instance._original_values:
             changed_fields = []
             for field, old_value in instance._original_values.items():
-                new_value = getattr(instance, field, None)
-                if old_value != new_value:
-                    changed_fields.append(field)
+                # Get the field object to check field type
+                try:
+                    field_obj = instance._meta.get_field(field)
+
+                    # Get new value in the same format as model_to_dict
+                    if field_obj.many_to_many:
+                        # For ManyToMany fields, compare list of IDs
+                        new_value = list(getattr(instance, field).values_list('pk', flat=True))
+                    elif field_obj.many_to_one or field_obj.one_to_one:
+                        # For ForeignKey/OneToOne fields, compare the ID
+                        related_obj = getattr(instance, field, None)
+                        new_value = related_obj.pk if related_obj else None
+                    else:
+                        # For regular fields, get the actual value
+                        new_value = getattr(instance, field, None)
+
+                    if old_value != new_value:
+                        changed_fields.append(field)
+                except Exception:
+                    # If we can't get field info, fall back to simple comparison
+                    new_value = getattr(instance, field, None)
+                    if old_value != new_value:
+                        changed_fields.append(field)
 
             if changed_fields:
                 create_audit_log(
@@ -245,9 +284,29 @@ for rr_model in RR_MODELS:
             if hasattr(instance, '_original_values') and instance._original_values:
                 changed_fields = []
                 for field, old_value in instance._original_values.items():
-                    new_value = getattr(instance, field, None)
-                    if old_value != new_value:
-                        changed_fields.append(field)
+                    # Get the field object to check field type
+                    try:
+                        field_obj = instance._meta.get_field(field)
+
+                        # Get new value in the same format as model_to_dict
+                        if field_obj.many_to_many:
+                            # For ManyToMany fields, compare list of IDs
+                            new_value = list(getattr(instance, field).values_list('pk', flat=True))
+                        elif field_obj.many_to_one or field_obj.one_to_one:
+                            # For ForeignKey/OneToOne fields, compare the ID
+                            related_obj = getattr(instance, field, None)
+                            new_value = related_obj.pk if related_obj else None
+                        else:
+                            # For regular fields, get the actual value
+                            new_value = getattr(instance, field, None)
+
+                        if old_value != new_value:
+                            changed_fields.append(field)
+                    except Exception:
+                        # If we can't get field info, fall back to simple comparison
+                        new_value = getattr(instance, field, None)
+                        if old_value != new_value:
+                            changed_fields.append(field)
 
                 if changed_fields:
                     create_audit_log(
@@ -257,7 +316,7 @@ for rr_model in RR_MODELS:
                         old_values=instance._original_values
                     )
 
-        # Mark zone as dirty if not already updating from a signal
+        # Mark zone as dirty and increment serial if not already updating from a signal
         if hasattr(instance, 'zone') and instance.zone and not getattr(instance, '_signal_updating', False):
             try:
                 # Use a separate transaction for marking zone dirty
@@ -265,12 +324,18 @@ for rr_model in RR_MODELS:
                 with transaction.atomic():
                     zone = instance.zone
                     zone._signal_updating = True
+
+                    # Increment serial number
+                    zone.increment_serial()
+
+                    # Mark as dirty if not already
                     if not zone.is_dirty:
                         zone.is_dirty = True
                         zone.save(update_fields=['is_dirty', 'updated_at'])
-                        logger.info(f"Marked zone {zone.origin} as dirty due to {sender.__name__} change")
+
+                    logger.info(f"Incremented serial and marked zone {zone.origin} as dirty due to {sender.__name__} change")
             except Exception as e:
-                logger.error(f"Failed to mark zone as dirty: {e}")
+                logger.error(f"Failed to update zone: {e}")
             finally:
                 if hasattr(instance.zone, '_signal_updating'):
                     delattr(instance.zone, '_signal_updating')
@@ -286,19 +351,25 @@ for rr_model in RR_MODELS:
         # Create audit log
         create_audit_log(instance, 'DELETE')
 
-        # Mark zone as dirty
+        # Mark zone as dirty and increment serial
         if hasattr(instance, 'zone') and instance.zone:
             try:
                 # Use a separate transaction for marking zone dirty
                 from django.db import transaction
                 with transaction.atomic():
                     zone = instance.zone
+
+                    # Increment serial number
+                    zone.increment_serial()
+
+                    # Mark as dirty if not already
                     if not zone.is_dirty:
                         zone.is_dirty = True
                         zone.save(update_fields=['is_dirty', 'updated_at'])
-                        logger.info(f"Marked zone {zone.origin} as dirty due to {sender.__name__} deletion")
+
+                    logger.info(f"Incremented serial and marked zone {zone.origin} as dirty due to {sender.__name__} deletion")
             except Exception as e:
-                logger.error(f"Failed to mark zone as dirty on deletion: {e}")
+                logger.error(f"Failed to update zone on deletion: {e}")
 
 
 # Add the middleware to settings

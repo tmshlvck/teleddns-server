@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     # Third party apps
     'rest_framework',
     'rest_framework.authtoken',
+    'drf_spectacular',
 
     # Local apps
     'manager',
@@ -154,11 +155,19 @@ MEDIA_ROOT = '/data/media' if os.path.exists('/data') else BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Django REST Framework settings
+# API Authentication Configuration
+# By default, both Token and Session auth are enabled:
+# - Token auth: For programmatic API access (recommended for production)
+# - Session auth: For browsable API and Swagger UI when logged into Django admin
+# Set API_DISABLE_SESSION_AUTH=True to use token-only authentication
+API_DISABLE_SESSION_AUTH = env.bool('API_DISABLE_SESSION_AUTH', default=False)
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
+    ] + ([] if API_DISABLE_SESSION_AUTH else [
         'rest_framework.authentication.SessionAuthentication',
-    ],
+    ]),
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
@@ -168,6 +177,45 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+# DRF-Spectacular settings for API documentation
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'TeleDDNS Server API',
+    'DESCRIPTION': 'Dynamic DNS Server Management API',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'SWAGGER_UI_SETTINGS': {
+        'deepLinking': True,
+        'persistAuthorization': True,
+        'displayOperationId': True,
+    },
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SCHEMA_PATH_PREFIX': '/api/',
+    # Authentication settings - define which auth methods are required
+    'SECURITY': [
+        {'tokenAuth': []} if API_DISABLE_SESSION_AUTH else {'tokenAuth': [], 'sessionAuth': []},
+    ],
+    'AUTHENTICATION_WHITELIST': [
+        'rest_framework.authentication.TokenAuthentication',
+    ],
+    'APPEND_COMPONENTS': {
+        'securitySchemes': {
+            'tokenAuth': {
+                'type': 'apiKey',
+                'in': 'header',
+                'name': 'Authorization',
+                'description': 'Token authentication. Format: "Token YOUR_TOKEN_HERE"',
+            },
+            'sessionAuth': {
+                'type': 'apiKey',
+                'in': 'cookie',
+                'name': 'sessionid',
+                'description': 'Django session authentication (for browsable API)',
+            },
+        }
+    },
 }
 
 # TeleDDNS specific settings

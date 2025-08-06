@@ -20,11 +20,11 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
 from .views import (
-    ServerViewSet, ZoneViewSet, AViewSet, AAAAViewSet,
+    ServerViewSet, ZoneViewSet, SlaveOnlyZoneViewSet, AViewSet, AAAAViewSet,
     CNAMEViewSet, MXViewSet, NSViewSet, PTRViewSet,
     SRVViewSet, TXTViewSet, CAAViewSet, DSViewSet,
     DNSKEYViewSet, TLSAViewSet, AuditLogViewSet,
-    UserViewSet, GroupViewSet, token_view
+    UserViewSet, GroupViewSet, token_view, health_check
 )
 
 # Create a router and register our viewsets with it
@@ -33,6 +33,7 @@ router = DefaultRouter()
 # Infrastructure endpoints
 router.register(r'servers', ServerViewSet, basename='server')
 router.register(r'zones', ZoneViewSet, basename='zone')
+router.register(r'slave-zones', SlaveOnlyZoneViewSet, basename='slaveonlyzone')
 
 # Resource record endpoints
 router.register(r'records/a', AViewSet, basename='a')
@@ -55,6 +56,9 @@ router.register(r'groups', GroupViewSet, basename='group')
 
 # The API URLs are now determined automatically by the router
 urlpatterns = [
+    # Public endpoints (no auth required)
+    path('health/', health_check, name='api-health'),
+
     # Token management endpoint
     path('token/', token_view, name='api-token'),
 

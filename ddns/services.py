@@ -324,12 +324,14 @@ def update_ddns_record(
 
     # Update zone if changed
     if changed:
-        zone.soa_serial += 1
+        # Increment serial using the Zone's method which handles SOA
+        zone.increment_serial()
         zone.is_dirty = True
-        zone.save(update_fields=['soa_serial', 'is_dirty', 'updated_at'])
+        zone.save(update_fields=['is_dirty', 'updated_at'])
 
+        serial = zone.soa.serial if hasattr(zone, 'soa') else 'N/A'
         logger.info(
-            f"DDNS: Incremented serial for zone {zone.origin} to {zone.soa_serial} "
+            f"DDNS: Incremented serial for zone {zone.origin} to {serial} "
             f"and marked as dirty"
         )
 

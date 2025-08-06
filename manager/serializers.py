@@ -22,7 +22,7 @@ from rest_framework.authtoken.models import Token
 
 from .models import (
     Server, Zone, A, AAAA, CNAME, MX, NS, PTR, SRV, TXT,
-    CAA, DS, DNSKEY, TLSA, AuditLog
+    CAA, DS, DNSKEY, TLSA, AuditLog, SOA, SlaveOnlyZone
 )
 
 
@@ -89,8 +89,7 @@ class ZoneSerializer(serializers.ModelSerializer):
     class Meta:
         model = Zone
         fields = [
-            'id', 'origin', 'soa_name', 'soa_class', 'soa_ttl', 'soa_mname', 'soa_rname',
-            'soa_serial', 'soa_refresh', 'soa_retry', 'soa_expire', 'soa_minimum',
+            'id', 'origin',
             'owner', 'owner_id', 'group', 'group_id',
             'master_server', 'master_server_name', 'slave_servers', 'slave_servers_names',
             'is_dirty', 'created_at', 'updated_at'
@@ -267,3 +266,52 @@ RR_SERIALIZERS = {
     DNSKEY: DNSKEYSerializer,
     TLSA: TLSASerializer,
 }
+
+
+class SOASerializer(serializers.ModelSerializer):
+    """Serializer for SOA records"""
+    zone_origin = serializers.CharField(source='zone.origin', read_only=True)
+
+    class Meta:
+        model = SOA
+        fields = [
+            'id', 'zone', 'zone_origin', 'name', 'rrclass', 'ttl',
+            'mname', 'rname', 'serial', 'refresh', 'retry', 'expire', 'minimum',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class SlaveOnlyZoneSerializer(serializers.ModelSerializer):
+    """Serializer for slave-only zones"""
+    owner = UserSerializer(read_only=True)
+    group = GroupSerializer(read_only=True)
+    owner_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        source='owner',
+        write_only=True
+    )
+    group_id = serializers.PrimaryKeyRelatedField(
+        queryset=Group.objects.all(),
+        source='group',
+        write_only=True
+    )
+    slave_servers = ServerSerializer(many=True, read_only=True)
+    slave_server_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Server.objects.all(),
+        source='slave_servers',
+        write_only=True,
+        many=True
+    )
+
+    class Meta:
+        model = SlaveOnlyZone
+        fields = [
+            'id', 'origin', 'external_master', 'slave_servers', 'slave_server_ids',
+            'owner', 'owner_id', 'group', 'group_id',
+            'is_dirty', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'origin': {'validators': []},  # We'll handle validation in the view
+        }

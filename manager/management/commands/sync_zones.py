@@ -22,8 +22,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from manager.models import Zone, Server
-from manager.services import sync_all_dirty_zones, update_zone, push_server_config
+from manager.models import Zone, Server, SlaveOnlyZone
+from manager.services import sync_all_dirty_zones, update_zone, push_server_config, sync_all_dirty_slave_only_zones, update_slave_only_zone
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,7 @@ class Command(BaseCommand):
                 self._sync_server_zones(options['server'], options['force'])
             else:
                 self._sync_all_zones(options['force'])
+                self._sync_all_slave_only_zones(options['force'])
 
         except KeyboardInterrupt:
             self.log_error("\nOperation cancelled by user")
@@ -137,12 +138,20 @@ class Command(BaseCommand):
         if not force:
             zones = zones.filter(is_dirty=True)
 
+        # Also get slave-only zones for this server
+        slave_only_zones = SlaveOnlyZone.objects.filter(slave_servers=server)
+        if not force:
+            slave_only_zones = slave_only_zones.filter(is_dirty=True)
+
         zone_count = zones.count()
-        if zone_count == 0:
+        slave_only_count = slave_only_zones.count()
+        total_count = zone_count + slave_only_count
+
+        if total_count == 0:
             self.log_info(f"No zones to synchronize for server {server_name}")
             return
 
-        self.log_info(f"Synchronizing {zone_count} zone(s) for server {server_name}")
+        self.log_info(f"Synchronizing {total_count} zone(s) for server {server_name} ({zone_count} master/slave, {slave_only_count} slave-only)")
 
         success_count = 0
         fail_count = 0
@@ -166,6 +175,27 @@ class Command(BaseCommand):
             except Exception as e:
                 fail_count += 1
                 self.log_error(f"Error synchronizing zone {zone.origin}: {e}")
+
+        # Sync slave-only zones
+        for zone in slave_only_zones:
+            if self.dry_run:
+                self.log_info(f"Would synchronize slave-only zone {zone.origin}")
+                success_count += 1
+                continue
+
+            try:
+                success, errors = update_slave_only_zone(zone)
+                if success:
+                    success_count += 1
+                    self.log_success(f"Synchronized slave-only zone {zone.origin}")
+                else:
+                    fail_count += 1
+                    self.log_error(f"Failed to synchronize slave-only zone {zone.origin}:")
+                    for error in errors:
+                        self.log_error(f"  - {error}")
+            except Exception as e:
+                fail_count += 1
+                self.log_error(f"Error synchronizing slave-only zone {zone.origin}: {e}")
 
         # Summary
         self.log_info(f"\nSynchronization complete:")
@@ -209,6 +239,41 @@ class Command(BaseCommand):
 
         if results['failed'] > 0:
             sys.exit(1)
+
+    def _sync_all_slave_only_zones(self, force=False):
+        """Synchronize all dirty slave-only zones"""
+        if force:
+            # Mark all slave-only zones as dirty if force is used
+            SlaveOnlyZone.objects.update(is_dirty=True)
+            self.log_info(f"Marked all slave-only zones as dirty (force mode)")
+
+        if self.dry_run:
+            dirty_zones = SlaveOnlyZone.objects.filter(is_dirty=True).prefetch_related('slave_servers')
+            if dirty_zones.exists():
+                self.log_info(f"Would synchronize {dirty_zones.count()} dirty slave-only zone(s):")
+                for zone in dirty_zones:
+                    servers = ', '.join(s.name for s in zone.slave_servers.all())
+                    self.log_info(f"  - {zone.origin} -> [{servers}]")
+            else:
+                self.log_info("No dirty slave-only zones to synchronize")
+            return
+
+        results = sync_all_dirty_slave_only_zones()
+
+        # Display results
+        if results['total'] > 0:
+            self.log_info(f"\nSlave-only zone synchronization complete:")
+            self.log_info(f"  - Total zones: {results['total']}")
+            self.log_info(f"  - Success: {results['success']}")
+            self.log_info(f"  - Failed: {results['failed']}")
+
+            if results['errors']:
+                self.log_error("\nErrors:")
+                for error in results['errors']:
+                    self.log_error(f"  - {error}")
+
+            if results['failed'] > 0:
+                sys.exit(1)
 
     def _update_server_configs(self):
         """Update configurations for all servers"""
