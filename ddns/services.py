@@ -326,13 +326,15 @@ def update_ddns_record(
     if changed:
         # Increment serial using the Zone's method which handles SOA
         zone.increment_serial()
-        zone.is_dirty = True
-        zone.save(update_fields=['is_dirty', 'updated_at'])
+        from django.utils import timezone
+        zone.content_dirty = True
+        zone.content_dirty_since = timezone.now()
+        zone.save(update_fields=['content_dirty', 'content_dirty_since', 'updated_at'])
 
         serial = zone.soa.serial if hasattr(zone, 'soa') else 'N/A'
         logger.info(
             f"DDNS: Incremented serial for zone {zone.origin} to {serial} "
-            f"and marked as dirty"
+            f"and marked content as dirty"
         )
 
     # Build response message

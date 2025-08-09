@@ -91,7 +91,10 @@ Key environment variables (see `.env.example` for all options):
 - `DATABASE_URL`: SQLite database path (default: `sqlite:///db.sqlite3`)
 - `ALLOWED_HOSTS`: Comma-separated list of allowed hostnames
 - `DDNS_DEFAULT_TTL`: Default TTL for DNS records (default: 3600)
-- `DDNS_RR_TTL`: TTL for DDNS-updated records (default: 60)
+- `DDNS_RR_TTL`: TTL for resource records (default: 60)
+- `SYNC_THREAD_INTERVAL`: Background sync thread check interval in seconds (default: 60)
+- `SYNC_THREAD_MAX_BACKOFF_SECONDS`: Maximum backoff time in seconds (default: 86400 = 24 hours)
+- `SYNC_THREAD_BACKOFF_BASE`: Exponential backoff base for retries (default: 2)
 
 ### DNS Server Configuration
 
@@ -125,6 +128,44 @@ Using uvicorn (ASGI):
 ```bash
 uvicorn teleddns_server.asgi:application --host 0.0.0.0 --port 8000
 ```
+
+## Production Deployment
+
+For production deployments, we provide comprehensive guides and a deployment helper script:
+
+### Deployment Options
+
+1. **Systemd Service** - Traditional deployment with Poetry
+2. **Podman/Docker** - Container-based deployment
+
+### Quick Start
+
+```bash
+# Download and run the deployment helper
+sudo ./deploy.sh
+```
+
+The deployment helper provides an interactive menu to:
+- Install with systemd or Podman
+- Configure Nginx with SSL
+- Create database backups
+- Monitor service status
+
+### Documentation
+
+See the detailed production deployment guide: [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md)
+
+Key features:
+- Nginx reverse proxy with SSL termination
+- Let's Encrypt certificate automation
+- Systemd service management
+- Health monitoring
+- Automatic database backups
+- Security hardening
+
+### Environment Variables
+
+Production deployments require proper environment configuration. See `.env.example` for all available options.
 
 ### DDNS Updates
 

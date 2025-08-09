@@ -16,6 +16,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import os
 from django.apps import AppConfig
 
 
@@ -26,5 +27,15 @@ class ManagerConfig(AppConfig):
     verbose_name = 'DNS Manager'
 
     def ready(self):
-        """Import signal handlers when the app is ready"""
+        """Import signal handlers and start background tasks when the app is ready"""
         from . import signals  # noqa
+
+        # Only start the sync thread when running the development server
+        # Production servers (WSGI/ASGI) handle this in their respective files
+        import sys
+        if (len(sys.argv) > 1 and
+            sys.argv[1] == 'runserver' and
+            os.environ.get('RUN_MAIN') == 'true'):
+            # Start sync thread for development server
+            from .sync_thread import sync_thread
+            sync_thread.start()

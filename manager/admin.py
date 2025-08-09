@@ -27,7 +27,8 @@ from rest_framework.authtoken.admin import TokenAdmin
 
 from .models import (
     Server, Zone, A, AAAA, CNAME, MX, NS, PTR, SRV, TXT,
-    CAA, DS, DNSKEY, TLSA, AuditLog, RR_MODELS, SOA, SlaveOnlyZone
+    CAA, DS, DNSKEY, TLSA, AuditLog, RR_MODELS, SOA, SlaveOnlyZone,
+    ZoneServerStatus, SlaveOnlyZoneServerStatus
 )
 
 logger = logging.getLogger(__name__)
@@ -225,6 +226,17 @@ class SOAInline(admin.StackedInline):
         return super().has_add_permission(request, obj)
 
 
+class ZoneServerStatusInline(admin.TabularInline):
+    """Inline admin for zone server sync status"""
+    model = ZoneServerStatus
+    extra = 0
+    readonly_fields = ('server', 'config_dirty', 'config_dirty_since', 'last_sync_time')
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Zone)
 class ZoneAdmin(admin.ModelAdmin):
     """Admin interface for DNS zones with all resource records"""
@@ -232,7 +244,7 @@ class ZoneAdmin(admin.ModelAdmin):
         'origin', 'get_soa_serial', 'master_server', 'status_indicator',
         'owner', 'group', 'updated_at'
     )
-    list_filter = ('is_dirty', 'master_server', 'owner', 'group', 'created_at')
+    list_filter = ('content_dirty', 'master_config_dirty', 'master_server', 'owner', 'group', 'created_at')
     search_fields = ('origin',)
     autocomplete_fields = ('owner', 'group', 'master_server')
     filter_horizontal = ('slave_servers',)
@@ -250,7 +262,7 @@ class ZoneAdmin(admin.ModelAdmin):
             'fields': ('master_server', 'slave_servers')
         }),
         ('Status', {
-            'fields': ('is_dirty',)
+            'fields': ('content_dirty', 'content_dirty_since', 'master_config_dirty', 'master_config_dirty_since'),
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at'),
@@ -260,12 +272,13 @@ class ZoneAdmin(admin.ModelAdmin):
 
     inlines = [
         SOAInline,  # SOA should be first as it's the most important
+        ZoneServerStatusInline,  # Show per-server sync status
         AInline, AAAAInline, CNAMEInline, MXInline, NSInline,
         PTRInline, SRVInline, TXTInline, CAAInline,
         DSInline, DNSKEYInline, TLSAInline
     ]
 
-    actions = ['increment_serial', 'mark_dirty', 'mark_clean']
+    actions = ['increment_serial', 'mark_content_dirty', 'mark_config_dirty', 'mark_clean']
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -277,12 +290,18 @@ class ZoneAdmin(admin.ModelAdmin):
         )
 
     def status_indicator(self, obj):
-        if obj.is_dirty:
+        if obj.content_dirty or obj.master_config_dirty:
             color = 'orange'
             text = 'Pending Sync'
         else:
-            color = 'green'
-            text = 'Synchronized'
+            # Check if any slave servers need sync
+            slave_servers_dirty = obj.server_statuses.filter(config_dirty=True).exists()
+            if slave_servers_dirty:
+                color = 'orange'
+                text = 'Pending Sync (Slaves)'
+            else:
+                color = 'green'
+                text = 'Synchronized'
         return format_html(
             '<span style="color: {};">⬤ {}</span>',
             color, text
@@ -322,14 +341,28 @@ class ZoneAdmin(admin.ModelAdmin):
             zone.increment_serial()
         self.message_user(request, f"Serial incremented for {queryset.count()} zone(s)")
 
-    @admin.action(description="Mark as dirty (needs sync)")
-    def mark_dirty(self, request, queryset):
-        updated = queryset.update(is_dirty=True)
-        self.message_user(request, f"Marked {updated} zone(s) as dirty")
+    @admin.action(description="Mark content as dirty (needs sync)")
+    def mark_content_dirty(self, request, queryset):
+        updated = queryset.update(content_dirty=True)
+        self.message_user(request, f"Marked {updated} zone(s) content as dirty")
+
+    @admin.action(description="Mark master config as dirty (needs reload)")
+    def mark_config_dirty(self, request, queryset):
+        from django.utils import timezone
+        now = timezone.now()
+        updated = queryset.update(master_config_dirty=True, master_config_dirty_since=now)
+        self.message_user(request, f"Marked {updated} zone(s) master config as dirty")
 
     @admin.action(description="Mark as clean (synchronized)")
     def mark_clean(self, request, queryset):
-        updated = queryset.update(is_dirty=False)
+        updated = queryset.update(content_dirty=False, master_config_dirty=False,
+                                content_dirty_since=None, master_config_dirty_since=None)
+        # Also clear slave server statuses
+        from .models import ZoneServerStatus
+        for zone in queryset:
+            ZoneServerStatus.objects.filter(zone=zone).update(
+                config_dirty=False, config_dirty_since=None
+            )
         self.message_user(request, f"Marked {updated} zone(s) as clean")
 
     def save_formset(self, request, form, formset, change):
@@ -347,8 +380,10 @@ class ZoneAdmin(admin.ModelAdmin):
             try:
                 from django.db import transaction
                 with transaction.atomic():
-                    zone.is_dirty = True
-                    zone.save(update_fields=['is_dirty'])
+                    from django.utils import timezone
+                    zone.content_dirty = True
+                    zone.content_dirty_since = timezone.now()
+                    zone.save(update_fields=['content_dirty', 'content_dirty_since'])
             except Exception as e:
                 logger.error(f"Failed to mark zone as dirty after formset save: {e}")
 
@@ -398,8 +433,10 @@ class ResourceRecordAdmin(admin.ModelAdmin):
             try:
                 from django.db import transaction
                 with transaction.atomic():
-                    obj.zone.is_dirty = True
-                    obj.zone.save(update_fields=['is_dirty'])
+                    from django.utils import timezone
+                    obj.zone.content_dirty = True
+                    obj.zone.content_dirty_since = timezone.now()
+                    obj.zone.save(update_fields=['content_dirty', 'content_dirty_since'])
             except Exception as e:
                 logger.error(f"Failed to mark zone as dirty: {e}")
 
@@ -506,11 +543,22 @@ class SOAAdmin(admin.ModelAdmin):
         return qs.select_related('zone')
 
 
+class SlaveOnlyZoneServerStatusInline(admin.TabularInline):
+    """Inline admin for slave-only zone server sync status"""
+    model = SlaveOnlyZoneServerStatus
+    extra = 0
+    readonly_fields = ('server', 'config_dirty', 'config_dirty_since', 'last_sync_time')
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(SlaveOnlyZone)
 class SlaveOnlyZoneAdmin(admin.ModelAdmin):
     """Admin interface for slave-only zones"""
-    list_display = ('origin', 'external_master', 'slave_servers_count', 'owner', 'is_dirty', 'updated_at')
-    list_filter = ('is_dirty', 'updated_at', 'owner', 'group')
+    list_display = ('origin', 'external_master', 'slave_servers_count', 'owner', 'status_indicator', 'updated_at')
+    list_filter = ('updated_at', 'owner', 'group')
     search_fields = ('origin', 'external_master')
     readonly_fields = ('created_at', 'updated_at')
     autocomplete_fields = ['owner', 'group', 'slave_servers']
@@ -527,7 +575,8 @@ class SlaveOnlyZoneAdmin(admin.ModelAdmin):
             'fields': ('owner', 'group')
         }),
         ('Status', {
-            'fields': ('is_dirty',)
+            'description': 'Per-server sync status is shown below in the Server Status section.',
+            'fields': (),
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at'),
@@ -544,24 +593,56 @@ class SlaveOnlyZoneAdmin(admin.ModelAdmin):
         qs = super().get_queryset(request)
         return qs.prefetch_related('slave_servers')
 
-    actions = ['mark_dirty', 'sync_zones']
+    inlines = [SlaveOnlyZoneServerStatusInline]
 
-    def mark_dirty(self, request, queryset):
-        """Mark selected zones as dirty"""
-        count = queryset.update(is_dirty=True)
+    actions = ['mark_config_dirty', 'sync_zones']
+
+    def status_indicator(self, obj):
+        # Check if any slave servers need sync
+        servers_dirty = obj.server_statuses.filter(config_dirty=True).exists()
+        if servers_dirty:
+            color = 'orange'
+            text = 'Pending Sync'
+        else:
+            color = 'green'
+            text = 'Synchronized'
+        return format_html(
+            '<span style="color: {};">⬤ {}</span>',
+            color, text
+        )
+    status_indicator.short_description = 'Status'
+
+    def mark_config_dirty(self, request, queryset):
+        """Mark selected zones as config dirty"""
+        from django.utils import timezone
+        from .models import SlaveOnlyZoneServerStatus
+        now = timezone.now()
+        count = 0
+        for zone in queryset:
+            for server in zone.slave_servers.all():
+                status, created = SlaveOnlyZoneServerStatus.objects.get_or_create(
+                    zone=zone,
+                    server=server,
+                    defaults={'config_dirty': True, 'config_dirty_since': now}
+                )
+                if not created and not status.config_dirty:
+                    status.config_dirty = True
+                    status.config_dirty_since = now
+                    status.save(update_fields=['config_dirty', 'config_dirty_since'])
+            count += 1
         self.message_user(
             request,
-            f"Marked {count} slave-only zone(s) as dirty.",
+            f"Marked {count} slave-only zone(s) as config dirty.",
             messages.SUCCESS
         )
-    mark_dirty.short_description = "Mark selected zones as dirty"
+    mark_config_dirty.short_description = "Mark selected zones as config dirty"
 
     def sync_zones(self, request, queryset):
         """Synchronize selected zones"""
         success_count = 0
         fail_count = 0
 
-        for zone in queryset.filter(is_dirty=True):
+        for zone in queryset:
             try:
                 from .services import update_slave_only_zone
                 success, errors = update_slave_only_zone(zone)
@@ -596,3 +677,31 @@ class SlaveOnlyZoneAdmin(admin.ModelAdmin):
                 messages.ERROR
             )
     sync_zones.short_description = "Synchronize selected zones to slave servers"
+
+
+@admin.register(ZoneServerStatus)
+class ZoneServerStatusAdmin(admin.ModelAdmin):
+    """Admin interface for Zone-Server sync status (for debugging)"""
+    list_display = ('zone', 'server', 'config_dirty', 'config_dirty_since', 'last_sync_time', 'updated_at')
+    list_filter = ('config_dirty', 'server', 'last_sync_time')
+    search_fields = ('zone__origin', 'server__name')
+    readonly_fields = ('zone', 'server', 'created_at', 'updated_at')
+    date_hierarchy = 'last_sync_time'
+
+    def has_add_permission(self, request):
+        # These should only be created by the system
+        return False
+
+
+@admin.register(SlaveOnlyZoneServerStatus)
+class SlaveOnlyZoneServerStatusAdmin(admin.ModelAdmin):
+    """Admin interface for SlaveOnlyZone-Server sync status (for debugging)"""
+    list_display = ('zone', 'server', 'config_dirty', 'config_dirty_since', 'last_sync_time', 'updated_at')
+    list_filter = ('config_dirty', 'server', 'last_sync_time')
+    search_fields = ('zone__origin', 'server__name')
+    readonly_fields = ('zone', 'server', 'created_at', 'updated_at')
+    date_hierarchy = 'last_sync_time'
+
+    def has_add_permission(self, request):
+        # These should only be created by the system
+        return False

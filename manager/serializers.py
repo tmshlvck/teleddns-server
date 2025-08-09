@@ -92,7 +92,8 @@ class ZoneSerializer(serializers.ModelSerializer):
             'id', 'origin',
             'owner', 'owner_id', 'group', 'group_id',
             'master_server', 'master_server_name', 'slave_servers', 'slave_servers_names',
-            'is_dirty', 'created_at', 'updated_at'
+            'content_dirty', 'content_dirty_since', 'master_config_dirty', 'master_config_dirty_since',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -309,7 +310,7 @@ class SlaveOnlyZoneSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'origin', 'external_master', 'slave_servers', 'slave_server_ids',
             'owner', 'owner_id', 'group', 'group_id',
-            'is_dirty', 'created_at', 'updated_at'
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
         extra_kwargs = {

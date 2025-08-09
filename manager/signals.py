@@ -23,7 +23,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.forms.models import model_to_dict
 from django.core.serializers.json import DjangoJSONEncoder
 
-from .models import Zone, AuditLog, RR_MODELS
+from .models import Zone, SlaveOnlyZone, AuditLog, RR_MODELS, ZoneServerStatus, SlaveOnlyZoneServerStatus
 
 logger = logging.getLogger(__name__)
 
@@ -147,10 +147,13 @@ def create_audit_log(instance, action, changed_fields=None, old_values=None):
     # Convert any model instances in changed_data to their ID representation
     def serialize_value(val):
         """Recursively serialize values for JSON storage"""
+        import datetime
         if hasattr(val, 'pk'):
             return val.pk
         elif hasattr(val, 'all'):  # ManyRelatedManager
             return [item.pk for item in val.all()]
+        elif isinstance(val, (datetime.datetime, datetime.date, datetime.time)):
+            return val.isoformat()
         elif isinstance(val, dict):
             return {k: serialize_value(v) for k, v in val.items()}
         elif isinstance(val, (list, tuple)):
@@ -185,13 +188,20 @@ def store_zone_original_values(sender, instance, **kwargs):
     """Store original values before saving a Zone"""
     if instance.pk:
         try:
-            instance._original_values = model_to_dict(
-                Zone.objects.get(pk=instance.pk)
-            )
+            original = Zone.objects.get(pk=instance.pk)
+            instance._original_values = model_to_dict(original)
+            # Store original master_server ID to detect config changes
+            instance._original_master_server_id = original.master_server_id
+            # Store original slave_servers for config change detection
+            instance._original_slave_server_ids = list(original.slave_servers.values_list('id', flat=True))
         except Zone.DoesNotExist:
             instance._original_values = None
+            instance._original_master_server_id = None
+            instance._original_slave_server_ids = []
     else:
         instance._original_values = None
+        instance._original_master_server_id = None
+        instance._original_slave_server_ids = []
 
 
 # Audit logging for Zone model
@@ -241,6 +251,15 @@ def audit_zone_save(sender, instance, created, **kwargs):
                     old_values=instance._original_values
                 )
 
+    # Check if master_server changed (config change)
+    if hasattr(instance, '_original_master_server_id'):
+        if instance._original_master_server_id != instance.master_server_id:
+            from django.utils import timezone
+            logger.info(f"Zone {instance.origin} master server changed from {instance._original_master_server_id} to {instance.master_server_id}")
+            instance.master_config_dirty = True
+            instance.master_config_dirty_since = timezone.now()
+            instance.save(update_fields=['master_config_dirty', 'master_config_dirty_since', 'updated_at'])
+
 
 @receiver(post_delete, sender=Zone)
 def audit_zone_delete(sender, instance, **kwargs):
@@ -250,6 +269,34 @@ def audit_zone_delete(sender, instance, **kwargs):
         return
 
     create_audit_log(instance, 'DELETE')
+
+
+# M2M change signals for Zone slave_servers
+from django.db.models.signals import m2m_changed
+
+@receiver(m2m_changed, sender=Zone.slave_servers.through)
+def zone_slave_servers_changed(sender, instance, action, pk_set, **kwargs):
+    """Mark zone as config dirty when slave servers change"""
+    if not signals_enabled():
+        return
+
+    # Only care about post_add, post_remove, and post_clear actions
+    if action in ['post_add', 'post_remove', 'post_clear']:
+        from django.utils import timezone
+        logger.info(f"Zone {instance.origin} slave servers changed (action: {action})")
+
+        # Mark all slave servers as needing config update
+        now = timezone.now()
+        for server in instance.slave_servers.all():
+            status, created = ZoneServerStatus.objects.get_or_create(
+                zone=instance,
+                server=server,
+                defaults={'config_dirty': True, 'config_dirty_since': now}
+            )
+            if not created and not status.config_dirty:
+                status.config_dirty = True
+                status.config_dirty_since = now
+                status.save(update_fields=['config_dirty', 'config_dirty_since', 'updated_at'])
 
 
 # Audit logging and zone dirty marking for all RR models
@@ -329,9 +376,11 @@ for rr_model in RR_MODELS:
                     zone.increment_serial()
 
                     # Mark as dirty if not already
-                    if not zone.is_dirty:
-                        zone.is_dirty = True
-                        zone.save(update_fields=['is_dirty', 'updated_at'])
+                    if not zone.content_dirty:
+                        from django.utils import timezone
+                        zone.content_dirty = True
+                        zone.content_dirty_since = timezone.now()
+                        zone.save(update_fields=['content_dirty', 'content_dirty_since', 'updated_at'])
 
                     logger.info(f"Incremented serial and marked zone {zone.origin} as dirty due to {sender.__name__} change")
             except Exception as e:
@@ -363,13 +412,82 @@ for rr_model in RR_MODELS:
                     zone.increment_serial()
 
                     # Mark as dirty if not already
-                    if not zone.is_dirty:
-                        zone.is_dirty = True
-                        zone.save(update_fields=['is_dirty', 'updated_at'])
+                    if not zone.content_dirty:
+                        from django.utils import timezone
+                        zone.content_dirty = True
+                        zone.content_dirty_since = timezone.now()
+                        zone.save(update_fields=['content_dirty', 'content_dirty_since', 'updated_at'])
 
                     logger.info(f"Incremented serial and marked zone {zone.origin} as dirty due to {sender.__name__} deletion")
             except Exception as e:
                 logger.error(f"Failed to update zone on deletion: {e}")
+
+
+# Store original field values before save for SlaveOnlyZone
+@receiver(pre_save, sender=SlaveOnlyZone)
+def store_slave_only_zone_original_values(sender, instance, **kwargs):
+    """Store original values before saving a SlaveOnlyZone"""
+    if instance.pk:
+        try:
+            original = SlaveOnlyZone.objects.get(pk=instance.pk)
+            instance._original_external_master = original.external_master
+        except SlaveOnlyZone.DoesNotExist:
+            instance._original_external_master = None
+    else:
+        instance._original_external_master = None
+
+
+# Post-save signal for SlaveOnlyZone
+@receiver(post_save, sender=SlaveOnlyZone)
+def check_slave_only_zone_config_changes(sender, instance, created, **kwargs):
+    """Check if SlaveOnlyZone configuration changed"""
+    if not signals_enabled():
+        return
+
+    # Check if external_master changed (config change)
+    if not created and hasattr(instance, '_original_external_master'):
+        if instance._original_external_master != instance.external_master:
+            from django.utils import timezone
+            logger.info(f"SlaveOnlyZone {instance.origin} external master changed from {instance._original_external_master} to {instance.external_master}")
+
+            # Mark all slave servers as needing config update
+            now = timezone.now()
+            for server in instance.slave_servers.all():
+                status, created = SlaveOnlyZoneServerStatus.objects.get_or_create(
+                    zone=instance,
+                    server=server,
+                    defaults={'config_dirty': True, 'config_dirty_since': now}
+                )
+                if not created and not status.config_dirty:
+                    status.config_dirty = True
+                    status.config_dirty_since = now
+                    status.save(update_fields=['config_dirty', 'config_dirty_since', 'updated_at'])
+
+
+# M2M change signals for SlaveOnlyZone slave_servers
+@receiver(m2m_changed, sender=SlaveOnlyZone.slave_servers.through)
+def slave_only_zone_slave_servers_changed(sender, instance, action, pk_set, **kwargs):
+    """Mark slave-only zone as config dirty when slave servers change"""
+    if not signals_enabled():
+        return
+
+    # Only care about post_add, post_remove, and post_clear actions
+    if action in ['post_add', 'post_remove', 'post_clear']:
+        from django.utils import timezone
+        logger.info(f"SlaveOnlyZone {instance.origin} slave servers changed (action: {action})")
+
+        # Mark all slave servers as needing config update
+        now = timezone.now()
+        for server in instance.slave_servers.all():
+            status, created = SlaveOnlyZoneServerStatus.objects.get_or_create(
+                zone=instance,
+                server=server,
+                defaults={'config_dirty': True, 'config_dirty_since': now}
+            )
+            if not created and not status.config_dirty:
+                status.config_dirty = True
+                status.config_dirty_since = now
+                status.save(update_fields=['config_dirty', 'config_dirty_since', 'updated_at'])
 
 
 # Add the middleware to settings

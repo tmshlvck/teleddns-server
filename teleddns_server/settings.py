@@ -222,6 +222,11 @@ SPECTACULAR_SETTINGS = {
 DDNS_DEFAULT_TTL = env.int('DDNS_DEFAULT_TTL', default=3600)
 DDNS_RR_TTL = env.int('DDNS_RR_TTL', default=60)
 
+# Background sync thread settings
+SYNC_THREAD_INTERVAL = env.int('SYNC_THREAD_INTERVAL', default=60)  # seconds
+SYNC_THREAD_MAX_BACKOFF_SECONDS = env.int('SYNC_THREAD_MAX_BACKOFF_SECONDS', default=86400)  # 24 hours
+SYNC_THREAD_BACKOFF_BASE = env.int('SYNC_THREAD_BACKOFF_BASE', default=2)
+
 # Logging configuration
 LOGGING = {
     'version': 1,

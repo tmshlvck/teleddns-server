@@ -523,12 +523,28 @@ class SlaveOnlyZoneViewSet(BaseOwnershipViewSet):
         """Mark a slave-only zone as dirty"""
         zone = self.get_object()
 
-        zone.is_dirty = True
-        zone.save(update_fields=['is_dirty', 'updated_at'])
+        from django.utils import timezone
+        from .models import SlaveOnlyZoneServerStatus
+
+        now = timezone.now()
+        servers_marked = 0
+
+        # Mark all slave servers as needing config update
+        for server in zone.slave_servers.all():
+            status, created = SlaveOnlyZoneServerStatus.objects.get_or_create(
+                zone=zone,
+                server=server,
+                defaults={'config_dirty': True, 'config_dirty_since': now}
+            )
+            if not created and not status.config_dirty:
+                status.config_dirty = True
+                status.config_dirty_since = now
+                status.save(update_fields=['config_dirty', 'config_dirty_since', 'updated_at'])
+            servers_marked += 1
 
         return Response({
             'status': 'success',
-            'message': f'Slave-only zone {zone.origin} marked as dirty'
+            'message': f'Slave-only zone {zone.origin} marked as dirty on {servers_marked} server(s)'
         })
 
 
@@ -568,3 +584,26 @@ def health_check(request):
         'version': getattr(settings, 'API_VERSION', '1.0.0'),
         'timestamp': timezone.now().isoformat()
     })
+
+
+@extend_schema(
+    summary='Get sync thread status',
+    description='Get the current status of the background synchronization thread',
+    responses={200: dict},
+    tags=['System']
+)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sync_status(request):
+    """
+    Get the status of the background synchronization thread.
+
+    This endpoint shows:
+    - Whether the sync thread is running
+    - Current configuration (interval, retries, etc.)
+    - Current failure counts and retry states
+    """
+    from .sync_thread import sync_thread
+
+    status = sync_thread.get_status()
+    return Response(status)

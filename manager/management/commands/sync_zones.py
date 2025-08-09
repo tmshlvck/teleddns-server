@@ -19,8 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import logging
 import sys
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
-from django.utils import timezone
+from django.db import transaction, models
 
 from manager.models import Zone, Server, SlaveOnlyZone
 from manager.services import sync_all_dirty_zones, update_zone, push_server_config, sync_all_dirty_slave_only_zones, update_slave_only_zone
@@ -107,7 +106,7 @@ class Command(BaseCommand):
         except Zone.DoesNotExist:
             raise CommandError(f"Zone '{zone_origin}' not found")
 
-        if not force and not zone.is_dirty:
+        if not force and not (zone.content_dirty or zone.master_config_dirty):
             self.log_info(f"Zone {zone.origin} is already synchronized (use --force to sync anyway)")
             return
 
@@ -136,12 +135,19 @@ class Command(BaseCommand):
 
         zones = Zone.objects.filter(master_server=server)
         if not force:
-            zones = zones.filter(is_dirty=True)
+            zones = zones.filter(models.Q(content_dirty=True) | models.Q(master_config_dirty=True))
 
-        # Also get slave-only zones for this server
-        slave_only_zones = SlaveOnlyZone.objects.filter(slave_servers=server)
+        # Also get slave-only zones for this server that need sync
+        from manager.models import SlaveOnlyZoneServerStatus
         if not force:
-            slave_only_zones = slave_only_zones.filter(is_dirty=True)
+            # Find slave-only zones that have dirty status for this server
+            dirty_statuses = SlaveOnlyZoneServerStatus.objects.filter(
+                server=server,
+                config_dirty=True
+            ).values_list('zone_id', flat=True)
+            slave_only_zones = SlaveOnlyZone.objects.filter(id__in=dirty_statuses)
+        else:
+            slave_only_zones = SlaveOnlyZone.objects.filter(slave_servers=server)
 
         zone_count = zones.count()
         slave_only_count = slave_only_zones.count()
@@ -208,18 +214,32 @@ class Command(BaseCommand):
     def _sync_all_zones(self, force=False):
         """Synchronize all dirty zones"""
         if force:
-            zones = Zone.objects.filter(is_dirty=True)
+            from django.utils import timezone
+            now = timezone.now()
+            zones = Zone.objects.all()
             zone_count = zones.count()
             # Mark all zones as dirty if force is used
-            Zone.objects.update(is_dirty=True)
+            Zone.objects.update(
+                content_dirty=True,
+                master_config_dirty=True,
+                content_dirty_since=now,
+                master_config_dirty_since=now
+            )
             self.log_info(f"Marked all zones as dirty (force mode)")
 
         if self.dry_run:
-            dirty_zones = Zone.objects.filter(is_dirty=True).select_related('master_server')
+            dirty_zones = Zone.objects.filter(
+                models.Q(content_dirty=True) | models.Q(master_config_dirty=True)
+            ).select_related('master_server')
             if dirty_zones.exists():
                 self.log_info(f"Would synchronize {dirty_zones.count()} dirty zone(s):")
                 for zone in dirty_zones:
-                    self.log_info(f"  - {zone.origin} -> {zone.master_server.name}")
+                    dirty_types = []
+                    if zone.content_dirty:
+                        dirty_types.append("content")
+                    if zone.master_config_dirty:
+                        dirty_types.append("config")
+                    self.log_info(f"  - {zone.origin} -> {zone.master_server.name} ({', '.join(dirty_types)})")
             else:
                 self.log_info("No dirty zones to synchronize")
             return
@@ -243,17 +263,41 @@ class Command(BaseCommand):
     def _sync_all_slave_only_zones(self, force=False):
         """Synchronize all dirty slave-only zones"""
         if force:
-            # Mark all slave-only zones as dirty if force is used
-            SlaveOnlyZone.objects.update(is_dirty=True)
+            from django.utils import timezone
+            from manager.models import SlaveOnlyZoneServerStatus
+            now = timezone.now()
+            # Mark all slave-only zone server statuses as dirty if force is used
+            for zone in SlaveOnlyZone.objects.all():
+                for server in zone.slave_servers.all():
+                    SlaveOnlyZoneServerStatus.objects.update_or_create(
+                        zone=zone,
+                        server=server,
+                        defaults={'config_dirty': True, 'config_dirty_since': now}
+                    )
             self.log_info(f"Marked all slave-only zones as dirty (force mode)")
 
         if self.dry_run:
-            dirty_zones = SlaveOnlyZone.objects.filter(is_dirty=True).prefetch_related('slave_servers')
-            if dirty_zones.exists():
-                self.log_info(f"Would synchronize {dirty_zones.count()} dirty slave-only zone(s):")
-                for zone in dirty_zones:
-                    servers = ', '.join(s.name for s in zone.slave_servers.all())
-                    self.log_info(f"  - {zone.origin} -> [{servers}]")
+            from manager.models import SlaveOnlyZoneServerStatus
+            dirty_statuses = SlaveOnlyZoneServerStatus.objects.filter(
+                config_dirty=True
+            ).select_related('zone').prefetch_related('zone__slave_servers')
+
+            if dirty_statuses.exists():
+                # Group by zone
+                zones_dict = {}
+                for status in dirty_statuses:
+                    if status.zone.id not in zones_dict:
+                        zones_dict[status.zone.id] = {
+                            'zone': status.zone,
+                            'dirty_servers': []
+                        }
+                    zones_dict[status.zone.id]['dirty_servers'].append(status.server.name)
+
+                self.log_info(f"Would synchronize {len(zones_dict)} dirty slave-only zone(s):")
+                for zone_info in zones_dict.values():
+                    zone = zone_info['zone']
+                    dirty_servers = zone_info['dirty_servers']
+                    self.log_info(f"  - {zone.origin} -> [{', '.join(dirty_servers)}]")
             else:
                 self.log_info("No dirty slave-only zones to synchronize")
             return

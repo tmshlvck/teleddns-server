@@ -274,6 +274,84 @@ curl -X POST http://your-server/update/ \
 - `notfqdn` - Invalid hostname format
 - `badip` - Invalid IP address
 
+## Background Sync Thread
+
+The server includes a background thread that automatically synchronizes dirty configurations and zones to DNS servers.
+
+### Features
+
+- **Automatic synchronization** of zones and server configurations marked as dirty
+- **Exponential backoff** for failed API calls to avoid overwhelming servers
+- **Ephemeral failure tracking** (not persisted to database)
+- **Configurable interval** and retry behavior
+
+### Configuration
+
+Environment variables to control the sync thread:
+
+- `SYNC_THREAD_INTERVAL`: Check interval in seconds (default: 60)
+- `SYNC_THREAD_MAX_BACKOFF_SECONDS`: Maximum backoff time in seconds (default: 86400 = 24 hours)
+- `SYNC_THREAD_BACKOFF_BASE`: Base for exponential backoff calculation (default: 2)
+
+### API Endpoint
+
+Check the sync thread status:
+
+```bash
+curl -X GET http://your-server/api/sync-status/ \
+  -H "Authorization: Token YOUR_TOKEN"
+```
+
+Response:
+```json
+{
+  "running": true,
+  "interval": 60,
+  "failure_counts": {},
+  "total_failures": 0,
+  "max_backoff_seconds": 86400,
+  "max_backoff_hours": 24.0,
+  "backoff_base": 2
+}
+```
+
+### Management Command
+
+Control the sync thread via Django management command:
+
+```bash
+# Check status
+python manage.py sync_thread_control status
+
+# Start the thread (normally starts automatically)
+python manage.py sync_thread_control start
+
+# Stop the thread
+python manage.py sync_thread_control stop
+
+# Force immediate sync cycle
+python manage.py sync_thread_control force-sync
+
+# Get JSON status output
+python manage.py sync_thread_control status --json
+```
+
+### How It Works
+
+1. **Dirty Detection**: The thread checks for:
+   - Zones with `content_dirty=True` or `master_config_dirty=True`
+   - Server configurations marked as dirty in `ZoneServerStatus` or `SlaveOnlyZoneServerStatus`
+
+2. **Deduplication**: Multiple dirty zones on the same server trigger only one reload
+
+3. **Failure Handling**:
+   - Failed API calls don't clear dirty flags
+   - Exponential backoff: wait time = `min(backoff_base ^ failure_count, max_backoff_seconds)` seconds
+   - Continues retrying indefinitely with maximum backoff time (default 24 hours)
+   - Backoff counters reset on server restart
+
+4. **Automatic Recovery**: Successful sync clears all failure counters
+
 ## Rate Limiting
 
 - API requests: 1000 per hour per user

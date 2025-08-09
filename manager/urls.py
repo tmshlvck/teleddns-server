@@ -24,7 +24,7 @@ from .views import (
     CNAMEViewSet, MXViewSet, NSViewSet, PTRViewSet,
     SRVViewSet, TXTViewSet, CAAViewSet, DSViewSet,
     DNSKEYViewSet, TLSAViewSet, AuditLogViewSet,
-    UserViewSet, GroupViewSet, token_view, health_check
+    UserViewSet, GroupViewSet, token_view, health_check, sync_status
 )
 
 # Create a router and register our viewsets with it
@@ -58,6 +58,9 @@ router.register(r'groups', GroupViewSet, basename='group')
 urlpatterns = [
     # Public endpoints (no auth required)
     path('health/', health_check, name='api-health'),
+
+    # System endpoints (auth required)
+    path('sync-status/', sync_status, name='api-sync-status'),
 
     # Token management endpoint
     path('token/', token_view, name='api-token'),

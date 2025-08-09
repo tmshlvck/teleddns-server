@@ -34,6 +34,14 @@ RRLABEL_REGEX = re.compile(r"^(?![0-9]+$)(?!-)[a-zA-Z0-9\.-]{,63}(?<!-)$")
 DNSNAME_REGEX = re.compile(r"^[a-zA-Z0-9\.-]+$")
 
 
+def generate_soa_serial():
+    """Generate a new SOA serial number in YYYYMMDDNN format"""
+    from django.utils import timezone
+    now = timezone.now()
+    # Format: YYYYMMDD01
+    return int(now.strftime('%Y%m%d') + '01')
+
+
 def validate_origin(value):
     """Validate DNS zone origin"""
     value = value.strip()
@@ -139,10 +147,24 @@ class Zone(models.Model):
         help_text="Secondary DNS servers for this zone"
     )
 
-    # Status
-    is_dirty = models.BooleanField(
+    # Status tracking
+    content_dirty = models.BooleanField(
         default=False,
-        help_text="Zone has pending changes that need to be synchronized"
+        help_text="Zone content (resource records) has pending changes that need to be synchronized"
+    )
+    content_dirty_since = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When content was marked dirty"
+    )
+    master_config_dirty = models.BooleanField(
+        default=False,
+        help_text="Master server configuration has changed and needs reload"
+    )
+    master_config_dirty_since = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When master config was marked dirty"
     )
 
     # Timestamps
@@ -223,7 +245,8 @@ class SOA(models.Model):
         help_text="Responsible person email (replace @ with .)"
     )
     serial = models.PositiveBigIntegerField(
-        help_text="Zone serial number"
+        default=generate_soa_serial,
+        help_text="Zone serial number (YYYYMMDDNN format)"
     )
     refresh = models.PositiveIntegerField(
         default=86400,
@@ -263,8 +286,26 @@ class SOA(models.Model):
         )
 
     def increment_serial(self):
-        """Increment the serial number"""
-        self.serial += 1
+        """Increment the serial number using YYYYMMDDNN format"""
+        from django.utils import timezone
+        now = timezone.now()
+        today_prefix = int(now.strftime('%Y%m%d'))
+
+        # Extract the date part and sequence part from current serial
+        current_date = self.serial // 100
+        current_seq = self.serial % 100
+
+        if current_date == today_prefix:
+            # Same day, increment sequence
+            new_seq = current_seq + 1
+            if new_seq > 99:
+                # Can't increment further today
+                raise ValueError(f"Serial number sequence exhausted for {now.strftime('%Y-%m-%d')}")
+            self.serial = today_prefix * 100 + new_seq
+        else:
+            # Different day, start with 01
+            self.serial = today_prefix * 100 + 1
+
         self.save(update_fields=['serial', 'updated_at'])
 
 
@@ -296,12 +337,6 @@ class SlaveOnlyZone(models.Model):
     # Ownership and permissions
     owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name='owned_slave_only_zones')
     group = models.ForeignKey(Group, on_delete=models.PROTECT, related_name='slave_only_zones')
-
-    # Status
-    is_dirty = models.BooleanField(
-        default=False,
-        help_text="Zone configuration has pending changes that need to be synchronized"
-    )
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
@@ -580,6 +615,90 @@ class TLSA(ResourceRecord):
 
 # List of all RR model classes for iteration
 RR_MODELS = [A, AAAA, CNAME, MX, NS, PTR, SRV, TXT, CAA, DS, DNSKEY, TLSA]
+
+
+class ZoneServerStatus(models.Model):
+    """Track synchronization status between a Zone and a Server"""
+    zone = models.ForeignKey(
+        'Zone',
+        on_delete=models.CASCADE,
+        related_name='server_statuses'
+    )
+    server = models.ForeignKey(
+        'Server',
+        on_delete=models.CASCADE,
+        related_name='zone_statuses'
+    )
+
+    # Status tracking
+    config_dirty = models.BooleanField(
+        default=False,
+        help_text="Server configuration for this zone needs update"
+    )
+    config_dirty_since = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When config was marked dirty"
+    )
+    last_sync_time = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last successful synchronization time"
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [('zone', 'server')]
+        verbose_name = "Zone Server Status"
+        verbose_name_plural = "Zone Server Statuses"
+
+    def __str__(self):
+        return f"{self.zone.origin} on {self.server.name}"
+
+
+class SlaveOnlyZoneServerStatus(models.Model):
+    """Track synchronization status between a SlaveOnlyZone and a Server"""
+    zone = models.ForeignKey(
+        'SlaveOnlyZone',
+        on_delete=models.CASCADE,
+        related_name='server_statuses'
+    )
+    server = models.ForeignKey(
+        'Server',
+        on_delete=models.CASCADE,
+        related_name='slave_only_zone_statuses'
+    )
+
+    # Status tracking
+    config_dirty = models.BooleanField(
+        default=False,
+        help_text="Server configuration for this zone needs update"
+    )
+    config_dirty_since = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When config was marked dirty"
+    )
+    last_sync_time = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last successful synchronization time"
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [('zone', 'server')]
+        verbose_name = "Slave Only Zone Server Status"
+        verbose_name_plural = "Slave Only Zone Server Statuses"
+
+    def __str__(self):
+        return f"{self.zone.origin} on {self.server.name}"
 
 
 class AuditLog(models.Model):

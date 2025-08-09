@@ -106,7 +106,10 @@ ZONE_EXAMPLES = {
             'master_server_name': 'ns1.example.com',
             'slave_servers': [2, 3],
             'slave_servers_names': ['ns2.example.com', 'ns3.example.com'],
-            'is_dirty': False,
+            'content_dirty': False,
+            'content_dirty_since': None,
+            'master_config_dirty': False,
+            'master_config_dirty_since': None,
             'created_at': '2024-01-01T00:00:00Z',
             'updated_at': '2024-01-01T00:00:00Z'
         },
