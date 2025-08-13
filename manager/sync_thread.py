@@ -254,6 +254,16 @@ class SyncBackgroundThread:
                     # Reset failure tracking
                     del self.failure_counts[key]
                     self.last_attempt_time.pop(key, None)
+
+                    # Clear dirty flags
+                    with transaction.atomic():
+                        Zone.objects.filter(id=zone.id).update(
+                            content_dirty=False,
+                            content_dirty_since=None,
+                            master_config_dirty=False,
+                            master_config_dirty_since=None
+                        )
+
                     logger.info(f"Successfully synchronized zone {zone.origin}")
                 else:
                     # Record failure
