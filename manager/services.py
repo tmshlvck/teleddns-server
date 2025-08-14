@@ -108,6 +108,18 @@ def push_zone_to_server(zone: Zone, server: Server) -> bool:
 
         if response.status_code == 201:
             logger.info(f"Successfully pushed zone {zone.origin} to server {server.name}")
+
+            # Reload the zone after successful push
+            try:
+                if push_zone_reload(zone, server):
+                    logger.info(f"Successfully reloaded zone {zone.origin} on server {server.name}")
+                else:
+                    logger.warning(f"Zone {zone.origin} was pushed to server {server.name} but reload failed")
+                    # Still return True as the zone content was successfully written
+            except DNSServerError as e:
+                logger.warning(f"Zone {zone.origin} was pushed to server {server.name} but reload failed: {str(e)}")
+                # Still return True as the zone content was successfully written
+
             return True
         else:
             logger.error(
@@ -403,6 +415,57 @@ def push_server_reload(server: Server) -> bool:
         raise DNSServerError(f"Network error: {e}")
     except Exception as e:
         logger.error(f"Unexpected error reloading server {server.name}: {e}")
+        raise DNSServerError(f"Unexpected error: {e}")
+
+
+def push_zone_reload(zone: Zone, server: Server) -> bool:
+    """
+    Trigger a zone-specific reload on a DNS server.
+
+    Args:
+        zone: The Zone object to reload
+        server: The Server object to reload the zone on
+
+    Returns:
+        True if successful, False otherwise
+
+    Raises:
+        DNSServerError: If the server returns an error
+    """
+    try:
+        # Prepare the API request
+        zone_name = zone.origin.rstrip('.').strip()
+        url = f"{server.api_url.rstrip('/')}/zonereload?zonename={zone_name}"
+
+        headers = {
+            'Authorization': f'Bearer {server.api_key}',
+        }
+
+        # Send the zone reload request to the server
+        logger.info(f"Triggering zone reload for {zone.origin} on server {server.name}")
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            logger.info(f"Successfully triggered zone reload for {zone.origin} on server {server.name}")
+            return True
+        else:
+            logger.error(
+                f"Failed to reload zone {zone.origin} on server {server.name}: "
+                f"HTTP {response.status_code} - {response.text}"
+            )
+            raise DNSServerError(
+                f"Server returned HTTP {response.status_code}: {response.text}"
+            )
+
+    except requests.RequestException as e:
+        logger.error(f"Network error reloading zone {zone.origin} on server {server.name}: {e}")
+        raise DNSServerError(f"Network error: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error reloading zone {zone.origin} on server {server.name}: {e}")
         raise DNSServerError(f"Unexpected error: {e}")
 
 
