@@ -26,7 +26,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.conf import settings
 
 from manager.models import Zone, A, AAAA, AuditLog
-from manager.services import increment_zone_serial
+from manager.backend_api import increment_zone_serial
 
 logger = logging.getLogger(__name__)
 

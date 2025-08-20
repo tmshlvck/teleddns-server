@@ -10,7 +10,14 @@ from django.conf import settings
 from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
+from .views import root_redirect, robots_txt
+from ddns.views import ddns_update
+
 urlpatterns = [
+    # Root redirect and robots.txt
+    path('', root_redirect, name='root-redirect'),
+    path('robots.txt', robots_txt, name='robots-txt'),
+
     path('admin/', admin.site.urls),
 
     # API Documentation
@@ -21,7 +28,7 @@ urlpatterns = [
     # API Endpoints
     path('api/', include('manager.urls')),
     path('ddns/', include('ddns.urls')),
-    path('', include('ddns.urls')),  # For legacy /update endpoint
+    path('update', ddns_update, name='legacy-update'),  # For legacy /update endpoint
 ]
 
 if settings.DEBUG:

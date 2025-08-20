@@ -29,7 +29,7 @@ from drf_spectacular.utils import extend_schema, extend_schema_view
 
 from .models import (
     Server, Zone, A, AAAA, CNAME, MX, NS, PTR, SRV, TXT,
-    CAA, DS, DNSKEY, TLSA, AuditLog, RR_MODELS, SlaveOnlyZone
+    CAA, DS, DNSKEY, TLSA, AuditLog, RR_MODELS
 )
 from .serializers import (
     ServerSerializer, ZoneSerializer, ASerializer, AAAASerializer,
@@ -37,10 +37,10 @@ from .serializers import (
     SRVSerializer, TXTSerializer, CAASerializer, DSSerializer,
     DNSKEYSerializer, TLSASerializer, AuditLogSerializer,
     UserSerializer, GroupSerializer, TokenSerializer,
-    RR_SERIALIZERS, SlaveOnlyZoneSerializer
+    RR_SERIALIZERS
 )
 from .permissions import IsOwnerOrInGroup, IsSuperuserOrReadOnly
-from .services import update_zone, check_zone_on_server, validate_zone_consistency
+from .backend_api import update_zone, check_zone_on_server, validate_zone_consistency
 from .api_docs import (
     zone_schema_extensions, rr_schema_extensions,
     sync_zone_schema, check_zone_schema, validate_zone_schema,
@@ -122,7 +122,7 @@ class ZoneViewSet(BaseOwnershipViewSet):
     Returns all zones visible to the user (owned by user or their groups).
 
     ## Create Zone
-    Creates a new DNS zone. Requires origin, owner, group, and master_server.
+    Creates a new DNS zone. Requires origin, owner, and group.
 
     ## Retrieve Zone
     Get details of a specific zone by ID.
@@ -134,7 +134,7 @@ class ZoneViewSet(BaseOwnershipViewSet):
     ## Delete Zone
     Deletes a zone and all its associated resource records.
     """
-    queryset = Zone.objects.select_related('owner', 'group', 'master_server').prefetch_related('slave_servers')
+    queryset = Zone.objects.select_related('owner', 'group')
     serializer_class = ZoneSerializer
     search_fields = ['origin']
     ordering_fields = ['origin', 'updated_at']
@@ -190,11 +190,19 @@ class ZoneViewSet(BaseOwnershipViewSet):
         """Check zone status on DNS server"""
         zone = self.get_object()
 
-        result = check_zone_on_server(zone, zone.master_server)
+        # Get the master server for this zone
+        from .models import ZoneServer
+        master_zone_server = zone.zone_servers.filter(role='master').select_related('server').first()
+        if not master_zone_server:
+            return Response({
+                'error': 'No master server configured for this zone'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        result = check_zone_on_server(zone, master_zone_server.server)
 
         return Response({
             'zone': zone.origin,
-            'server': zone.master_server.name,
+            'server': master_zone_server.server.name,
             'check_result': result
         })
 
@@ -474,78 +482,7 @@ def token_view(request):
         )
 
 
-class SlaveOnlyZoneViewSet(BaseOwnershipViewSet):
-    """ViewSet for slave-only zones with ownership filtering"""
-    queryset = SlaveOnlyZone.objects.select_related('owner', 'group').prefetch_related('slave_servers')
-    serializer_class = SlaveOnlyZoneSerializer
-    search_fields = ['origin', 'external_master']
-    ordering_fields = ['origin', 'updated_at']
-    ordering = ['origin']
 
-    @action(detail=True, methods=['post'])
-    def sync(self, request, pk=None):
-        """Synchronize a slave-only zone configuration to its slave servers"""
-        zone = self.get_object()
-
-        # Check permission to sync
-        if not (request.user.is_superuser or
-                request.user.has_perm('manager.sync_slave_only_zone') or
-                zone.owner == request.user):
-            return Response(
-                {'error': 'You do not have permission to sync this zone'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        try:
-            from .services import update_slave_only_zone
-            success, errors = update_slave_only_zone(zone)
-
-            if success:
-                return Response({
-                    'status': 'success',
-                    'message': f'Slave-only zone {zone.origin} synchronized successfully'
-                })
-            else:
-                return Response({
-                    'status': 'error',
-                    'errors': errors
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-        except Exception as e:
-            logger.error(f"Error syncing slave-only zone {zone.origin}: {str(e)}")
-            return Response({
-                'status': 'error',
-                'message': f'Internal error: {str(e)}'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    @action(detail=True, methods=['post'])
-    def mark_dirty(self, request, pk=None):
-        """Mark a slave-only zone as dirty"""
-        zone = self.get_object()
-
-        from django.utils import timezone
-        from .models import SlaveOnlyZoneServerStatus
-
-        now = timezone.now()
-        servers_marked = 0
-
-        # Mark all slave servers as needing config update
-        for server in zone.slave_servers.all():
-            status, created = SlaveOnlyZoneServerStatus.objects.get_or_create(
-                zone=zone,
-                server=server,
-                defaults={'config_dirty': True, 'config_dirty_since': now}
-            )
-            if not created and not status.config_dirty:
-                status.config_dirty = True
-                status.config_dirty_since = now
-                status.save(update_fields=['config_dirty', 'config_dirty_since', 'updated_at'])
-            servers_marked += 1
-
-        return Response({
-            'status': 'success',
-            'message': f'Slave-only zone {zone.origin} marked as dirty on {servers_marked} server(s)'
-        })
 
 
 @extend_schema(
@@ -596,14 +533,16 @@ def health_check(request):
 @permission_classes([IsAuthenticated])
 def sync_status(request):
     """
-    Get the status of the background synchronization thread.
+    Get the status of the backend worker thread.
 
     This endpoint shows:
-    - Whether the sync thread is running
-    - Current configuration (interval, retries, etc.)
-    - Current failure counts and retry states
+    - Whether the backend worker is running
+    - Current configuration (interval)
     """
-    from .sync_thread import sync_thread
+    from .backend_worker import backend_worker
 
-    status = sync_thread.get_status()
+    status = {
+        'running': backend_worker.is_running(),
+        'interval': backend_worker.interval
+    }
     return Response(status)

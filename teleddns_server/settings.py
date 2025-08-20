@@ -24,6 +24,7 @@ env = environ.Env(
     ALLOWED_HOSTS=(list, []),
     DATABASE_URL=(str, 'sqlite:///db.sqlite3'),
     SECRET_KEY=(str, 'django-insecure-CHANGE-THIS-IN-PRODUCTION'),
+    FORCE_SCRIPT_NAME=(str, None),
 )
 
 # Take environment variables from .env file
@@ -39,6 +40,9 @@ SECRET_KEY = env('SECRET_KEY')
 DEBUG = env('DEBUG')
 
 ALLOWED_HOSTS = env('ALLOWED_HOSTS')
+
+# Support for mounting under a subdirectory (e.g., /ddns)
+FORCE_SCRIPT_NAME = env('FORCE_SCRIPT_NAME', default=None)
 
 
 # Application definition

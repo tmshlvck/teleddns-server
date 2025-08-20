@@ -22,7 +22,7 @@ from rest_framework.authtoken.models import Token
 
 from .models import (
     Server, Zone, A, AAAA, CNAME, MX, NS, PTR, SRV, TXT,
-    CAA, DS, DNSKEY, TLSA, AuditLog, SOA, SlaveOnlyZone
+    CAA, DS, DNSKEY, TLSA, AuditLog, SOA
 )
 
 
@@ -54,14 +54,13 @@ class TokenSerializer(serializers.ModelSerializer):
 
 class ServerSerializer(serializers.ModelSerializer):
     """Serializer for DNS Server model"""
-    master_zones_count = serializers.IntegerField(source='master_zones.count', read_only=True)
-    slave_zones_count = serializers.IntegerField(source='slave_zones.count', read_only=True)
+    zones_count = serializers.IntegerField(source='zone_servers.count', read_only=True)
 
     class Meta:
         model = Server
         fields = [
             'id', 'name', 'api_url', 'api_key', 'master_template', 'slave_template',
-            'master_zones_count', 'slave_zones_count', 'created_at', 'updated_at'
+            'zones_count', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
         extra_kwargs = {
@@ -83,16 +82,13 @@ class ZoneSerializer(serializers.ModelSerializer):
         source='group',
         write_only=True
     )
-    master_server_name = serializers.CharField(source='master_server.name', read_only=True)
-    slave_servers_names = serializers.StringRelatedField(source='slave_servers', many=True, read_only=True)
 
     class Meta:
         model = Zone
         fields = [
             'id', 'origin',
             'owner', 'owner_id', 'group', 'group_id',
-            'master_server', 'master_server_name', 'slave_servers', 'slave_servers_names',
-            'content_dirty', 'content_dirty_since', 'master_config_dirty', 'master_config_dirty_since',
+            'content_dirty', 'content_dirty_since',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -281,38 +277,3 @@ class SOASerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
-
-
-class SlaveOnlyZoneSerializer(serializers.ModelSerializer):
-    """Serializer for slave-only zones"""
-    owner = UserSerializer(read_only=True)
-    group = GroupSerializer(read_only=True)
-    owner_id = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(),
-        source='owner',
-        write_only=True
-    )
-    group_id = serializers.PrimaryKeyRelatedField(
-        queryset=Group.objects.all(),
-        source='group',
-        write_only=True
-    )
-    slave_servers = ServerSerializer(many=True, read_only=True)
-    slave_server_ids = serializers.PrimaryKeyRelatedField(
-        queryset=Server.objects.all(),
-        source='slave_servers',
-        write_only=True,
-        many=True
-    )
-
-    class Meta:
-        model = SlaveOnlyZone
-        fields = [
-            'id', 'origin', 'external_master', 'slave_servers', 'slave_server_ids',
-            'owner', 'owner_id', 'group', 'group_id',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
-        extra_kwargs = {
-            'origin': {'validators': []},  # We'll handle validation in the view
-        }

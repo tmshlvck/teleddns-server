@@ -36,6 +36,6 @@ class ManagerConfig(AppConfig):
         if (len(sys.argv) > 1 and
             sys.argv[1] == 'runserver' and
             os.environ.get('RUN_MAIN') == 'true'):
-            # Start sync thread for development server
-            from .sync_thread import sync_thread
-            sync_thread.start()
+            # Start backend worker thread for development server
+            from .backend_worker import backend_worker
+            backend_worker.start()

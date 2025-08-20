@@ -17,7 +17,7 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'teleddns_server.settings')
 
 application = get_wsgi_application()
 
-# Initialize sync thread for production deployment
+# Initialize backend worker thread for production deployment
 # This runs after Django is fully initialized
 logger = logging.getLogger('manager')
 
@@ -25,8 +25,8 @@ logger = logging.getLogger('manager')
 _init_lock = threading.Lock()
 _initialized = False
 
-def init_sync_thread():
-    """Initialize the sync thread once Django is ready"""
+def init_backend_worker():
+    """Initialize the backend worker thread once Django is ready"""
     global _initialized
 
     with _init_lock:
@@ -35,14 +35,14 @@ def init_sync_thread():
         _initialized = True
 
         try:
-            from manager.sync_thread import sync_thread
-            if not sync_thread.thread or not sync_thread.thread.is_alive():
-                sync_thread.start()
-                logger.info("Sync thread initialized for WSGI application")
+            from manager.backend_worker import backend_worker
+            if not backend_worker.thread or not backend_worker.thread.is_alive():
+                backend_worker.start()
+                logger.info("Backend worker thread initialized for WSGI application")
         except Exception as e:
-            logger.error(f"Failed to start sync thread in WSGI: {e}")
+            logger.error(f"Failed to start backend worker thread in WSGI: {e}")
 
-# Start the sync thread after a short delay to ensure Django is ready
-init_timer = threading.Timer(10.0, init_sync_thread)
+# Start the backend worker thread after a short delay to ensure Django is ready
+init_timer = threading.Timer(10.0, init_backend_worker)
 init_timer.daemon = True
 init_timer.start()

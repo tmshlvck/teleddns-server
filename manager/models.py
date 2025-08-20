@@ -117,9 +117,6 @@ class Server(models.Model):
 
 class Zone(models.Model):
     """DNS Zone with SOA record"""
-    RRCLASS_CHOICES = [
-        ('IN', 'IN'),
-    ]
 
     # Zone identification
     origin = models.CharField(
@@ -133,20 +130,6 @@ class Zone(models.Model):
     owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name='owned_zones')
     group = models.ForeignKey(Group, on_delete=models.PROTECT, related_name='zones')
 
-    # Server relationships
-    master_server = models.ForeignKey(
-        Server,
-        on_delete=models.PROTECT,
-        related_name='master_zones',
-        help_text="Primary DNS server hosting this zone"
-    )
-    slave_servers = models.ManyToManyField(
-        Server,
-        related_name='slave_zones',
-        blank=True,
-        help_text="Secondary DNS servers for this zone"
-    )
-
     # Status tracking
     content_dirty = models.BooleanField(
         default=False,
@@ -156,15 +139,6 @@ class Zone(models.Model):
         null=True,
         blank=True,
         help_text="When content was marked dirty"
-    )
-    master_config_dirty = models.BooleanField(
-        default=False,
-        help_text="Master server configuration has changed and needs reload"
-    )
-    master_config_dirty_since = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When master config was marked dirty"
     )
 
     # Timestamps
@@ -181,19 +155,6 @@ class Zone(models.Model):
 
     def __str__(self):
         return self.origin
-
-    def format_bind_zone(self):
-        """Format zone header in BIND format"""
-        # This method is deprecated - use SOA model instead
-        if hasattr(self, 'soa'):
-            return (
-                f"$ORIGIN {self.origin};\n"
-                f"$TTL {settings.DDNS_DEFAULT_TTL};\n"
-                f"{self.soa.format_bind_zone()}"
-            )
-        else:
-            # Return basic zone header without SOA
-            return f"$ORIGIN {self.origin};\n$TTL {settings.DDNS_DEFAULT_TTL};"
 
     def increment_serial(self):
         """Increment zone serial number"""
@@ -309,49 +270,6 @@ class SOA(models.Model):
         self.save(update_fields=['serial', 'updated_at'])
 
 
-class SlaveOnlyZone(models.Model):
-    """DNS Zone that only has slave servers with external master"""
-
-    # Zone identification
-    origin = models.CharField(
-        max_length=255,
-        unique=True,
-        validators=[validate_origin],
-        help_text="Zone origin (e.g., example.com.)"
-    )
-
-    # External master server
-    external_master = models.CharField(
-        max_length=255,
-        validators=[validate_dns_hostname],
-        help_text="External master server hostname or IP address"
-    )
-
-    # Slave servers
-    slave_servers = models.ManyToManyField(
-        Server,
-        related_name='slave_only_zones',
-        help_text="Slave DNS servers for this zone"
-    )
-
-    # Ownership and permissions
-    owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name='owned_slave_only_zones')
-    group = models.ForeignKey(Group, on_delete=models.PROTECT, related_name='slave_only_zones')
-
-    # Timestamps
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name = "Slave Only Zone"
-        verbose_name_plural = "Slave Only Zones"
-        ordering = ['origin']
-        permissions = [
-            ("sync_slave_only_zone", "Can synchronize slave only zone to DNS server"),
-        ]
-
-    def __str__(self):
-        return f"{self.origin} (slave only)"
 
 
 class ResourceRecord(models.Model):
@@ -617,17 +535,27 @@ class TLSA(ResourceRecord):
 RR_MODELS = [A, AAAA, CNAME, MX, NS, PTR, SRV, TXT, CAA, DS, DNSKEY, TLSA]
 
 
-class ZoneServerStatus(models.Model):
-    """Track synchronization status between a Zone and a Server"""
+class ZoneServer(models.Model):
+    """Represents the relationship between a Zone and a Server"""
+    ROLE_CHOICES = [
+        ('master', 'Master'),
+        ('slave', 'Slave'),
+    ]
+
     zone = models.ForeignKey(
         'Zone',
         on_delete=models.CASCADE,
-        related_name='server_statuses'
+        related_name='zone_servers'
     )
     server = models.ForeignKey(
         'Server',
         on_delete=models.CASCADE,
-        related_name='zone_statuses'
+        related_name='zone_servers'
+    )
+    role = models.CharField(
+        max_length=10,
+        choices=ROLE_CHOICES,
+        help_text="Role of this server for the zone"
     )
 
     # Status tracking
@@ -640,48 +568,18 @@ class ZoneServerStatus(models.Model):
         blank=True,
         help_text="When config was marked dirty"
     )
-    last_sync_time = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="Last successful synchronization time"
-    )
 
-    # Timestamps
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        unique_together = [('zone', 'server')]
-        verbose_name = "Zone Server Status"
-        verbose_name_plural = "Zone Server Statuses"
-
-    def __str__(self):
-        return f"{self.zone.origin} on {self.server.name}"
-
-
-class SlaveOnlyZoneServerStatus(models.Model):
-    """Track synchronization status between a SlaveOnlyZone and a Server"""
-    zone = models.ForeignKey(
-        'SlaveOnlyZone',
-        on_delete=models.CASCADE,
-        related_name='server_statuses'
-    )
-    server = models.ForeignKey(
-        'Server',
-        on_delete=models.CASCADE,
-        related_name='slave_only_zone_statuses'
-    )
-
-    # Status tracking
-    config_dirty = models.BooleanField(
+    # Content dirty tracking (only for master servers)
+    content_dirty = models.BooleanField(
         default=False,
-        help_text="Server configuration for this zone needs update"
+        help_text="Zone content needs to be synchronized (master servers only)"
     )
-    config_dirty_since = models.DateTimeField(
+    content_dirty_since = models.DateTimeField(
         null=True,
         blank=True,
-        help_text="When config was marked dirty"
+        help_text="When content was marked dirty (master servers only)"
     )
+
     last_sync_time = models.DateTimeField(
         null=True,
         blank=True,
@@ -693,12 +591,18 @@ class SlaveOnlyZoneServerStatus(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        unique_together = [('zone', 'server')]
-        verbose_name = "Slave Only Zone Server Status"
-        verbose_name_plural = "Slave Only Zone Server Statuses"
+        unique_together = [('zone', 'server', 'role')]
+        verbose_name = "Zone Server"
+        verbose_name_plural = "Zone Servers"
 
     def __str__(self):
-        return f"{self.zone.origin} on {self.server.name}"
+        return f"{self.zone.origin} on {self.server.name} ({self.role})"
+
+    def clean(self):
+        """Validate that content_dirty fields are only set for master servers"""
+        from django.core.exceptions import ValidationError
+        if self.role == 'slave' and (self.content_dirty or self.content_dirty_since):
+            raise ValidationError("Content dirty fields can only be set for master servers")
 
 
 class AuditLog(models.Model):

@@ -23,7 +23,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Zone, Server, RR_MODELS, SlaveOnlyZone
+from .models import Zone, Server, RR_MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,9 @@ def generate_zone_file(zone: Zone) -> str:
         lines.append(f"$ORIGIN {zone.origin};\n$TTL {settings.DDNS_DEFAULT_TTL};")
         lines.append(zone.soa.format_bind_zone())
     else:
-        # Fall back to zone's built-in SOA fields (backward compatibility)
-        lines.append(zone.format_bind_zone())
+        # Fall back to fake SOA fields to avoid spitting out invalid zone
+        lines.append(f"$ORIGIN {zone.origin};\n$TTL {settings.DDNS_DEFAULT_TTL};")
+        lines.append("@    3600  IN SOA unknown.tld na.unknown.tld 1970010100 86400 7200 3600000 172800")
 
     # Add all resource records
     for rr_model in RR_MODELS:
@@ -150,7 +151,7 @@ def update_zone(zone: Zone) -> Tuple[bool, List[str]]:
         were updated successfully, and errors is a list of error messages
     """
     from django.utils import timezone
-    from .models import ZoneServerStatus
+    from .models import ZoneServer
 
     errors = []
     overall_success = True
@@ -158,110 +159,101 @@ def update_zone(zone: Zone) -> Tuple[bool, List[str]]:
     # Track which servers were successfully updated
     successful_servers = []
 
+    # Get master and slave servers from ZoneServer relationships
+    master_zone_server = zone.zone_servers.filter(role='master').select_related('server').first()
+    if not master_zone_server:
+        return False, ["No master server configured for this zone"]
+
+    master_server = master_zone_server.server
+
     # 1. Push zone content to master server if content is dirty
-    if zone.content_dirty:
+    if zone.content_dirty or master_zone_server.content_dirty:
         try:
-            if push_zone_to_server(zone, zone.master_server):
-                successful_servers.append(('master', zone.master_server))
-                logger.info(f"Successfully pushed zone content for {zone.origin} to master {zone.master_server.name}")
+            if push_zone_to_server(zone, master_server):
+                successful_servers.append(('master_content', master_zone_server))
+                logger.info(f"Successfully pushed zone content for {zone.origin} to master {master_server.name}")
             else:
                 overall_success = False
-                errors.append(f"Failed to update master server {zone.master_server.name}")
+                errors.append(f"Failed to update master server {master_server.name}")
         except DNSServerError as e:
             overall_success = False
-            errors.append(f"Master server {zone.master_server.name}: {str(e)}")
+            errors.append(f"Master server {master_server.name}: {str(e)}")
 
     # 2. Update master server config if needed
-    if zone.master_config_dirty:
+    if master_zone_server.config_dirty:
         try:
-            if push_server_config(zone.master_server):
+            if push_server_config(master_server):
                 # Also reload the server
                 try:
-                    if push_server_reload(zone.master_server):
-                        successful_servers.append(('master_config', zone.master_server))
-                        logger.info(f"Successfully updated and reloaded master config for {zone.origin} on {zone.master_server.name}")
+                    if push_server_reload(master_server):
+                        successful_servers.append(('master_config', master_zone_server))
+                        logger.info(f"Successfully updated and reloaded master config for {zone.origin} on {master_server.name}")
                     else:
                         overall_success = False
-                        errors.append(f"Failed to reload master server {zone.master_server.name} after config update")
+                        errors.append(f"Failed to reload master server {master_server.name} after config update")
                 except Exception as e:
                     overall_success = False
-                    errors.append(f"Failed to reload master server {zone.master_server.name}: {str(e)}")
+                    errors.append(f"Failed to reload master server {master_server.name}: {str(e)}")
             else:
                 overall_success = False
-                errors.append(f"Failed to update master server config {zone.master_server.name}")
+                errors.append(f"Failed to update master server config {master_server.name}")
         except Exception as e:
             overall_success = False
-            errors.append(f"Master server config {zone.master_server.name}: {str(e)}")
+            errors.append(f"Master server config {master_server.name}: {str(e)}")
 
     # 3. Update slave server configurations if needed
-    slave_statuses = ZoneServerStatus.objects.filter(
-        zone=zone,
-        server__in=zone.slave_servers.all(),
+    slave_zone_servers = zone.zone_servers.filter(
+        role='slave',
         config_dirty=True
     ).select_related('server')
 
-    for status in slave_statuses:
+    for zone_server in slave_zone_servers:
         try:
-            if push_server_config(status.server):
+            if push_server_config(zone_server.server):
                 # Also reload the server
                 try:
-                    if push_server_reload(status.server):
-                        successful_servers.append(('slave_config', status.server))
-                        logger.info(f"Successfully updated and reloaded slave config for {zone.origin} on {status.server.name}")
+                    if push_server_reload(zone_server.server):
+                        successful_servers.append(('slave_config', zone_server))
+                        logger.info(f"Successfully updated and reloaded slave config for {zone.origin} on {zone_server.server.name}")
                     else:
                         overall_success = False
-                        errors.append(f"Failed to reload slave server {status.server.name} after config update")
+                        errors.append(f"Failed to reload slave server {zone_server.server.name} after config update")
                 except Exception as e:
                     overall_success = False
-                    errors.append(f"Failed to reload slave server {status.server.name}: {str(e)}")
+                    errors.append(f"Failed to reload slave server {zone_server.server.name}: {str(e)}")
             else:
                 overall_success = False
-                errors.append(f"Failed to update slave server config {status.server.name}")
+                errors.append(f"Failed to update slave server config {zone_server.server.name}")
         except Exception as e:
             overall_success = False
-            errors.append(f"Slave server config {status.server.name}: {str(e)}")
+            errors.append(f"Slave server config {zone_server.server.name}: {str(e)}")
 
     # 4. Update sync status based on what succeeded
     with transaction.atomic():
         now = timezone.now()
 
-        # Update zone-level flags based on successful operations
-        updates = {}
-        for op_type, server in successful_servers:
-            if op_type == 'master' and zone.content_dirty:
+        # Update zone-level content dirty flag if master content was synced
+        for op_type, zone_server in successful_servers:
+            if op_type == 'master_content' and zone.content_dirty:
+                zone.content_dirty = False
+                zone.content_dirty_since = None
+                zone.save(update_fields=['content_dirty', 'content_dirty_since', 'updated_at'])
+
+        # Update ZoneServer statuses
+        for op_type, zone_server in successful_servers:
+            updates = {'last_sync_time': now}
+
+            if op_type == 'master_content':
                 updates['content_dirty'] = False
                 updates['content_dirty_since'] = None
-            elif op_type == 'master_config' and zone.master_config_dirty:
-                updates['master_config_dirty'] = False
-                updates['master_config_dirty_since'] = None
+            elif op_type in ['master_config', 'slave_config']:
+                updates['config_dirty'] = False
+                updates['config_dirty_since'] = None
 
-        if updates:
-            updates['updated_at'] = now
-            zone.save(update_fields=list(updates.keys()))
-
-        # Update per-server statuses
-        for op_type, server in successful_servers:
-            if op_type in ['master', 'master_config']:
-                # Update master server status
-                ZoneServerStatus.objects.update_or_create(
-                    zone=zone,
-                    server=zone.master_server,
-                    defaults={
-                        'config_dirty': False,
-                        'config_dirty_since': None,
-                        'last_sync_time': now
-                    }
-                )
-            elif op_type == 'slave_config':
-                # Update specific slave server status
-                ZoneServerStatus.objects.filter(
-                    zone=zone,
-                    server=server
-                ).update(
-                    config_dirty=False,
-                    config_dirty_since=None,
-                    last_sync_time=now
-                )
+            # Update the ZoneServer instance
+            for key, value in updates.items():
+                setattr(zone_server, key, value)
+            zone_server.save(update_fields=list(updates.keys()) + ['updated_at'])
 
     return overall_success, errors
 
@@ -276,36 +268,38 @@ def generate_server_config(server: Server) -> str:
     Returns:
         A string containing the server configuration
     """
+    from .models import ZoneServer
+
     config_lines = []
 
-    # Add master zones
-    master_zones = Zone.objects.filter(master_server=server).order_by('origin')
-    for zone in master_zones:
-        config_lines.append(f"""zone:
+    # Get all zone-server relationships for this server
+    zone_servers = ZoneServer.objects.filter(
+        server=server
+    ).select_related('zone').order_by('zone__origin')
+
+    for zone_server in zone_servers:
+        zone = zone_server.zone
+
+        if zone_server.role == 'master':
+            # Master zone configuration
+            config_lines.append(f"""zone:
 - domain: {zone.origin}
   template: {server.master_template}
   file: {zone.origin.rstrip('.').strip()}.zone
 """)
+        else:  # role == 'slave'
+            # Slave zone configuration
+            # Find the master server for this zone
+            master_zone_server = ZoneServer.objects.filter(
+                zone=zone,
+                role='master'
+            ).select_related('server').first()
 
-    # Add slave zones (internal master)
-    slave_zones = server.slave_zones.all().order_by('origin')
-    for zone in slave_zones:
-        # For internal zones, the master is the zone's master_server
-        config_lines.append(f"""zone:
+            if master_zone_server:
+                config_lines.append(f"""zone:
 - domain: {zone.origin}
   template: {server.slave_template}
-  master: {zone.master_server.name}
-  file: {zone.origin.rstrip('.').strip()}.zone
-""")
-
-    # Add slave-only zones (external master)
-    slave_only_zones = server.slave_only_zones.all().order_by('origin')
-    for zone in slave_only_zones:
-        # For slave-only zones, use the external master
-        config_lines.append(f"""zone:
-- domain: {zone.origin}
-  template: {server.slave_template}
-  master: {zone.external_master}
+  master: {master_zone_server.server.name}
   file: {zone.origin.rstrip('.').strip()}.zone
 """)
 
@@ -568,136 +562,10 @@ def sync_all_dirty_zones() -> Dict[str, Any]:
     return results
 
 
-def update_slave_only_zone(zone: SlaveOnlyZone) -> Tuple[bool, List[str]]:
-    """
-    Update slave-only zone configuration on all its slave servers.
-
-    Args:
-        zone: The SlaveOnlyZone object to update
-
-    Returns:
-        A tuple of (success: bool, errors: List[str])
-    """
-    from django.utils import timezone
-    from .models import SlaveOnlyZoneServerStatus
-
-    errors = []
-    overall_success = True
-    successful_servers = []
-
-    # Get all servers that need update
-    dirty_statuses = SlaveOnlyZoneServerStatus.objects.filter(
-        zone=zone,
-        config_dirty=True
-    ).select_related('server')
-
-    # If no dirty servers, check if we need to sync all (for new zones)
-    if not dirty_statuses.exists():
-        # Create status records for any missing servers
-        for server in zone.slave_servers.all():
-            SlaveOnlyZoneServerStatus.objects.get_or_create(
-                zone=zone,
-                server=server,
-                defaults={'config_dirty': True, 'config_dirty_since': timezone.now()}
-            )
-        # Re-fetch dirty statuses
-        dirty_statuses = SlaveOnlyZoneServerStatus.objects.filter(
-            zone=zone,
-            config_dirty=True
-        ).select_related('server')
-
-    # Push configuration to each dirty server
-    for status in dirty_statuses:
-        server = status.server
-        try:
-            # The server configuration includes this zone as a slave zone
-            if push_server_config(server):
-                # Also reload the server
-                try:
-                    if push_server_reload(server):
-                        successful_servers.append(server)
-                        logger.info(f"Successfully updated and reloaded config for {zone.origin} on {server.name}")
-                    else:
-                        overall_success = False
-                        errors.append(f"Failed to reload slave server {server.name} after config update")
-                except Exception as e:
-                    overall_success = False
-                    errors.append(f"Failed to reload slave server {server.name}: {str(e)}")
-            else:
-                overall_success = False
-                errors.append(f"Failed to update slave server {server.name}")
-        except DNSServerError as e:
-            overall_success = False
-            errors.append(f"Slave server {server.name}: {str(e)}")
-        except Exception as e:
-            overall_success = False
-            errors.append(f"Slave server {server.name}: Unexpected error: {str(e)}")
-
-    # Update sync status for successful servers only
-    with transaction.atomic():
-        now = timezone.now()
-        for server in successful_servers:
-            SlaveOnlyZoneServerStatus.objects.filter(
-                zone=zone,
-                server=server
-            ).update(
-                config_dirty=False,
-                config_dirty_since=None,
-                last_sync_time=now
-            )
-
-        if successful_servers:
-            logger.info(f"Successfully synchronized slave-only zone {zone.origin} on {len(successful_servers)} server(s)")
-
-    return overall_success, errors
 
 
-def sync_all_dirty_slave_only_zones() -> Dict[str, Any]:
-    """
-    Synchronize all dirty slave-only zones to their slave servers.
 
-    Returns:
-        A dictionary with synchronization results
-    """
-    results = {
-        'total': 0,
-        'success': 0,
-        'failed': 0,
-        'errors': []
-    }
 
-    # Find zones with dirty servers
-    from .models import SlaveOnlyZoneServerStatus
-    dirty_statuses = SlaveOnlyZoneServerStatus.objects.filter(
-        config_dirty=True
-    ).select_related('zone').prefetch_related('zone__slave_servers')
-
-    # Get unique zones
-    dirty_zones = {}
-    for status in dirty_statuses:
-        if status.zone.id not in dirty_zones:
-            dirty_zones[status.zone.id] = status.zone
-
-    dirty_zones = list(dirty_zones.values())
-    results['total'] = len(dirty_zones)
-
-    for zone in dirty_zones:
-        try:
-            success, errors = update_slave_only_zone(zone)
-            if success:
-                results['success'] += 1
-                logger.info(f"Successfully synchronized slave-only zone {zone.origin}")
-            else:
-                results['failed'] += 1
-                for error in errors:
-                    results['errors'].append(f"{zone.origin}: {error}")
-                    logger.error(f"Failed to synchronize slave-only zone {zone.origin}: {error}")
-        except Exception as e:
-            results['failed'] += 1
-            results['errors'].append(f"{zone.origin}: Unexpected error: {str(e)}")
-            logger.exception(f"Unexpected error synchronizing slave-only zone {zone.origin}")
-
-    return results
 
 
 def validate_zone_consistency(zone: Zone) -> List[str]:
@@ -756,8 +624,10 @@ def increment_zone_serial(zone: Zone) -> int:
         else:
             raise ValueError(f"Zone {zone.origin} has no associated SOA record")
 
-        zone.is_dirty = True
-        zone.save(update_fields=['is_dirty', 'updated_at'])
+        from django.utils import timezone
+        zone.content_dirty = True
+        zone.content_dirty_since = timezone.now()
+        zone.save(update_fields=['content_dirty', 'content_dirty_since', 'updated_at'])
 
     logger.info(f"Incremented serial for zone {zone.origin} to {new_serial}")
     return new_serial

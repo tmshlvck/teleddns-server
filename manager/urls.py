@@ -20,7 +20,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
 from .views import (
-    ServerViewSet, ZoneViewSet, SlaveOnlyZoneViewSet, AViewSet, AAAAViewSet,
+    ServerViewSet, ZoneViewSet, AViewSet, AAAAViewSet,
     CNAMEViewSet, MXViewSet, NSViewSet, PTRViewSet,
     SRVViewSet, TXTViewSet, CAAViewSet, DSViewSet,
     DNSKEYViewSet, TLSAViewSet, AuditLogViewSet,
@@ -33,7 +33,7 @@ router = DefaultRouter()
 # Infrastructure endpoints
 router.register(r'servers', ServerViewSet, basename='server')
 router.register(r'zones', ZoneViewSet, basename='zone')
-router.register(r'slave-zones', SlaveOnlyZoneViewSet, basename='slaveonlyzone')
+
 
 # Resource record endpoints
 router.register(r'records/a', AViewSet, basename='a')

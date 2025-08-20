@@ -82,9 +82,7 @@ ZONE_EXAMPLES = {
         value={
             'origin': 'example.com.',
             'owner_id': 1,
-            'group_id': 1,
-            'master_server': 1,
-            'slave_servers': [2, 3]
+            'group_id': 1
         },
         request_only=True,
     ),
@@ -102,14 +100,8 @@ ZONE_EXAMPLES = {
                 'id': 1,
                 'name': 'dns-admins'
             },
-            'master_server': 1,
-            'master_server_name': 'ns1.example.com',
-            'slave_servers': [2, 3],
-            'slave_servers_names': ['ns2.example.com', 'ns3.example.com'],
             'content_dirty': False,
             'content_dirty_since': None,
-            'master_config_dirty': False,
-            'master_config_dirty_since': None,
             'created_at': '2024-01-01T00:00:00Z',
             'updated_at': '2024-01-01T00:00:00Z'
         },
