@@ -167,7 +167,7 @@ def update_zone(zone: Zone) -> Tuple[bool, List[str]]:
     master_server = master_zone_server.server
 
     # 1. Push zone content to master server if content is dirty
-    if zone.content_dirty or master_zone_server.content_dirty:
+    if zone.content_dirty:
         try:
             if push_zone_to_server(zone, master_server):
                 successful_servers.append(('master_content', master_zone_server))
@@ -243,10 +243,7 @@ def update_zone(zone: Zone) -> Tuple[bool, List[str]]:
         for op_type, zone_server in successful_servers:
             updates = {'last_sync_time': now}
 
-            if op_type == 'master_content':
-                updates['content_dirty'] = False
-                updates['content_dirty_since'] = None
-            elif op_type in ['master_config', 'slave_config']:
+            if op_type in ['master_config', 'slave_config']:
                 updates['config_dirty'] = False
                 updates['config_dirty_since'] = None
 
@@ -526,20 +523,10 @@ def sync_all_dirty_zones() -> Dict[str, Any]:
         'errors': []
     }
 
-    # Find zones with dirty content or master config
-    dirty_zones = Zone.objects.filter(
-        models.Q(content_dirty=True) | models.Q(master_config_dirty=True)
-    ).select_related('master_server')
-
-    # Also find zones with dirty slave servers
-    zones_with_dirty_slaves = ZoneServerStatus.objects.filter(
-        config_dirty=True
-    ).values_list('zone_id', flat=True).distinct()
-
-    # Combine both sets
+    # Find zones with dirty content or any dirty server configs
     all_dirty_zones = Zone.objects.filter(
-        models.Q(id__in=dirty_zones) | models.Q(id__in=zones_with_dirty_slaves)
-    ).select_related('master_server').distinct()
+        models.Q(content_dirty=True) | models.Q(zone_servers__config_dirty=True)
+    ).prefetch_related('zone_servers__server').distinct()
 
     results['total'] = all_dirty_zones.count()
 

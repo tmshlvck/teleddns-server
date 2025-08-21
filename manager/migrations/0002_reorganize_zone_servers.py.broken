@@ -16,13 +16,23 @@ def migrate_zone_servers_forward(apps, schema_editor):
     # Use raw SQL to check if old columns exist (for fresh installs)
     from django.db import connection
     with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'manager_zone'
-            AND column_name IN ('master_server_id', 'content_dirty', 'master_config_dirty')
-        """)
-        columns = [row[0] for row in cursor.fetchall()]
+        # Get database vendor
+        vendor = connection.vendor
+
+        if vendor == 'sqlite':
+            # SQLite specific query
+            cursor.execute("PRAGMA table_info(manager_zone)")
+            all_columns = [row[1] for row in cursor.fetchall()]
+            columns = [col for col in all_columns if col in ['master_server_id', 'content_dirty', 'master_config_dirty']]
+        else:
+            # MySQL/PostgreSQL query
+            cursor.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'manager_zone'
+                AND column_name IN ('master_server_id', 'content_dirty', 'master_config_dirty')
+            """)
+            columns = [row[0] for row in cursor.fetchall()]
 
         if not columns:
             # Fresh install, no need to migrate

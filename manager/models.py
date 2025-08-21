@@ -569,16 +569,7 @@ class ZoneServer(models.Model):
         help_text="When config was marked dirty"
     )
 
-    # Content dirty tracking (only for master servers)
-    content_dirty = models.BooleanField(
-        default=False,
-        help_text="Zone content needs to be synchronized (master servers only)"
-    )
-    content_dirty_since = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When content was marked dirty (master servers only)"
-    )
+
 
     last_sync_time = models.DateTimeField(
         null=True,
@@ -598,11 +589,7 @@ class ZoneServer(models.Model):
     def __str__(self):
         return f"{self.zone.origin} on {self.server.name} ({self.role})"
 
-    def clean(self):
-        """Validate that content_dirty fields are only set for master servers"""
-        from django.core.exceptions import ValidationError
-        if self.role == 'slave' and (self.content_dirty or self.content_dirty_since):
-            raise ValidationError("Content dirty fields can only be set for master servers")
+
 
 
 class AuditLog(models.Model):

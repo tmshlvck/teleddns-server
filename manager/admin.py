@@ -93,11 +93,11 @@ class ServerAdmin(admin.ModelAdmin):
     )
 
     def master_zones_count(self, obj):
-        return obj.master_zones.count()
+        return obj.zone_servers.filter(role='master').count()
     master_zones_count.short_description = 'Master Zones'
 
     def slave_zones_count(self, obj):
-        return obj.slave_zones.count()
+        return obj.zone_servers.filter(role='slave').count()
     slave_zones_count.short_description = 'Slave Zones'
 
 
@@ -230,8 +230,8 @@ class ZoneServerInline(admin.TabularInline):
     """Inline admin for zone server relationships"""
     model = ZoneServer
     extra = 1
-    fields = ('server', 'role', 'config_dirty', 'config_dirty_since', 'content_dirty', 'content_dirty_since', 'last_sync_time')
-    readonly_fields = ('config_dirty', 'config_dirty_since', 'content_dirty', 'content_dirty_since', 'last_sync_time')
+    fields = ('server', 'role', 'config_dirty', 'config_dirty_since', 'last_sync_time')
+    readonly_fields = ('config_dirty', 'config_dirty_since', 'last_sync_time')
 
 
 @admin.register(Zone)
@@ -289,7 +289,7 @@ class ZoneAdmin(admin.ModelAdmin):
         else:
             # Check if any servers need sync
             servers_dirty = obj.zone_servers.filter(
-                models.Q(config_dirty=True) | models.Q(content_dirty=True)
+                config_dirty=True
             ).exists()
             if servers_dirty:
                 color = 'orange'
@@ -357,8 +357,7 @@ class ZoneAdmin(admin.ModelAdmin):
         # Also mark server relationships as clean
         for zone in queryset:
             zone.zone_servers.update(
-                config_dirty=False, config_dirty_since=None,
-                content_dirty=False, content_dirty_since=None
+                config_dirty=False, config_dirty_since=None
             )
         self.message_user(request, f"Marked {updated} zone(s) as clean")
 
@@ -546,8 +545,8 @@ class SOAAdmin(admin.ModelAdmin):
 @admin.register(ZoneServer)
 class ZoneServerAdmin(admin.ModelAdmin):
     """Admin interface for Zone-Server relationships (for debugging)"""
-    list_display = ('zone', 'server', 'role', 'config_dirty', 'config_dirty_since', 'content_dirty', 'content_dirty_since', 'last_sync_time', 'updated_at')
-    list_filter = ('role', 'config_dirty', 'content_dirty', 'server', 'last_sync_time')
+    list_display = ('zone', 'server', 'role', 'config_dirty', 'config_dirty_since', 'last_sync_time', 'updated_at')
+    list_filter = ('role', 'config_dirty', 'server', 'last_sync_time')
     search_fields = ('zone__origin', 'server__name')
     readonly_fields = ('zone', 'server', 'role', 'created_at', 'updated_at')
     date_hierarchy = 'last_sync_time'

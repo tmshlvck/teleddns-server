@@ -122,18 +122,8 @@ class BackendWorkerThread:
     def _get_dirty_content_zones(self) -> Set[Zone]:
         """Get zones that need content synchronization"""
         # Get zones with dirty content
-        dirty_zones = set(Zone.objects.filter(content_dirty=True))
-
-        # Also get zones with dirty content on their master servers
-        zone_servers_with_dirty_content = ZoneServer.objects.filter(
-            role='master',
-            content_dirty=True
-        ).select_related('zone')
-
-        for zone_server in zone_servers_with_dirty_content:
-            dirty_zones.add(zone_server.zone)
-
-        return dirty_zones
+        # Only check content_dirty on Zone model now
+        return set(Zone.objects.filter(content_dirty=True))
 
 
 
