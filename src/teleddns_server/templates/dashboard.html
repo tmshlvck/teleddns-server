@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - TeleDDNS Server{% endblock %}
+{% block header %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">
+                    <i class="bi bi-globe text-primary"></i> Zones
+                </h5>
+                <h2 class="mb-0">{{ zone_count }}</h2>
+                <small class="text-muted">Total zones</small>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">
+                    <i class="bi bi-record-circle text-success"></i> Records
+                </h5>
+                <h2 class="mb-0">{{ record_count }}</h2>
+                <small class="text-muted">DNS records</small>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">
+                    <i class="bi bi-key text-warning"></i> API Tokens
+                </h5>
+                <h2 class="mb-0">{{ token_count }}</h2>
+                <small class="text-muted">Active tokens</small>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">
+                    <i class="bi bi-server text-info"></i> Servers
+                </h5>
+                <h2 class="mb-0">{{ server_count }}</h2>
+                <small class="text-muted">Backend servers</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-clock-history"></i> Recent Activity</h5>
+            </div>
+            <div class="card-body">
+                {% if recent_zones %}
+                <div class="list-group list-group-flush">
+                    {% for zone in recent_zones %}
+                    <div class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>{{ zone.origin }}</strong>
+                            <br>
+                            <small class="text-muted">Updated {{ zone.updated_at.strftime('%Y-%m-%d %H:%M') }}</small>
+                        </div>
+                        {% if zone.needs_update %}
+                        <span class="badge bg-warning">Pending sync</span>
+                        {% else %}
+                        <span class="badge bg-success">Synced</span>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-muted">No recent activity</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-shield-check"></i> Security Status</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex align-items-center mb-3">
+                    {% if user.has_2fa %}
+                    <i class="bi bi-check-circle-fill text-success me-2"></i>
+                    <span>2FA Enabled</span>
+                    {% else %}
+                    <i class="bi bi-exclamation-circle-fill text-warning me-2"></i>
+                    <span>2FA Disabled</span>
+                    <a href="/web/security" class="btn btn-sm btn-outline-primary ms-auto">Enable</a>
+                    {% endif %}
+                </div>
+                
+                <div class="d-flex align-items-center mb-3">
+                    {% if user.has_passkey %}
+                    <i class="bi bi-check-circle-fill text-success me-2"></i>
+                    <span>PassKey Enabled</span>
+                    {% else %}
+                    <i class="bi bi-x-circle-fill text-danger me-2"></i>
+                    <span>PassKey Disabled</span>
+                    <a href="/web/security" class="btn btn-sm btn-outline-primary ms-auto">Setup</a>
+                    {% endif %}
+                </div>
+                
+                <div class="d-flex align-items-center">
+                    <i class="bi bi-info-circle-fill text-info me-2"></i>
+                    <span>{{ token_count }} API tokens active</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-list-ul"></i> Quick Actions</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <a href="/web/zones/new" class="btn btn-outline-primary w-100 mb-2">
+                            <i class="bi bi-plus-circle"></i> Create Zone
+                        </a>
+                    </div>
+                    <div class="col-md-4">
+                        <a href="/web/tokens/new" class="btn btn-outline-success w-100 mb-2">
+                            <i class="bi bi-key"></i> Generate API Token
+                        </a>
+                    </div>
+                    <div class="col-md-4">
+                        <a href="/healthcheck" class="btn btn-outline-info w-100 mb-2">
+                            <i class="bi bi-heart-pulse"></i> System Status
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

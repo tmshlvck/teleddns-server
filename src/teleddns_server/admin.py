@@ -28,24 +28,28 @@ from starlette.middleware.sessions import SessionMiddleware
 from teleddns_server.model import *
 from teleddns_server.auth import AdminAuthProvider
 
-from teleddns_server.view import defer_update_zone, defer_update_config, run_check_zone
+from teleddns_server.view import mark_zone_for_update, mark_server_for_config_update, run_check_zone, extract_zone_data, extract_server_config_data
 
 
 class RRView(ModelView):
     sortable_fields = ["label", "zone"]
-    sortable_fields_mapping = { "zone": MasterZone.id, }
+    sortable_fields_mapping = { "zone": Zone.id, }
     exclude_fields_from_create = ["id"]
-    exclude_fields_from_list = ["id"]
+    exclude_fields_from_list = ["id", "placeholder"]
     exclude_fields_from_edit = ["id"]
+    
+    async def after_create(self, request: Request, obj: Any) -> None:
+        self._mark_zone_dirty(obj.zone_id)
 
-#    async def after_create(self, request: Request, obj: Any) -> None:
-#        await update_zone(obj.zone)
-#
-#    async def after_edit(self, request: Request, obj: Any) -> None:
-#        await update_zone(obj.zone)
-#
-#    async def after_delete(self, request: Request, obj: Any) -> None:
-#        await update_zone(obj.zone)
+    async def after_edit(self, request: Request, obj: Any) -> None:
+        self._mark_zone_dirty(obj.zone_id)
+
+    async def after_delete(self, request: Request, obj: Any) -> None:
+        self._mark_zone_dirty(obj.zone_id)
+        
+    def _mark_zone_dirty(self, zone_id: int):
+        """Mark zone as needing update"""
+        mark_zone_for_update(zone_id)
 
 
 class UserView(ModelView):
@@ -54,7 +58,8 @@ class UserView(ModelView):
         "username",
         PasswordField("password", exclude_from_list=True, ),
         "is_admin",
-        "access_rules",
+        "has_2fa",
+        "has_passkey",
         "created_at",
         "updated_at",
     ]
@@ -73,52 +78,21 @@ class ServerView(ModelView):
         "api_url",
         "api_key",
         "master_template",
-        "slave_template",
-        "master_zones",
-        "slave_zones",
+        "needs_config_update",
+        "config_last_updated",
         "created_at",
         "updated_at",
     ]
     
-    actions = ["update_many", "delete"]
-    row_actions = ["update_one", "view", "edit", "delete"]
-    #row_actions_display_type = RowActionsDisplayType.DROPDOWN
-
-    @action(
-        name="update_many",
-        text="Push configs",
-        confirmation="Are you sure you want to push config updates to selected servers?",
-        submit_btn_text="Yes, proceed",
-        submit_btn_class="btn-success",
-    )
-    async def update_many(self, request: Request, pks: List[Any]) -> str:
-        #session = request.state.session
-        affected = []
-        for pk in pks:
-            server: Server = await self.find_by_pk(request, pk)
-            await defer_update_config(server)
-            affected.append(server.name)
-        return f"Started config update for servers {', '.join(affected)}"
-
-    @row_action(
-        name="update_one",
-        text="Push config",
-        confirmation="Are you sure you want to push config updates to the server?",
-        icon_class="fas fa-cogs",
-        submit_btn_text="Yes, proceed",
-        submit_btn_class="btn-success",
-        action_btn_class="btn-info",
-    )
-    async def update_one(self, request: Request, pk: Any) -> str:
-        #session = request.state.session
-        affected = []
-        server: Server = await self.find_by_pk(request, pk)
-        await defer_update_config(server)
-        return f"Started config update for server {server.name}"
+    async def after_create(self, request: Request, obj: Any) -> None:
+        mark_server_for_config_update(obj.id)
+        
+    async def after_edit(self, request: Request, obj: Any) -> None:
+        mark_server_for_config_update(obj.id)
 
 
 
-class MasterZoneView(ModelView):
+class ZoneView(ModelView):
     fields = [
         "id",
         "origin",
@@ -132,71 +106,28 @@ class MasterZoneView(ModelView):
         "soa_RETRY",
         "soa_EXPIRE",
         "soa_MINIMUM",
-        "access_rules",
-        "master_server",
-        "slave_servers",
+        "server_id",
+        "user_id",
+        "group_id",
+        "needs_update",
+        "last_updated",
         "created_at",
         "updated_at",
         ]
     
-    actions = ["update_many", "delete"]
-    row_actions = ["check_one", "update_one", "view", "edit", "delete"]
-    #row_actions_display_type = RowActionsDisplayType.DROPDOWN
+    async def after_create(self, request: Request, obj: Any) -> None:
+        self._mark_zone_dirty(obj.id)
 
-    @action(
-        name="update_many",
-        text="Update Zones on Master Server",
-        confirmation="Are you sure you want to Update Zones on Master Server?",
-        submit_btn_text="Yes, proceed",
-        submit_btn_class="btn-success",
-    )
-    async def update_many(self, request: Request, pks: List[Any]) -> str:
-        #session = request.state.session
-        affected = []
-        for pk in pks:
-            zone: MasterZone = await self.find_by_pk(request, pk)
-            await defer_update_zone(zone)
-            affected.append(zone.origin)
-        return f"Started zone update for zones {', '.join(affected)}"
+    async def after_edit(self, request: Request, obj: Any) -> None:
+        self._mark_zone_dirty(obj.id)
 
-    @row_action(
-        name="check_one",
-        text="Check Zone on Master Server",
-        icon_class="fas fa-check-circle",
-        action_btn_class="btn-info",
-    )
-    async def check_one(self, request: Request, pk: Any) -> str:
-        zone: MasterZone = await self.find_by_pk(request, pk)
-        result = await run_check_zone(zone)
-        sdo = result.get('stdout', '').replace("\n", "<br>")
-        if result.get('retcode', 1) != 0:
-            raise ActionFailed(f"Zone check failed for {zone.origin}:<br>{sdo}")
-        else:
-            return f"Zone check succeeded for {zone.origin}:<br>{sdo}"
-    
-    @row_action(
-        name="update_one",
-        text="Update Zones on Master Server",
-        confirmation="Are you sure you want to Update Zone on Master Server?",
-        icon_class="fas fa-cloud-upload-alt",
-        submit_btn_text="Yes, proceed",
-        submit_btn_class="btn-success",
-        action_btn_class="btn-info",
-    )
-    async def update_one(self, request: Request, pk: Any) -> str:
-        #session = request.state.session
-        zone: MasterZone = await self.find_by_pk(request, pk)
-        await defer_update_zone(zone)
-        return f"Started zone update for zone {zone.origin}"
-
-#    async def after_create(self, request: Request, obj: Any) -> None:
-#        await update_config(obj)
-#
-#    async def after_edit(self, request: Request, obj: Any) -> None:
-#        await update_config(obj)
-#
-#    async def after_delete(self, request: Request, obj: Any) -> None:
-#        await update_config(obj)
+    async def after_delete(self, request: Request, obj: Any) -> None:
+        if obj.server_id:
+            mark_server_for_config_update(obj.server_id)
+            
+    def _mark_zone_dirty(self, zone_id: int):
+        """Mark zone as needing update"""
+        mark_zone_for_update(zone_id)
 
 
 def add_admin(app):
@@ -206,8 +137,9 @@ def add_admin(app):
 
     admin.add_view(ServerView(Server))
     admin.add_view(UserView(User))
-    admin.add_view(MasterZoneView(MasterZone))
-    admin.add_view(ModelView(AccessRule))
+    admin.add_view(ModelView(Group))
+    admin.add_view(ModelView(APIToken))
+    admin.add_view(ZoneView(Zone))
     for cls in RR_CLASSES:
         admin.add_view(RRView(cls, name=cls.__name__, label=cls.__name__))
     

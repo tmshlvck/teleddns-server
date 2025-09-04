@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+
+{% block title %}Zones - TeleDDNS Server{% endblock %}
+{% block header %}DNS Zones{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <p class="text-muted">Manage your DNS zones and records</p>
+    </div>
+    <a href="/web/zones/new" class="btn btn-primary">
+        <i class="bi bi-plus-circle"></i> Create Zone
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if zones %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Zone</th>
+                        <th>Serial</th>
+                        <th>Records</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="zones-table">
+                    {% for zone in zones %}
+                    <tr>
+                        <td>
+                            <strong>{{ zone.origin }}</strong>
+                            {% if zone.user_id == user.id %}
+                            <small class="text-muted">(Owner)</small>
+                            {% elif zone.group_id %}
+                            <small class="text-muted">(Group)</small>
+                            {% endif %}
+                        </td>
+                        <td>{{ zone.soa_SERIAL }}</td>
+                        <td>
+                            <span class="badge bg-secondary">{{ zone.record_count }} records</span>
+                        </td>
+                        <td>
+                            {% if zone.needs_update %}
+                            <span class="badge bg-warning">
+                                <i class="bi bi-clock"></i> Pending sync
+                            </span>
+                            {% else %}
+                            <span class="badge bg-success">
+                                <i class="bi bi-check-circle"></i> Synced
+                            </span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <a href="/web/zones/{{ zone.id }}" class="btn btn-outline-primary">
+                                    <i class="bi bi-eye"></i> View
+                                </a>
+                                <a href="/web/zones/{{ zone.id }}/edit" class="btn btn-outline-secondary">
+                                    <i class="bi bi-pencil"></i> Edit
+                                </a>
+                                <button 
+                                    class="btn btn-outline-danger"
+                                    hx-delete="/web/zones/{{ zone.id }}"
+                                    hx-confirm="Are you sure you want to delete zone {{ zone.origin }}?"
+                                    hx-target="closest tr"
+                                    hx-swap="outerHTML swap:1s"
+                                >
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center py-5">
+            <i class="bi bi-globe display-1 text-muted"></i>
+            <h3 class="mt-3">No zones found</h3>
+            <p class="text-muted">Create your first DNS zone to get started</p>
+            <a href="/web/zones/new" class="btn btn-primary">
+                <i class="bi bi-plus-circle"></i> Create Zone
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Zone creation modal -->
+<div class="modal fade" id="createZoneModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Create New Zone</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form hx-post="/web/zones" hx-target="#zones-table" hx-swap="beforeend">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="origin" class="form-label">Domain Name</label>
+                        <input type="text" class="form-control" id="origin" name="origin" 
+                               placeholder="example.com" required>
+                        <div class="form-text">Enter the domain name (zone origin)</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="server_id" class="form-label">DNS Server</label>
+                        <select class="form-select" id="server_id" name="server_id" required>
+                            {% for server in servers %}
+                            <option value="{{ server.id }}">{{ server.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="soa_MNAME" class="form-label">Primary NS</label>
+                            <input type="text" class="form-control" id="soa_MNAME" name="soa_MNAME" 
+                                   value="ns1.example.com.">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="soa_RNAME" class="form-label">Admin Email</label>
+                            <input type="text" class="form-control" id="soa_RNAME" name="soa_RNAME" 
+                                   value="admin.example.com.">
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create Zone</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('htmx:afterRequest', function(event) {
+    if (event.detail.successful && event.detail.xhr.status === 201) {
+        // Close modal on successful zone creation
+        var modal = bootstrap.Modal.getInstance(document.getElementById('createZoneModal'));
+        if (modal) modal.hide();
+        
+        // Show success message
+        showAlert('Zone created successfully!', 'success');
+    }
+});
+
+function showAlert(message, type) {
+    const alertHtml = `
+        <div class="alert alert-${type} alert-dismissible fade show" role="alert">
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `;
+    document.querySelector('.main-content').insertAdjacentHTML('afterbegin', alertHtml);
+}
+</script>
+{% endblock %}

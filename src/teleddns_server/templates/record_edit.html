@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+
+{% block title %}Edit DNS Record - {{ zone.origin }} - TeleDDNS Server{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1><i class="bi bi-pencil"></i> Edit DNS Record</h1>
+    <div class="btn-group" role="group">
+        <a href="/web/zones/{{ zone.id }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Back to Zone
+        </a>
+    </div>
+</div>
+
+<!-- Zone Information -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i>
+            <strong>Zone:</strong> <code>{{ zone.origin }}</code> | 
+            <strong>Record Type:</strong> <span class="badge bg-secondary">{{ record_type }}</span> |
+            <strong>Current Name:</strong> <code>{{ record.label or '@' }}{% if record.label %}.{{ zone.origin }}{% endif %}</code>
+        </div>
+    </div>
+</div>
+
+<!-- Error/Success Messages -->
+{% if request.query_params.get('error') %}
+<div class="alert alert-danger" role="alert">
+    <i class="bi bi-exclamation-triangle"></i>
+    {{ request.query_params.get('error') }}
+</div>
+{% endif %}
+
+{% if request.query_params.get('success') %}
+<div class="alert alert-success" role="alert">
+    <i class="bi bi-check-circle"></i>
+    {{ request.query_params.get('success') }}
+</div>
+{% endif %}
+
+<!-- Edit Record Form -->
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-pencil"></i> DNS Record Details</h5>
+            </div>
+            <div class="card-body">
+                <form method="post" action="/web/zones/{{ zone.id }}/records/{{ record.id }}/edit" id="recordForm">
+                    <input type="hidden" name="record_type" value="{{ record_type }}">
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="record_type_display" class="form-label">Record Type</label>
+                            <input type="text" class="form-control" id="record_type_display" value="{{ record_type }}" disabled>
+                            <div class="form-text">Record type cannot be changed</div>
+                        </div>
+                        
+                        <div class="col-md-6 mb-3">
+                            <label for="label" class="form-label">Name</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="label" name="label" value="{{ record.label or '' }}" placeholder="www">
+                                <span class="input-group-text">.{{ zone.origin }}</span>
+                            </div>
+                            <div class="form-text">Leave empty for root record (@)</div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-3 mb-3">
+                            <label for="ttl" class="form-label">TTL (seconds)</label>
+                            <input type="number" class="form-control" id="ttl" name="ttl" value="{{ record.ttl }}" min="1" max="86400" required>
+                            <div class="form-text">Time to live</div>
+                        </div>
+                        
+                        <div class="col-md-9 mb-3">
+                            <label for="value" class="form-label">Value <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="value" name="value" value="{{ record.value }}" required>
+                            <div class="form-text" id="value-help">Enter the record value</div>
+                        </div>
+                    </div>
+                    
+                    <hr>
+                    
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <a href="/web/zones/{{ zone.id }}" class="btn btn-secondary">
+                                <i class="bi bi-x-circle"></i> Cancel
+                            </a>
+                        </div>
+                        <div>
+                            <button type="button" class="btn btn-outline-danger me-2" data-bs-toggle="modal" data-bs-target="#deleteModal">
+                                <i class="bi bi-trash"></i> Delete Record
+                            </button>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-check-circle"></i> Update Record
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Record Type Help -->
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="bi bi-question-circle"></i> {{ record_type }} Record Help</h6>
+            </div>
+            <div class="card-body" id="type-help">
+                <!-- Help will be populated by JavaScript -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="deleteModalLabel">
+                    <i class="bi bi-exclamation-triangle text-warning"></i> Delete DNS Record
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete this DNS record?</p>
+                <div class="alert alert-warning">
+                    <strong>Record:</strong> <code>{{ record.label or '@' }}{% if record.label %}.{{ zone.origin }}{% endif %}</code><br>
+                    <strong>Type:</strong> <span class="badge bg-secondary">{{ record_type }}</span><br>
+                    <strong>Value:</strong> <code>{{ record.value }}</code>
+                </div>
+                <p class="text-danger">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    <strong>This action cannot be undone!</strong>
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form method="post" action="/web/zones/{{ zone.id }}/records/{{ record.id }}/delete" class="d-inline">
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash"></i> Delete Record
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const recordType = '{{ record_type }}';
+    const valueInput = document.getElementById('value');
+    const valueHelp = document.getElementById('value-help');
+    const typeHelp = document.getElementById('type-help');
+    
+    const recordHelp = {
+        'A': {
+            help: 'IPv4 address (e.g., 192.0.2.1)',
+            description: '<strong>A Record</strong><br>Maps a hostname to an IPv4 address.<br><br><strong>Examples:</strong><br><code>192.0.2.1</code><br><code>203.0.113.1</code>'
+        },
+        'AAAA': {
+            help: 'IPv6 address (e.g., 2001:db8::1)',
+            description: '<strong>AAAA Record</strong><br>Maps a hostname to an IPv6 address.<br><br><strong>Examples:</strong><br><code>2001:db8::1</code><br><code>2001:db8:85a3::8a2e:370:7334</code>'
+        },
+        'CNAME': {
+            help: 'Target hostname (must end with .)',
+            description: '<strong>CNAME Record</strong><br>Creates an alias for another domain name.<br><br><strong>Examples:</strong><br><code>www.example.com.</code><br><code>cdn.example.com.</code><br><br><em>Note: Must end with a dot (.)</em>'
+        },
+        'MX': {
+            help: 'Priority and mail server (e.g., 10 mail.example.com.)',
+            description: '<strong>MX Record</strong><br>Specifies mail exchange servers.<br><br><strong>Format:</strong><br><code>[priority] [hostname]</code><br><br><strong>Examples:</strong><br><code>10 mail.example.com.</code><br><code>20 backup-mail.example.com.</code>'
+        },
+        'TXT': {
+            help: 'Text content (quotes optional)',
+            description: '<strong>TXT Record</strong><br>Stores arbitrary text data.<br><br><strong>Common uses:</strong><br>• SPF records<br>• DKIM keys<br>• Domain verification<br><br><strong>Examples:</strong><br><code>v=spf1 include:_spf.google.com ~all</code><br><code>google-site-verification=abc123</code>'
+        },
+        'NS': {
+            help: 'Name server hostname (must end with .)',
+            description: '<strong>NS Record</strong><br>Delegates a subdomain to other name servers.<br><br><strong>Examples:</strong><br><code>ns1.example.com.</code><br><code>ns2.example.com.</code><br><br><em>Note: Must end with a dot (.)</em>'
+        },
+        'PTR': {
+            help: 'Hostname for reverse DNS (must end with .)',
+            description: '<strong>PTR Record</strong><br>Used for reverse DNS lookups.<br><br><strong>Examples:</strong><br><code>mail.example.com.</code><br><code>server1.example.com.</code><br><br><em>Note: Must end with a dot (.)</em>'
+        },
+        'SRV': {
+            help: 'Priority Weight Port Target (e.g., 10 5 443 target.example.com.)',
+            description: '<strong>SRV Record</strong><br>Defines services available in the domain.<br><br><strong>Format:</strong><br><code>[priority] [weight] [port] [target]</code><br><br><strong>Examples:</strong><br><code>10 5 443 sip.example.com.</code><br><code>0 5 5060 sip.example.com.</code>'
+        },
+        'CAA': {
+            help: 'Flag Tag Value (e.g., 0 issue "letsencrypt.org")',
+            description: '<strong>CAA Record</strong><br>Specifies which certificate authorities can issue certificates.<br><br><strong>Format:</strong><br><code>[flag] [tag] "[value]"</code><br><br><strong>Examples:</strong><br><code>0 issue "letsencrypt.org"</code><br><code>0 issuewild ";"</code>'
+        }
+    };
+    
+    // Set help text for current record type
+    if (recordHelp[recordType]) {
+        valueHelp.textContent = recordHelp[recordType].help;
+        typeHelp.innerHTML = recordHelp[recordType].description;
+    }
+    
+    // Form validation
+    document.getElementById('recordForm').addEventListener('submit', function(e) {
+        const value = valueInput.value.trim();
+        
+        if (!value) {
+            e.preventDefault();
+            alert('Please enter a record value.');
+            return;
+        }
+        
+        // Basic validation for specific record types
+        if (recordType === 'A' && !value.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
+            e.preventDefault();
+            alert('Invalid IPv4 address format.');
+            return;
+        }
+        
+        if ((recordType === 'CNAME' || recordType === 'NS' || recordType === 'PTR') && !value.endsWith('.')) {
+            if (confirm('This record type should typically end with a dot (.). Add it automatically?')) {
+                valueInput.value = value + '.';
+            }
+        }
+    });
+});
+</script>
+
+{% endblock %}

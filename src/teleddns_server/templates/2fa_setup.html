@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% set page_title = "2FA Setup" %}
+{% set active_page = "security" %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pb-2 mb-3 border-bottom">
+    <div>
+        <h1><i class="bi bi-shield-check"></i> 2FA Setup</h1>
+        <p class="text-muted">Two-Factor Authentication has been enabled</p>
+    </div>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <a href="/web/security" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Back to Security
+        </a>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                <h5><i class="bi bi-check-circle"></i> 2FA Successfully Enabled</h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-success" role="alert">
+                    <i class="bi bi-shield-check"></i>
+                    <strong>Two-Factor Authentication is now active!</strong> 
+                    Your account is now more secure.
+                </div>
+
+                <h6>Setup Complete</h6>
+                <p>Your authenticator app should now be configured with your TeleDDNS account. You will be required to enter a 6-digit code from your authenticator app when logging in.</p>
+
+                <h6>Next Steps</h6>
+                <ul>
+                    <li>Test your 2FA by logging out and logging back in</li>
+                    <li>Save backup codes (if provided by your authenticator app)</li>
+                    <li>Consider setting up additional security measures like PassKey</li>
+                </ul>
+
+                <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-4">
+                    <a href="/auth/logout" class="btn btn-outline-primary me-md-2">
+                        <i class="bi bi-box-arrow-right"></i> Test Login
+                    </a>
+                    <a href="/web/security" class="btn btn-primary">
+                        <i class="bi bi-shield"></i> Security Settings
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="bi bi-info-circle"></i> Setup Information</h6>
+            </div>
+            <div class="card-body">
+                <h6>Secret Key</h6>
+                <div class="mb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control font-monospace small" 
+                               value="{{ secret }}" readonly id="secret-key">
+                        <button class="btn btn-outline-secondary" type="button" 
+                                onclick="copyToClipboard('secret-key')">
+                            <i class="bi bi-clipboard"></i>
+                        </button>
+                    </div>
+                    <div class="form-text">
+                        Keep this secret safe. You can use it to manually configure other authenticator apps.
+                    </div>
+                </div>
+
+                {% if qr_code %}
+                <h6>QR Code</h6>
+                <div class="text-center mb-3">
+                    <img src="data:image/png;base64,{{ qr_code }}" 
+                         alt="2FA QR Code" class="img-fluid" 
+                         style="max-width: 200px;">
+                </div>
+                <div class="form-text text-center">
+                    Scan with your authenticator app
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function copyToClipboard(elementId) {
+    const element = document.getElementById(elementId);
+    element.select();
+    element.setSelectionRange(0, 99999);
+    document.execCommand("copy");
+    
+    // Show feedback
+    const button = element.nextElementSibling;
+    const originalHTML = button.innerHTML;
+    button.innerHTML = '<i class="bi bi-check"></i>';
+    setTimeout(() => {
+        button.innerHTML = originalHTML;
+    }, 2000);
+}
+</script>
+{% endblock %}

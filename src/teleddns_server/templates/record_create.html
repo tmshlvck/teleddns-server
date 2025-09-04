@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+
+{% block title %}Add DNS Record - {{ zone.origin }} - TeleDDNS Server{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1><i class="bi bi-plus-circle"></i> Add DNS Record</h1>
+    <div class="btn-group" role="group">
+        <a href="/web/zones/{{ zone.id }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Back to Zone
+        </a>
+    </div>
+</div>
+
+<!-- Zone Information -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i>
+            <strong>Zone:</strong> <code>{{ zone.origin }}</code>
+        </div>
+    </div>
+</div>
+
+<!-- Error/Success Messages -->
+{% if request.query_params.get('error') %}
+<div class="alert alert-danger" role="alert">
+    <i class="bi bi-exclamation-triangle"></i>
+    {{ request.query_params.get('error') }}
+</div>
+{% endif %}
+
+{% if request.query_params.get('success') %}
+<div class="alert alert-success" role="alert">
+    <i class="bi bi-check-circle"></i>
+    {{ request.query_params.get('success') }}
+</div>
+{% endif %}
+
+<!-- Create Record Form -->
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-pencil"></i> DNS Record Details</h5>
+            </div>
+            <div class="card-body">
+                <form method="post" action="/web/zones/{{ zone.id }}/records" id="recordForm">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="record_type" class="form-label">Record Type <span class="text-danger">*</span></label>
+                            <select class="form-select" id="record_type" name="record_type" required>
+                                <option value="">Select record type...</option>
+                                <option value="A">A - IPv4 Address</option>
+                                <option value="AAAA">AAAA - IPv6 Address</option>
+                                <option value="CNAME">CNAME - Canonical Name</option>
+                                <option value="MX">MX - Mail Exchange</option>
+                                <option value="TXT">TXT - Text</option>
+                                <option value="NS">NS - Name Server</option>
+                                <option value="PTR">PTR - Pointer</option>
+                                <option value="SRV">SRV - Service</option>
+                                <option value="CAA">CAA - Certificate Authority</option>
+                            </select>
+                            <div class="form-text">Choose the DNS record type</div>
+                        </div>
+                        
+                        <div class="col-md-6 mb-3">
+                            <label for="label" class="form-label">Name</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="label" name="label" placeholder="www">
+                                <span class="input-group-text">.{{ zone.origin }}</span>
+                            </div>
+                            <div class="form-text">Leave empty for root record (@)</div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-3 mb-3">
+                            <label for="ttl" class="form-label">TTL (seconds)</label>
+                            <input type="number" class="form-control" id="ttl" name="ttl" value="300" min="1" max="86400" required>
+                            <div class="form-text">Time to live</div>
+                        </div>
+                        
+                        <div class="col-md-9 mb-3">
+                            <label for="value" class="form-label">Value <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="value" name="value" required>
+                            <div class="form-text" id="value-help">Enter the record value</div>
+                        </div>
+                    </div>
+                    
+                    <hr>
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="/web/zones/{{ zone.id }}" class="btn btn-secondary">
+                            <i class="bi bi-x-circle"></i> Cancel
+                        </a>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-circle"></i> Create Record
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Record Type Help -->
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="bi bi-question-circle"></i> Record Type Help</h6>
+            </div>
+            <div class="card-body" id="type-help">
+                <p class="text-muted">Select a record type to see specific help and examples.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const recordType = document.getElementById('record_type');
+    const valueInput = document.getElementById('value');
+    const valueHelp = document.getElementById('value-help');
+    const typeHelp = document.getElementById('type-help');
+    
+    const recordHelp = {
+        'A': {
+            placeholder: '192.0.2.1',
+            help: 'IPv4 address (e.g., 192.0.2.1)',
+            description: '<strong>A Record</strong><br>Maps a hostname to an IPv4 address.<br><br><strong>Examples:</strong><br><code>192.0.2.1</code><br><code>203.0.113.1</code>'
+        },
+        'AAAA': {
+            placeholder: '2001:db8::1',
+            help: 'IPv6 address (e.g., 2001:db8::1)',
+            description: '<strong>AAAA Record</strong><br>Maps a hostname to an IPv6 address.<br><br><strong>Examples:</strong><br><code>2001:db8::1</code><br><code>2001:db8:85a3::8a2e:370:7334</code>'
+        },
+        'CNAME': {
+            placeholder: 'target.example.com.',
+            help: 'Target hostname (must end with .)',
+            description: '<strong>CNAME Record</strong><br>Creates an alias for another domain name.<br><br><strong>Examples:</strong><br><code>www.example.com.</code><br><code>cdn.example.com.</code><br><br><em>Note: Must end with a dot (.)</em>'
+        },
+        'MX': {
+            placeholder: '10 mail.example.com.',
+            help: 'Priority and mail server (e.g., 10 mail.example.com.)',
+            description: '<strong>MX Record</strong><br>Specifies mail exchange servers.<br><br><strong>Format:</strong><br><code>[priority] [hostname]</code><br><br><strong>Examples:</strong><br><code>10 mail.example.com.</code><br><code>20 backup-mail.example.com.</code>'
+        },
+        'TXT': {
+            placeholder: 'v=spf1 include:_spf.google.com ~all',
+            help: 'Text content (quotes optional)',
+            description: '<strong>TXT Record</strong><br>Stores arbitrary text data.<br><br><strong>Common uses:</strong><br>• SPF records<br>• DKIM keys<br>• Domain verification<br><br><strong>Examples:</strong><br><code>v=spf1 include:_spf.google.com ~all</code><br><code>google-site-verification=abc123</code>'
+        },
+        'NS': {
+            placeholder: 'ns1.example.com.',
+            help: 'Name server hostname (must end with .)',
+            description: '<strong>NS Record</strong><br>Delegates a subdomain to other name servers.<br><br><strong>Examples:</strong><br><code>ns1.example.com.</code><br><code>ns2.example.com.</code><br><br><em>Note: Must end with a dot (.)</em>'
+        },
+        'PTR': {
+            placeholder: 'hostname.example.com.',
+            help: 'Hostname for reverse DNS (must end with .)',
+            description: '<strong>PTR Record</strong><br>Used for reverse DNS lookups.<br><br><strong>Examples:</strong><br><code>mail.example.com.</code><br><code>server1.example.com.</code><br><br><em>Note: Must end with a dot (.)</em>'
+        },
+        'SRV': {
+            placeholder: '10 5 443 target.example.com.',
+            help: 'Priority Weight Port Target (e.g., 10 5 443 target.example.com.)',
+            description: '<strong>SRV Record</strong><br>Defines services available in the domain.<br><br><strong>Format:</strong><br><code>[priority] [weight] [port] [target]</code><br><br><strong>Examples:</strong><br><code>10 5 443 sip.example.com.</code><br><code>0 5 5060 sip.example.com.</code>'
+        },
+        'CAA': {
+            placeholder: '0 issue "letsencrypt.org"',
+            help: 'Flag Tag Value (e.g., 0 issue "letsencrypt.org")',
+            description: '<strong>CAA Record</strong><br>Specifies which certificate authorities can issue certificates.<br><br><strong>Format:</strong><br><code>[flag] [tag] "[value]"</code><br><br><strong>Examples:</strong><br><code>0 issue "letsencrypt.org"</code><br><code>0 issuewild ";"</code>'
+        }
+    };
+    
+    recordType.addEventListener('change', function() {
+        const type = this.value;
+        if (type && recordHelp[type]) {
+            valueInput.placeholder = recordHelp[type].placeholder;
+            valueHelp.textContent = recordHelp[type].help;
+            typeHelp.innerHTML = recordHelp[type].description;
+        } else {
+            valueInput.placeholder = '';
+            valueHelp.textContent = 'Enter the record value';
+            typeHelp.innerHTML = '<p class="text-muted">Select a record type to see specific help and examples.</p>';
+        }
+    });
+    
+    // Form validation
+    document.getElementById('recordForm').addEventListener('submit', function(e) {
+        const type = recordType.value;
+        const value = valueInput.value.trim();
+        
+        if (!type || !value) {
+            e.preventDefault();
+            alert('Please fill in all required fields.');
+            return;
+        }
+        
+        // Basic validation for specific record types
+        if (type === 'A' && !value.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
+            e.preventDefault();
+            alert('Invalid IPv4 address format.');
+            return;
+        }
+        
+        if ((type === 'CNAME' || type === 'NS' || type === 'PTR') && !value.endsWith('.')) {
+            if (confirm('This record type should typically end with a dot (.). Add it automatically?')) {
+                valueInput.value = value + '.';
+            }
+        }
+    });
+});
+</script>
+
+{% endblock %}

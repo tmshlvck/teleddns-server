@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% set page_title = "Security Settings" %}
+{% set active_page = "security" %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pb-2 mb-3 border-bottom">
+    <div>
+        <h1><i class="bi bi-shield-check"></i> Security Settings</h1>
+        <p class="text-muted">Manage your account security and authentication methods</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-key"></i> Authentication Methods</h5>
+            </div>
+            <div class="card-body">
+                <!-- Two-Factor Authentication -->
+                <div class="d-flex align-items-center justify-content-between mb-4 pb-3 border-bottom">
+                    <div>
+                        <h6>Two-Factor Authentication (2FA)</h6>
+                        <p class="text-muted mb-0">Add an extra layer of security with TOTP codes</p>
+                    </div>
+                    <div>
+                        {% if user.has_2fa %}
+                            <span class="badge bg-success me-2">
+                                <i class="bi bi-check-circle"></i> Enabled
+                            </span>
+                            <form method="post" action="/web/security/2fa/disable" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" 
+                                        onclick="return confirm('Are you sure you want to disable 2FA?')">
+                                    Disable
+                                </button>
+                            </form>
+                        {% else %}
+                            <span class="badge bg-warning me-2">
+                                <i class="bi bi-exclamation-triangle"></i> Disabled
+                            </span>
+                            <form method="post" action="/web/security/2fa/enable" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-primary">
+                                    Enable 2FA
+                                </button>
+                            </form>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- PassKey Authentication -->
+                <div class="d-flex align-items-center justify-content-between mb-4 pb-3 border-bottom">
+                    <div>
+                        <h6>PassKey Authentication</h6>
+                        <p class="text-muted mb-0">Use biometric or hardware-based authentication</p>
+                    </div>
+                    <div>
+                        {% if user.has_passkey %}
+                            <span class="badge bg-success me-2">
+                                <i class="bi bi-check-circle"></i> Enabled
+                            </span>
+                            <button type="button" class="btn btn-sm btn-outline-primary">
+                                Manage Keys
+                            </button>
+                        {% else %}
+                            <span class="badge bg-secondary me-2">
+                                <i class="bi bi-x-circle"></i> Disabled
+                            </span>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="alert('PassKey setup not yet implemented')">
+                                Setup PassKey
+                            </button>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Password -->
+                <div class="d-flex align-items-center justify-content-between">
+                    <div>
+                        <h6>Password</h6>
+                        <p class="text-muted mb-0">Change your account password</p>
+                    </div>
+                    <div>
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="alert('Password change not yet implemented')">
+                            Change Password
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="bi bi-info-circle"></i> Security Recommendations</h6>
+            </div>
+            <div class="card-body">
+                <h6>Strengthen Your Account</h6>
+                
+                {% if not user.has_2fa %}
+                <div class="alert alert-warning" role="alert">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    <strong>Enable 2FA</strong><br>
+                    Two-factor authentication significantly improves your account security.
+                </div>
+                {% endif %}
+
+                {% if not user.has_passkey %}
+                <div class="alert alert-info" role="alert">
+                    <i class="bi bi-key"></i>
+                    <strong>Consider PassKey</strong><br>
+                    PassKeys provide seamless and secure authentication using biometrics or hardware keys.
+                </div>
+                {% endif %}
+
+                {% if user.has_2fa and user.has_passkey %}
+                <div class="alert alert-success" role="alert">
+                    <i class="bi bi-shield-check"></i>
+                    <strong>Excellent Security!</strong><br>
+                    Your account is well protected with multiple authentication factors.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="card mt-3">
+            <div class="card-header">
+                <h6><i class="bi bi-clock-history"></i> Security Activity</h6>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">Recent security-related activities will appear here.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

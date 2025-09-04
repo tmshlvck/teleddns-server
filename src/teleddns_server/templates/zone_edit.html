@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% set page_title = "Edit Zone" %}
+{% set active_page = "zones" %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pb-2 mb-3 border-bottom">
+    <div>
+        <h1>Edit Zone</h1>
+        <p class="text-muted">Modify DNS zone settings for {{ zone.origin }}</p>
+    </div>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <a href="/web/zones/{{ zone.id }}" class="btn btn-outline-secondary me-2">
+            <i class="bi bi-arrow-left"></i> Back to Zone
+        </a>
+        <a href="/web/zones" class="btn btn-outline-secondary">
+            <i class="bi bi-list"></i> All Zones
+        </a>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="bi bi-pencil"></i> Zone Details</h5>
+            </div>
+            <div class="card-body">
+                {% if error %}
+                <div class="alert alert-danger" role="alert">
+                    <i class="bi bi-exclamation-triangle"></i> {{ error }}
+                </div>
+                {% endif %}
+                
+                <form method="post" action="/web/zones/{{ zone.id }}/edit">
+                    <div class="mb-3">
+                        <label for="origin" class="form-label">Zone Origin <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="origin" name="origin" 
+                               value="{{ zone.origin.rstrip('.') }}" required
+                               pattern="^[a-zA-Z0-9.-]+$"
+                               title="Enter a valid domain name">
+                        <div class="form-text">
+                            The domain name for this zone (e.g., example.com, subdomain.example.com)
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="server_id" class="form-label">DNS Server <span class="text-danger">*</span></label>
+                        <select class="form-select" id="server_id" name="server_id" required>
+                            <option value="">Choose a DNS server...</option>
+                            {% for server in servers %}
+                            <option value="{{ server.id }}" {% if server.id == zone.server_id %}selected{% endif %}>
+                                {{ server.name }} ({{ server.api_url }})
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">
+                            Select the backend DNS server that will host this zone
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="soa_MNAME" class="form-label">Primary Nameserver <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" id="soa_MNAME" name="soa_MNAME" 
+                                       value="{{ zone.soa_MNAME }}" required
+                                       pattern="^[a-zA-Z0-9.-]+$"
+                                       title="Enter a valid nameserver hostname">
+                                <div class="form-text">
+                                    The primary authoritative nameserver for this zone
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="soa_RNAME" class="form-label">Admin Email <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" id="soa_RNAME" name="soa_RNAME" 
+                                       value="{{ zone.soa_RNAME }}" required
+                                       pattern="^[a-zA-Z0-9.-]+$"
+                                       title="Enter admin email in DNS format (dots instead of @)">
+                                <div class="form-text">
+                                    Administrator email (use dots instead of @, e.g., admin.example.com)
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label class="form-label">Current Serial</label>
+                                <div class="form-control-plaintext">{{ zone.soa_SERIAL }}</div>
+                                <div class="form-text">Serial will be automatically incremented on save</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Last Updated</label>
+                                <div class="form-control-plaintext">
+                                    {% if zone.last_updated %}
+                                        {{ zone.last_updated.strftime('%Y-%m-%d %H:%M:%S') }}
+                                    {% else %}
+                                        Never
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                        <a href="/web/zones/{{ zone.id }}" class="btn btn-secondary me-md-2">Cancel</a>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-circle"></i> Save Changes
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="bi bi-info-circle"></i> Zone Information</h6>
+            </div>
+            <div class="card-body">
+                <h6>Zone ID</h6>
+                <p class="text-muted">{{ zone.id }}</p>
+                
+                <h6>Created</h6>
+                <p class="text-muted">{{ zone.created_at.strftime('%Y-%m-%d %H:%M:%S') if zone.created_at }}</p>
+                
+                <h6>Update Status</h6>
+                <p class="text-muted">
+                    {% if zone.needs_update %}
+                        <span class="badge bg-warning">Pending Update</span>
+                    {% else %}
+                        <span class="badge bg-success">Up to Date</span>
+                    {% endif %}
+                </p>
+                
+                <h6>Ownership</h6>
+                <p class="text-muted">
+                    {% if zone.user_id %}
+                        User-owned zone
+                    {% elif zone.group_id %}
+                        Group-owned zone
+                    {% else %}
+                        System zone
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+        
+        <div class="card mt-3">
+            <div class="card-header">
+                <h6><i class="bi bi-exclamation-triangle"></i> Important Notes</h6>
+            </div>
+            <div class="card-body">
+                <h6>Zone Origin</h6>
+                <p class="small text-muted">
+                    Changing the zone origin will affect all existing DNS records. Be careful!
+                </p>
+                
+                <h6>DNS Server</h6>
+                <p class="small text-muted">
+                    Moving zones between servers may require DNS propagation time.
+                </p>
+                
+                <h6>Serial Number</h6>
+                <p class="small text-muted">
+                    The serial number will automatically increment to notify secondary servers of changes.
+                </p>
+            </div>
+        </div>
+        
+        {% if servers|length == 0 %}
+        <div class="alert alert-warning mt-3" role="alert">
+            <i class="bi bi-exclamation-triangle"></i>
+            <strong>No DNS servers configured!</strong><br>
+            Contact an administrator to configure backend DNS servers.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
