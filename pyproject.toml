@@ -5,6 +5,7 @@ description = "DDNS API server"
 authors = ["Tomas Hlavacek <tmshlvck@gmail.com>"]
 license = "GPL-3.0-or-later"
 readme = "README.md"
+packages = [{include = "teleddns_server", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.12"

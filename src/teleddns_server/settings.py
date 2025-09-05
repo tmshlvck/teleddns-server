@@ -34,6 +34,20 @@ class Settings(BaseSettings, cli_parse_args=True):
     ROOT_PATH: str = ''
     LOG_LEVEL: LogLevel = LogLevel.INFO
     SESSION_SECRET: str = secrets.token_urlsafe(16)
+    
+    @field_validator('LOG_LEVEL', mode='before')
+    @classmethod
+    def convert_log_level(cls, v):
+        if isinstance(v, str):
+            level_map = {
+                'DEBUG': LogLevel.DEBUG,
+                'INFO': LogLevel.INFO,
+                'WARNING': LogLevel.WARNING,
+                'ERROR': LogLevel.ERROR,
+                'CRITICAL': LogLevel.CRITICAL
+            }
+            return level_map.get(v.upper(), LogLevel.INFO)
+        return v
     DB_URL: str = "sqlite:///teleddns.sqlite"
     LISTEN_ADDRESS: str = "127.0.0.1"
     LISTEN_PORT: int = 8085
