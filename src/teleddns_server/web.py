@@ -25,7 +25,7 @@ from datetime import datetime
 
 from .model import (
     engine, User, Zone, Server, APIToken, RR_CLASSES,
-    A, AAAA, NS, PTR, CNAME, TXT, CAA, MX, SRV, RRClass
+    A, AAAA, NS, PTR, CNAME, TXT, CAA, MX, SRV, RRClass, UserGroupLink
 )
 from .fastapi_users_auth import generate_totp_secret, generate_totp_qr_code
 from fastapi import Header
@@ -143,13 +143,24 @@ async def dashboard(request: Request, user: User = Depends(get_current_user_web)
             zone_count = session.exec(select(func.count(Zone.id))).one()
             server_count = session.exec(select(func.count(Server.id))).one()
         else:
+            # Get user's group IDs
+            user_groups = session.exec(
+                select(UserGroupLink).where(UserGroupLink.user_id == user.id)
+            ).all()
+            user_group_ids = [link.group_id for link in user_groups]
+            
             # Count zones user has access to
-            zone_count = session.exec(
-                select(func.count(Zone.id)).where(
-                    (Zone.user_id == user.id) |
-                    (Zone.group_id.in_([g.id for g in user.groups]))
-                )
-            ).one()
+            if user_group_ids:
+                zone_count = session.exec(
+                    select(func.count(Zone.id)).where(
+                        (Zone.user_id == user.id) |
+                        (Zone.group_id.in_(user_group_ids))
+                    )
+                ).one()
+            else:
+                zone_count = session.exec(
+                    select(func.count(Zone.id)).where(Zone.user_id == user.id)
+                ).one()
             server_count = 0
         
         token_count = session.exec(
@@ -170,12 +181,18 @@ async def dashboard(request: Request, user: User = Depends(get_current_user_web)
                 select(Zone).order_by(Zone.updated_at.desc()).limit(5)
             ).all()
         else:
-            recent_zones = session.exec(
-                select(Zone).where(
-                    (Zone.user_id == user.id) |
-                    (Zone.group_id.in_([g.id for g in user.groups]))
-                ).order_by(Zone.updated_at.desc()).limit(5)
-            ).all()
+            if user_group_ids:
+                recent_zones = session.exec(
+                    select(Zone).where(
+                        (Zone.user_id == user.id) |
+                        (Zone.group_id.in_(user_group_ids))
+                    ).order_by(Zone.updated_at.desc()).limit(5)
+                ).all()
+            else:
+                recent_zones = session.exec(
+                    select(Zone).where(Zone.user_id == user.id)
+                    .order_by(Zone.updated_at.desc()).limit(5)
+                ).all()
 
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
@@ -195,12 +212,23 @@ async def list_zones(request: Request, user: User = Depends(get_current_user_web
         if user.is_admin:
             zones = session.exec(select(Zone)).all()
         else:
-            zones = session.exec(
-                select(Zone).where(
-                    (Zone.user_id == user.id) |
-                    (Zone.group_id.in_([g.id for g in user.groups]))
-                )
+            # Get user's group IDs
+            user_groups = session.exec(
+                select(UserGroupLink).where(UserGroupLink.user_id == user.id)
             ).all()
+            user_group_ids = [link.group_id for link in user_groups]
+            
+            if user_group_ids:
+                zones = session.exec(
+                    select(Zone).where(
+                        (Zone.user_id == user.id) |
+                        (Zone.group_id.in_(user_group_ids))
+                    )
+                ).all()
+            else:
+                zones = session.exec(
+                    select(Zone).where(Zone.user_id == user.id)
+                ).all()
         
         # Get record counts for each zone
         zones_with_counts = []
@@ -265,7 +293,7 @@ async def create_zone_web(
             soa_EXPIRE=1209600,
             soa_MINIMUM=86400,
             server_id=server_id,
-            user_id=user.id if not user.is_admin else None,
+            user_id=user.id,
             needs_update=True
         )
         

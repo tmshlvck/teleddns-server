@@ -15,7 +15,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from typing import Dict, Optional, Annotated
-from fastapi import FastAPI, Depends, status, Request
+from fastapi import FastAPI, Depends, status, Request, Header
 from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.exceptions import HTTPException
@@ -29,7 +29,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from .admin import add_admin
-from .view import ddns_update
+from .view import ddns_update, ddns_update_token
 from .model import User, engine, SQLModel
 from .settings import settings
 from .sync import backend_sync_loop, get_health_status, update_last_change_time
@@ -145,13 +145,27 @@ async def prometheus_metrics():
 ddns_responses={400:{'model': Status, 'description': 'Bad request'},
                 401:{'model': Status, 'description': 'Unauthorized request'},
                 404:{'model': Status, 'description': 'Zone not found'}}
-@app.get("/ddns/update", response_model=Status, responses=ddns_responses)
-@app.get("/update", response_model=Status, responses=ddns_responses)
-async def get_ddns_update(request: Request, creds: Annotated[HTTPBasicCredentials, Depends(security)], hostname: str, myip: str) -> Status:
+
+
+async def ddns_endpoint_common(request: Request, hostname: str, myip: str, 
+                             creds: Optional[HTTPBasicCredentials] = None, 
+                             authorization: Optional[str] = None) -> Status:
+    """Common DDNS endpoint logic supporting both basic auth and token auth"""
     client_ip = request.client.host if request.client else "unknown"
-    logging.info(f"DYNDNS GET update: user {creds.username} from {client_ip} hostname {hostname} myip: {myip}")
+    
     try:
-        update_status = await ddns_update(creds.username, creds.password, hostname, myip, client_ip)
+        # Check for token authentication first
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization.split(" ")[1]
+            logging.info(f"DDNS token update from {client_ip} hostname {hostname} myip: {myip}")
+            update_status = await ddns_update_token(token, hostname, myip, client_ip)
+        # Fall back to basic auth
+        elif creds:
+            logging.info(f"DDNS basic update: user {creds.username} from {client_ip} hostname {hostname} myip: {myip}")
+            update_status = await ddns_update(creds.username, creds.password, hostname, myip, client_ip)
+        else:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
         # Update the last change time for health monitoring
         update_last_change_time()
         return Status(detail=update_status)
@@ -160,3 +174,20 @@ async def get_ddns_update(request: Request, creds: Annotated[HTTPBasicCredential
     except Exception as e:
         logging.exception("Unexpected exception in ddns_update:")
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+security_optional = HTTPBasic(auto_error=False)
+
+
+@app.get("/ddns/update", response_model=Status, responses=ddns_responses)
+async def get_ddns_update(request: Request, hostname: str, myip: str,
+                         authorization: Optional[str] = Header(None),
+                         creds: Optional[HTTPBasicCredentials] = Depends(security_optional)) -> Status:
+    return await ddns_endpoint_common(request, hostname, myip, creds, authorization)
+
+
+@app.get("/update", response_model=Status, responses=ddns_responses) 
+async def get_ddns_update_alt(request: Request, hostname: str, myip: str,
+                             authorization: Optional[str] = Header(None),
+                             creds: Optional[HTTPBasicCredentials] = Depends(security_optional)) -> Status:
+    return await ddns_endpoint_common(request, hostname, myip, creds, authorization)

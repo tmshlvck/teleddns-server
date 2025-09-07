@@ -15,7 +15,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from __future__ import annotations
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING, ClassVar
+from sqlalchemy.orm import Mapped, relationship
 from enum import StrEnum
 import uuid
 # from fastapi_users_db_sqlalchemy import SQLAlchemyBaseUserTable
@@ -66,6 +67,11 @@ class User(SQLModel, table=True):
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
     )
+    
+    # Relationships for admin display
+    api_tokens: ClassVar = relationship("APIToken", back_populates="user")
+    owned_zones: ClassVar = relationship("Zone", back_populates="owner")  
+    groups: ClassVar = relationship("Group", secondary="usergrouplink", back_populates="users")
 
     @classmethod
     def gen_hash(cls, passwd: str):
@@ -90,6 +96,10 @@ class Group(SQLModel, table=True):
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
     )
+    
+    # Relationships for admin display
+    users: ClassVar = relationship("User", secondary="usergrouplink", back_populates="groups")
+    zones: ClassVar = relationship("Zone", back_populates="group")
 
 
 class APIToken(SQLModel, table=True):
@@ -108,6 +118,9 @@ class APIToken(SQLModel, table=True):
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
     )
+    
+    # Relationships for admin display
+    user: ClassVar = relationship("User", back_populates="api_tokens")
 
 
 class PasskeyCredential(SQLModel, table=True):
@@ -143,6 +156,9 @@ class Server(SQLModel, table=True):
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
     )
+    
+    # Relationships for admin display
+    zones: ClassVar = relationship("Zone", back_populates="server")
 
 
 class RRClass(StrEnum):
@@ -166,7 +182,7 @@ class Zone(SQLModel, table=True):
     soa_EXPIRE: int
     soa_MINIMUM: int
     server_id: int | None = Field(default=None, foreign_key="server.id")
-    user_id: int | None = Field(default=None, foreign_key="user.id")
+    user_id: int = Field(foreign_key="user.id")
     group_id: int | None = Field(default=None, foreign_key="group.id")
     needs_update: bool = Field(default=False)
     last_updated: Optional[datetime] = None
@@ -181,6 +197,11 @@ class Zone(SQLModel, table=True):
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
     )
+    
+    # Relationships for admin display
+    server: ClassVar = relationship("Server", back_populates="zones")
+    owner: ClassVar = relationship("User", back_populates="owned_zones")
+    group: ClassVar = relationship("Group", back_populates="zones")
 
     @field_validator("origin")
     def validate_origin(cls, value):
@@ -378,15 +399,23 @@ class SRV(RR, table=True):
         return f'{self.label : <63} {self.ttl : <5} {self.rrclass : <2} SRV	{self.priority} {self.weight} {self.port} {self.value}'
 
 
-engine = create_engine(
-    settings.DB_URL, 
-    connect_args={"check_same_thread": False},
-    pool_size=settings.DB_POOL_SIZE,
-    max_overflow=settings.DB_MAX_OVERFLOW,
-    pool_timeout=settings.DB_POOL_TIMEOUT,
-    pool_recycle=settings.DB_POOL_RECYCLE,
-    echo=False  # Set to True for SQL debugging
-)
+if settings.DB_URL.startswith("sqlite://"):
+    # SQLite-specific configuration
+    engine = create_engine(
+        settings.DB_URL,
+        connect_args={"check_same_thread": False},
+        echo=False  # Set to True for SQL debugging
+    )
+else:
+    # PostgreSQL/MySQL configuration with connection pooling
+    engine = create_engine(
+        settings.DB_URL, 
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+        pool_timeout=settings.DB_POOL_TIMEOUT,
+        pool_recycle=settings.DB_POOL_RECYCLE,
+        echo=False  # Set to True for SQL debugging
+    )
 SQLModel.metadata.create_all(engine)
 
 RR_CLASSES = [A, AAAA, NS, PTR, CNAME, TXT, CAA, MX, SRV]

@@ -53,8 +53,8 @@ To build, deploy, install and inspect logs of the Podman container run
 the following as `root`:
 ```
 mkdir /srv/teleddns-server
-podman build -f Dockerfile -t teleddns-server:0.1
-podman run -d --network=host -v /srv/teleddns-server:/data --name teleddns-server -e ROOT_PATH="/ddns" teleddns-server:0.1
+podman build -f Dockerfile -t teleddns-server:0.2
+podman run -d --network=host -v /srv/teleddns-server:/data --name teleddns-server teleddns-server:0.2
 podman logs teleddns-server
 podman generate systemd teleddns-server >/etc/systemd/system/teleddns-server.service
 systemctl daemon-reload

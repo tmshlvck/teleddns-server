@@ -24,7 +24,7 @@ from datetime import datetime
 
 from .model import (
     engine, User, Group, Zone, Server, APIToken, RR_CLASSES,
-    A, AAAA, NS, PTR, CNAME, TXT, CAA, MX, SRV, RRClass
+    A, AAAA, NS, PTR, CNAME, TXT, CAA, MX, SRV, RRClass, UserGroupLink
 )
 # from .fastapi_users_auth import get_current_user, require_api_token
 from fastapi.security import HTTPBearer
@@ -205,13 +205,24 @@ async def list_zones(user: User = Depends(get_current_user)):
         if user.is_admin:
             zones = session.exec(select(Zone)).all()
         else:
-            # Filter zones by user access
-            zones = session.exec(
-                select(Zone).where(
-                    (Zone.user_id == user.id) | 
-                    (Zone.group_id.in_([g.id for g in user.groups]))
-                )
+            # Get user's group IDs
+            user_groups = session.exec(
+                select(UserGroupLink).where(UserGroupLink.user_id == user.id)
             ).all()
+            user_group_ids = [link.group_id for link in user_groups]
+            
+            # Filter zones by user access
+            if user_group_ids:
+                zones = session.exec(
+                    select(Zone).where(
+                        (Zone.user_id == user.id) |
+                        (Zone.group_id.in_(user_group_ids))
+                    )
+                ).all()
+            else:
+                zones = session.exec(
+                    select(Zone).where(Zone.user_id == user.id)
+                ).all()
         
         return [ZoneResponse(**zone.dict()) for zone in zones]
 
@@ -240,8 +251,13 @@ async def create_zone(
         zone_dict['soa_SERIAL'] = int(datetime.utcnow().timestamp())
         zone_dict['needs_update'] = True
         
-        # Set ownership
-        if not zone_data.user_id and not user.is_admin:
+        # Set ownership - user_id is required
+        if zone_data.user_id:
+            # Only admin can set user_id to another user
+            if not user.is_admin and zone_data.user_id != user.id:
+                raise HTTPException(status_code=403, detail="Cannot assign zone to another user")
+            zone_dict['user_id'] = zone_data.user_id
+        else:
             zone_dict['user_id'] = user.id
         
         zone = Zone(**zone_dict)

@@ -139,7 +139,9 @@ def verify_token(token: str) -> Optional[User]:
         api_token = session.exec(statement).one_or_none()
         
         if api_token:
-            return api_token.user
+            # Get the user by user_id since we don't have a direct relationship
+            user = session.get(User, api_token.user_id)
+            return user
         return None
 
 
@@ -227,25 +229,43 @@ def can_write_to_zone(session: Session, user: User, zone: Zone, label: str) -> b
         
     # Check if user is in the zone's group
     if zone.group_id:
-        for group in user.groups:
-            if group.id == zone.group_id:
-                return True
+        # Need to query the relationship through the session
+        user_groups = session.exec(
+            select(UserGroupLink).where(UserGroupLink.user_id == user.id)
+        ).all()
+        user_group_ids = [link.group_id for link in user_groups]
+        if zone.group_id in user_group_ids:
+            return True
     
     return False
 
     
 # HTTP endpoints
 
+async def ddns_update_basic(username: str, password: str, domain_name: str, ipaddr: str, client_ip: str = "unknown") -> str:
+    """DDNS update using basic auth"""
+    return await _ddns_update_impl(verify_user(username, password, client_ip), domain_name, ipaddr, client_ip)
+
+
+async def ddns_update_token(token: str, domain_name: str, ipaddr: str, client_ip: str = "unknown") -> str:
+    """DDNS update using API token"""
+    return await _ddns_update_impl(verify_token(token), domain_name, ipaddr, client_ip)
+
+
 async def ddns_update(username: str, password: str, domain_name: str, ipaddr: str, client_ip: str = "unknown") -> str:
+    """Legacy DDNS update function for backward compatibility"""
+    return await ddns_update_basic(username, password, domain_name, ipaddr, client_ip)
+
+
+async def _ddns_update_impl(user: Optional[User], domain_name: str, ipaddr: str, client_ip: str = "unknown") -> str:
     def fqdn(domain: str) -> str:
         return domain.rstrip('.').strip() + '.'
 
-    # Step 1: Authenticate user (separate transaction)
-    user = verify_user(username, password, client_ip)
+    # Step 1: Check if user is authenticated
     if not user:
         raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password",
+                detail="Authentication failed",
                 headers={"WWW-Authenticate": "Basic"})
 
     # Step 2: Find zone and validate access (short transaction)
