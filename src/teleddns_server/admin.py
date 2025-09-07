@@ -92,6 +92,18 @@ class ServerView(ModelView):
 
 
 
+class GroupView(ModelView):
+    fields = [
+        "id",
+        "name", 
+        "description",
+        "created_at",
+        "updated_at",
+    ]
+    exclude_fields_from_create = ["id", "created_at", "updated_at"]
+    exclude_fields_from_edit = ["id", "created_at", "updated_at"]
+
+
 class ZoneView(ModelView):
     fields = [
         "id",
@@ -137,7 +149,7 @@ def add_admin(app):
 
     admin.add_view(ServerView(Server))
     admin.add_view(UserView(User))
-    admin.add_view(ModelView(Group))
+    admin.add_view(GroupView(Group))
     admin.add_view(ModelView(APIToken))
     admin.add_view(ZoneView(Zone))
     for cls in RR_CLASSES:
