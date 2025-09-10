@@ -28,6 +28,7 @@ from sqlalchemy.pool import StaticPool
 from pydantic import field_validator
 import re
 import ipaddress
+import hashlib
 from pwdlib import PasswordHash
 from pwdlib.hashers.argon2 import Argon2Hasher
 
@@ -127,6 +128,10 @@ class UserToken(SQLModel, table=True):
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
     )
+
+    @classmethod
+    def hash(cls, plaintext: str) -> str:
+        return hashlib.sha256(plaintext.encode()).hexdigest()
 
 
 class UserPassKey(SQLModel, table=True):

@@ -20,10 +20,11 @@ from fastapi import status
 from sqlmodel import Session, select
 import logging
 import asyncio
+import ipaddress
 from datetime import timezone
 
 from .model import *
-from .backend import update_zone, update_config, check_zone
+from .backend import update_zone, update_config
 
 # helper functions not bound to web views
 def verify_user(username: str, password: str) -> Optional[User]:
@@ -37,16 +38,15 @@ def verify_user(username: str, password: str) -> Optional[User]:
 
 
 def verify_bearer_token(token: str) -> Optional[User]:
-    import hashlib
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    
     with Session(engine) as session:
         statement = select(UserToken).where(
-            UserToken.token_hash == token_hash,
+            UserToken.token_hash == UserToken.hash(token),
             UserToken.is_active == True
         )
         user_token = session.exec(statement).one_or_none()
-        
+
+        print(f"TOKEN AUTH RESULT: {str(user_token)}")
+
         if user_token and (not user_token.expires_at or user_token.expires_at > datetime.now(timezone.utc)):
             # Update last used timestamp
             user_token.last_used = datetime.now(timezone.utc)
@@ -70,79 +70,79 @@ def set_password(username: str, password: str, admin: bool = False):
         session.commit()
 
 
-async def defer_update_zone(zone_id: int, master_server_api_url: str, master_server_api_key: str):
-    zone_data = []
-    with Session(engine) as session:
-        zone = session.get(MasterZone, zone_id)
-        if not zone:
-            raise ValueError(f"Zone with id {zone_id} not found")
-        
-        zone_data.append(zone.format_bind_zone())
-        for rrclass in RR_CLASSES:
-            statement = select(rrclass).where(rrclass.zone_id == zone_id)
-            for rr in session.exec(statement).all():
-                zone_data.append(rr.format_bind_zone())
-    zone_data.append('')
-
-    await asyncio.create_task(update_zone(zone.origin.rstrip('.').strip(),
-                                          '\n'.join(zone_data),
-                                          master_server_api_url,
-                                          master_server_api_key))
-
-
-async def defer_update_config(server_id: int, server_api_url: str, server_api_key: str, master_template: str, slave_template: str):
-    config_data = []
-    with Session(engine) as session:
-        statement = select(MasterZone).where(MasterZone.master_server_id == server_id)
-        for zobj in session.exec(statement).all():
-            config_data.append(f"""zone:
-- domain: {zobj.origin}
-  template: {master_template}
-  file: {zobj.origin.rstrip('.').strip()}.zone
-""")
-    
-        statement = select(MasterZone, SlaveZoneServer).where(MasterZone.id == SlaveZoneServer.zone_id).where(SlaveZoneServer.server_id == server_id)
-        for zobj, _ in session.exec(statement).all():
-            config_data.append(f"""zone:
-- domain: {zobj.origin}
-  template: {slave_template}
-  file: {zobj.origin.rstrip('.').strip()}.zone
-""")
-    config_data.append('')
-    
-    await asyncio.create_task(update_config('\n'.join(config_data),
-                                            server_api_url,
-                                            server_api_key))
-    
-async def run_check_zone(zone_id: int) -> Any:
-    with Session(engine) as session:
-        zone = session.get(MasterZone, zone_id)
-        if not zone:
-            raise ValueError(f"Zone with id {zone_id} not found")
-        session.refresh(zone, ["master_server"])
-        return await check_zone(zone.origin.rstrip('.').strip(),
-                                zone.master_server.api_url,
-                                zone.master_server.api_key)
+#async def defer_update_zone(zone_id: int, master_server_api_url: str, master_server_api_key: str):
+#    zone_data = []
+#    with Session(engine) as session:
+#        zone = session.get(MasterZone, zone_id)
+#        if not zone:
+#            raise ValueError(f"Zone with id {zone_id} not found")
+#
+#        zone_data.append(zone.format_bind_zone())
+#        for rrclass in RR_CLASSES:
+#            statement = select(rrclass).where(rrclass.zone_id == zone_id)
+#            for rr in session.exec(statement).all():
+#                zone_data.append(rr.format_bind_zone())
+#    zone_data.append('')
+#
+#    await asyncio.create_task(update_zone(zone.origin.rstrip('.').strip(),
+#                                          '\n'.join(zone_data),
+#                                          master_server_api_url,
+#                                          master_server_api_key))
+#
+#
+#async def defer_update_config(server_id: int, server_api_url: str, server_api_key: str, master_template: str, slave_template: str):
+#    config_data = []
+#    with Session(engine) as session:
+#        statement = select(MasterZone).where(MasterZone.master_server_id == server_id)
+#        for zobj in session.exec(statement).all():
+#            config_data.append(f"""zone:
+#- domain: {zobj.origin}
+#  template: {master_template}
+#  file: {zobj.origin.rstrip('.').strip()}.zone
+#""")
+#
+#        statement = select(MasterZone, SlaveZoneServer).where(MasterZone.id == SlaveZoneServer.zone_id).where(SlaveZoneServer.server_id == server_id)
+#        for zobj, _ in session.exec(statement).all():
+#            config_data.append(f"""zone:
+#- domain: {zobj.origin}
+#  template: {slave_template}
+#  file: {zobj.origin.rstrip('.').strip()}.zone
+#""")
+#    config_data.append('')
+#
+#    await asyncio.create_task(update_config('\n'.join(config_data),
+#                                            server_api_url,
+#                                            server_api_key))
+#
+#async def run_check_zone(zone_id: int) -> Any:
+#    with Session(engine) as session:
+#        zone = session.get(MasterZone, zone_id)
+#        if not zone:
+#            raise ValueError(f"Zone with id {zone_id} not found")
+#        session.refresh(zone, ["master_server"])
+#        return await check_zone(zone.origin.rstrip('.').strip(),
+#                                zone.master_server.api_url,
+#                                zone.master_server.api_key)
 
 
 def can_write_to_zone(session: Session, user: User, zone: MasterZone, label: str) -> bool:
     # Admin has access to everything
     if user.is_admin:
         return True
-    
+
     # Zone owner has access to everything in the zone
     if zone.owner_id == user.id:
         return True
-    
+
     # Check if user is in the zone's group (if zone has a group)
     if zone.group_id:
         user_group_statement = select(UserGroup).where(
-            UserGroup.user_id == user.id, 
+            UserGroup.user_id == user.id,
             UserGroup.group_id == zone.group_id
         )
         if session.exec(user_group_statement).one_or_none():
             return True
-    
+
     # Check explicit user label authorizations
     user_auth_statement = select(UserLabelAuthorization).where(
         UserLabelAuthorization.user_id == user.id,
@@ -151,11 +151,11 @@ def can_write_to_zone(session: Session, user: User, zone: MasterZone, label: str
     for auth in session.exec(user_auth_statement).all():
         if auth.verify_access(label):
             return True
-    
+
     # Check group label authorizations for all user's groups
     user_groups_statement = select(UserGroup).where(UserGroup.user_id == user.id)
     user_groups = session.exec(user_groups_statement).all()
-    
+
     for user_group in user_groups:
         group_auth_statement = select(GroupLabelAuthorization).where(
             GroupLabelAuthorization.group_id == user_group.group_id,
@@ -164,44 +164,51 @@ def can_write_to_zone(session: Session, user: User, zone: MasterZone, label: str
         for auth in session.exec(group_auth_statement).all():
             if auth.verify_access(label):
                 return True
-    
+
     return False
 
-    
-# HTTP endpoints
 
-async def ddns_update(username: str, password: str, domain_name: str, ipaddr: str, bearer_token: Optional[str] = None) -> str:
+# HTTP endpoints
+async def ddns_update_token(bearer_token: str, domain_name: str, ipaddr: str) -> str:
+    logging.info(f"DYNDNS GET update: bearer token auth hostname {domain_name} myip: {ipaddr}")
+    user = verify_bearer_token(bearer_token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"})
+
+    logging.info(f"DYNDNS GET update: bearer token resolved to user {user}")
+    return await _ddns_update(user, domain_name, ipaddr)
+
+
+async def ddns_update_basic(username: str, password: str, domain_name: str, ipaddr: str) -> str:
+    logging.info(f"DYNDNS GET update: basic auth user {username} hostname {domain_name} myip: {ipaddr}")
+    user = verify_user(username, password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Basic"})
+
+    # Check if user has 2FA/PassKey enabled - if so, reject basic auth
+    # Use a fresh session to avoid detached instance issues
+    with Session(engine) as check_session:
+        fresh_user = check_session.get(User, user.id)
+        has_passkeys = check_session.exec(select(UserPassKey).where(UserPassKey.user_id == user.id)).first() is not None
+
+        if fresh_user.totp_enabled or fresh_user.sso_enabled or has_passkeys:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Basic authentication not allowed for users with 2FA/PassKey/SSO enabled. Use bearer token.",
+                headers={"WWW-Authenticate": "Bearer"})
+
+    return await _ddns_update(user, domain_name, ipaddr)
+
+
+async def _ddns_update(user: User, domain_name: str, ipaddr: str) -> str:
     def fqdn(domain: str) -> str:
         return domain.rstrip('.').strip() + '.'
-
-    # Try bearer token authentication first if provided
-    if bearer_token:
-        user = verify_bearer_token(bearer_token)
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid bearer token",
-                headers={"WWW-Authenticate": "Bearer"})
-    else:
-        # Try basic authentication
-        user = verify_user(username, password)
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password",
-                headers={"WWW-Authenticate": "Basic"})
-        
-        # Check if user has 2FA/PassKey enabled - if so, reject basic auth
-        # Use a fresh session to avoid detached instance issues
-        with Session(engine) as check_session:
-            fresh_user = check_session.get(User, user.id)
-            has_passkeys = check_session.exec(select(UserPassKey).where(UserPassKey.user_id == user.id)).first() is not None
-            
-            if fresh_user.totp_enabled or fresh_user.sso_enabled or has_passkeys:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Basic authentication not allowed for users with 2FA/PassKey/SSO enabled. Use bearer token.",
-                    headers={"WWW-Authenticate": "Bearer"})
 
     search_labels = fqdn(domain_name).split('.')
     with Session(engine, expire_on_commit=False) as session:
@@ -214,7 +221,7 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Zone not found for domain {domain_name}")
-    
+
         if not can_write_to_zone(session, user, zone, label):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -227,7 +234,7 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e))
-    
+
         if norm_ipaddr.version == 6:
             table = AAAA
         elif norm_ipaddr.version == 4:
@@ -236,7 +243,7 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid protocol version {norm_ipaddr.version}")
-        
+
         statement = select(table).where(table.label == label, table.zone == zone)
         matched_rrs = [rr for rr in session.exec(statement).all()]
         changed = False
@@ -245,7 +252,7 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
                 logging.info(f"Deleting {table.__name__} RR {rr.label=} {zone.origin=} {rr.value=}")
                 session.delete(rr)
                 changed = True
-        
+
         if len(matched_rrs) >= 1:
             rr = matched_rrs[0]
             if rr.label == label and rr.rrclass == RRClass.IN and rr.zone == zone and rr.value == str(norm_ipaddr):
@@ -261,9 +268,8 @@ async def ddns_update(username: str, password: str, domain_name: str, ipaddr: st
 
         if changed:
             zone.soa_SERIAL += 1
+            zone.content_dirty = True
             session.commit()
-            # Pass zone data instead of zone object to avoid detached instance issues
-            await defer_update_zone(zone.id, zone.master_server.api_url, zone.master_server.api_key)
             return f"DDNS updated {table.__name__} {label=} {zone.origin=} -> {norm_ipaddr}"
         else:
             return f"DDNS noop {table.__name__} {label=} {zone.origin=} -> {norm_ipaddr}"

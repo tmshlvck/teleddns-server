@@ -30,8 +30,6 @@ from starlette.middleware.sessions import SessionMiddleware
 from teleddns_server.model import *
 from teleddns_server.auth import AdminAuthProvider
 
-from teleddns_server.view import run_check_zone
-
 
 class EmptyPasswordField(PasswordField):
     """Custom password field that displays empty in edit forms"""

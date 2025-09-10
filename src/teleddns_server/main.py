@@ -15,9 +15,9 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from typing import Dict, Optional, Annotated, Union
-from fastapi import FastAPI, Depends, status, Header
+from fastapi import FastAPI, Depends, status, Request
 from fastapi.responses import PlainTextResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.exceptions import HTTPException
 import logging
 import asyncio
@@ -25,14 +25,20 @@ import asyncio
 from pydantic import BaseModel
 
 from .admin import add_admin
-from .view import ddns_update
+from .view import ddns_update_basic, ddns_update_token
 from .model import User
 from .settings import settings
+from .backend import background_sync_loop
 
 app = FastAPI(root_path=settings.ROOT_PATH)
-security = HTTPBasic()
+basic_security = HTTPBasic()
 bearer_security = HTTPBearer(auto_error=False)
 add_admin(app)
+
+@app.on_event("startup")
+async def startup_event():
+    """Start the background sync loop on startup"""
+    asyncio.create_task(background_sync_loop())
 
 
 class Status(BaseModel):
@@ -60,47 +66,51 @@ async def robots():
 # POST /nic/update?hostname=subdomain.yourdomain.com&myip=1.2.3.4 HTTP/1.1
 # Host: domains.google.com
 # Authorization: Basic base64-encoded-auth-string
-async def get_auth_credentials(
-    basic_creds: Annotated[Optional[HTTPBasicCredentials], Depends(security)],
-    bearer_token: Annotated[Optional[str], Depends(bearer_security)]
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """Extract authentication credentials from either Basic or Bearer auth."""
-    if bearer_token and bearer_token.credentials:
-        return None, None, bearer_token.credentials
-    elif basic_creds:
-        return basic_creds.username, basic_creds.password, None
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Basic, Bearer"})
-
 ddns_responses={400:{'model': Status, 'description': 'Bad request'},
                 401:{'model': Status, 'description': 'Unauthorized request'},
                 404:{'model': Status, 'description': 'Zone not found'}}
 @app.get("/ddns/update", response_model=Status, responses=ddns_responses)
 @app.get("/update", response_model=Status, responses=ddns_responses)
 async def get_ddns_update(
-    auth_creds: Annotated[tuple, Depends(get_auth_credentials)],
+    request: Request,
     hostname: str,
     myip: str
 ) -> Status:
-    username, password, bearer_token = auth_creds
-
-    if bearer_token:
-        logging.info(f"DYNDNS GET update: bearer token auth hostname {hostname} myip: {myip}")
-    else:
-        logging.info(f"DYNDNS GET update: basic auth user {username} hostname {hostname} myip: {myip}")
 
     try:
-        update_status = await ddns_update(
-            username or "",
-            password or "",
-            hostname,
-            myip,
-            bearer_token
-        )
-        return Status(detail=update_status)
+        basic_creds = await basic_security(request)
+    except:
+        basic_creds = None
+
+    try:
+        bearer_token = await bearer_security(request)
+    except:
+        bearer_token = None
+
+    logging.error(f"DEBUG: {str(bearer_token)}")
+    try:
+        if bearer_token and bearer_token.credentials:
+            update_status = await ddns_update_token(
+                bearer_token.credentials,
+                hostname,
+                myip,
+            )
+            return Status(detail=update_status)
+        elif basic_creds:
+            logging.info(f"DYNDNS GET update: basic auth hostname {hostname} myip: {myip}")
+            update_status = await ddns_update_basic(
+                basic_creds.username,
+                basic_creds.password,
+                hostname,
+                myip,
+            )
+            return Status(detail=update_status)
+        else:
+            logging.debug("No authentication provided")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Basic, Bearer"})
     except HTTPException:
         raise
     except Exception as e:

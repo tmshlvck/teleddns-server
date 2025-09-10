@@ -16,7 +16,7 @@ class TestSettings(BaseSettings):
     """Test settings without CLI parsing"""
     ADMIN_PASSWORD: str | None = None
     ROOT_PATH: str = ''
-    LOG_LEVEL: LogLevel = LogLevel.INFO
+    LOG_LEVEL: LogLevel = LogLevel.DEBUG
     SESSION_SECRET: str = secrets.token_urlsafe(16)
     DB_URL: str = "sqlite:///test.sqlite"
     LISTEN_ADDRESS: str = "127.0.0.1"
