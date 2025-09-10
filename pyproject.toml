@@ -13,9 +13,13 @@ uvicorn = "^0.30.1"
 starlette-admin = "^0.14.0"
 sqlmodel = "^0.0.19"
 itsdangerous = "^2.2.0"
-passlib = "^1.7.4"
+pwdlib = {version = "^0.2.0", extras = ["argon2"]}
 pydantic-settings = "^2.3.3"
 aiohttp = "^3.9.5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
 
 
 [build-system]

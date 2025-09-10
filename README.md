@@ -110,6 +110,32 @@ template:
 include: knot-ddnsm.conf
 ```
 
+## Development
+
+### Running Tests
+
+The project includes expanding suite of tests. To run the tests:
+
+```bash
+# Install development dependencies
+poetry install
+
+# Run all tests
+DISABLE_CLI_PARSING=1 poetry run pytest tests/ -v
+```
+
+**Note**: The `DISABLE_CLI_PARSING=1` environment variable is required to prevent the settings module from trying to parse pytest command-line arguments.
+
+### Test Coverage
+
+The authentication tests cover:
+- Admin and user DDNS updates (IPv4 and IPv6)
+- Basic authentication and bearer token authentication
+- Zone ownership and group-based access control
+- UserLabelAuthorization and GroupLabelAuthorization patterns
+- 2FA/PassKey enforcement (users with 2FA must use bearer tokens)
+- Unauthorized access scenarios and proper error handling
+
 ## Usage guide
 
 Before the server can accept updates few items need to be configured:

@@ -19,7 +19,6 @@ from starlette.responses import Response
 from starlette_admin.auth import AdminConfig, AdminUser, AuthProvider
 from starlette_admin.exceptions import FormValidationError, LoginFailed
 
-from .settings import settings
 from .view import verify_user
 
 class AdminAuthProvider(AuthProvider):
@@ -34,7 +33,7 @@ class AdminAuthProvider(AuthProvider):
             if user.is_admin:
                 request.session.update({"username": user.username})
                 return response
-        
+
         raise LoginFailed("Invalid username or password")
 
     async def is_authenticated(self, request) -> bool:
@@ -48,7 +47,7 @@ class AdminAuthProvider(AuthProvider):
 
     def get_admin_user(self, request: Request) -> AdminUser:
         return AdminUser(username=request.session.get("username", None))
-    
+
     async def logout(self, request: Request, response: Response) -> Response:
         request.session.clear()
         return response

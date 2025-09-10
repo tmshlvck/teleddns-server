@@ -14,10 +14,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import Dict, Optional, Annotated
-from fastapi import FastAPI, Depends, status
+from typing import Dict, Optional, Annotated, Union
+from fastapi import FastAPI, Depends, status, Header
 from fastapi.responses import PlainTextResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from fastapi.exceptions import HTTPException
 import logging
 import asyncio
@@ -31,6 +31,7 @@ from .settings import settings
 
 app = FastAPI(root_path=settings.ROOT_PATH)
 security = HTTPBasic()
+bearer_security = HTTPBearer(auto_error=False)
 add_admin(app)
 
 
@@ -59,15 +60,46 @@ async def robots():
 # POST /nic/update?hostname=subdomain.yourdomain.com&myip=1.2.3.4 HTTP/1.1
 # Host: domains.google.com
 # Authorization: Basic base64-encoded-auth-string
+async def get_auth_credentials(
+    basic_creds: Annotated[Optional[HTTPBasicCredentials], Depends(security)],
+    bearer_token: Annotated[Optional[str], Depends(bearer_security)]
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Extract authentication credentials from either Basic or Bearer auth."""
+    if bearer_token and bearer_token.credentials:
+        return None, None, bearer_token.credentials
+    elif basic_creds:
+        return basic_creds.username, basic_creds.password, None
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic, Bearer"})
+
 ddns_responses={400:{'model': Status, 'description': 'Bad request'},
                 401:{'model': Status, 'description': 'Unauthorized request'},
                 404:{'model': Status, 'description': 'Zone not found'}}
 @app.get("/ddns/update", response_model=Status, responses=ddns_responses)
 @app.get("/update", response_model=Status, responses=ddns_responses)
-async def get_ddns_update(creds: Annotated[HTTPBasicCredentials, Depends(security)], hostname: str, myip: str) -> Status:
-    logging.info(f"DYNDNS GET update: user {creds.username} hostname {hostname} myip: {myip}")
+async def get_ddns_update(
+    auth_creds: Annotated[tuple, Depends(get_auth_credentials)],
+    hostname: str,
+    myip: str
+) -> Status:
+    username, password, bearer_token = auth_creds
+
+    if bearer_token:
+        logging.info(f"DYNDNS GET update: bearer token auth hostname {hostname} myip: {myip}")
+    else:
+        logging.info(f"DYNDNS GET update: basic auth user {username} hostname {hostname} myip: {myip}")
+
     try:
-        update_status = await ddns_update(creds.username, creds.password, hostname, myip)
+        update_status = await ddns_update(
+            username or "",
+            password or "",
+            hostname,
+            myip,
+            bearer_token
+        )
         return Status(detail=update_status)
     except HTTPException:
         raise

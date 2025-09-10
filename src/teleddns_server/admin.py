@@ -1,5 +1,5 @@
 # TeleDDNS-Server
-# (C) 2015-2024 Tomas Hlavacek (tmshlvck@gmail.com)
+# (C) 2015-2025 Tomas Hlavacek (tmshlvck@gmail.com)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,18 +17,30 @@
 from typing import Dict, Any, Awaitable
 
 from fastapi.responses import RedirectResponse
+from starlette.requests import Request
+from sqlmodel import Session
 
 from starlette_admin.contrib.sqlmodel import Admin, ModelView
 from starlette_admin.views import Link, CustomView
-from starlette_admin import PasswordField, EmailField, action, row_action, RowActionsDisplayType
-from starlette_admin.exceptions import ActionFailed
+from starlette_admin import PasswordField, EmailField, RowActionsDisplayType, BaseField
+from starlette_admin._types import RequestAction
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from teleddns_server.model import *
 from teleddns_server.auth import AdminAuthProvider
 
-from teleddns_server.view import defer_update_zone, defer_update_config, run_check_zone
+from teleddns_server.view import run_check_zone
+
+
+class EmptyPasswordField(PasswordField):
+    """Custom password field that displays empty in edit forms"""
+
+    async def serialize_value(self, request: Request, value: Any, action: RequestAction) -> Any:
+        """Override to return empty string in edit forms"""
+        if action == RequestAction.EDIT:
+            return ""
+        return await super().serialize_value(request, value, action)
 
 
 class RRView(ModelView):
@@ -38,32 +50,65 @@ class RRView(ModelView):
     exclude_fields_from_list = ["id"]
     exclude_fields_from_edit = ["id"]
 
-#    async def after_create(self, request: Request, obj: Any) -> None:
-#        await update_zone(obj.zone)
-#
-#    async def after_edit(self, request: Request, obj: Any) -> None:
-#        await update_zone(obj.zone)
-#
-#    async def after_delete(self, request: Request, obj: Any) -> None:
-#        await update_zone(obj.zone)
+    async def after_create(self, request: Request, obj: Any) -> None:
+        with Session(engine) as session:
+            rr = session.merge(obj)
+            rr.zone.content_dirty = True
+            session.commit()
+
+    async def after_edit(self, request: Request, obj: Any) -> None:
+        with Session(engine) as session:
+            rr = session.merge(obj)
+            rr.zone.content_dirty = True
+            session.commit()
+
+    async def after_delete(self, request: Request, obj: Any) -> None:
+        with Session(engine) as session:
+            zone_id = obj.zone_id
+            zone = session.get(MasterZone, zone_id)
+            if zone:
+                zone.content_dirty = True
+                session.commit()
 
 
 class UserView(ModelView):
     fields = [
         "id",
         "username",
-        PasswordField("password", exclude_from_list=True, ),
+        EmailField("email"),
+        EmptyPasswordField("password", exclude_from_list=True),
         "is_admin",
-        "access_rules",
+        "totp_enabled",
+        "sso_enabled",
+        "is_active",
+        "api_tokens",
+        "group_memberships",
+        "user_label_authorizations",
+        "owned_zones",
+        "passkeys",
         "created_at",
         "updated_at",
     ]
 
     async def before_create(self, request: Request, data: Dict[str, Any], obj: Any) -> None:
-        obj.password = obj.gen_hash(obj.password)
+        # Handle empty email field - convert empty string to None to avoid unique constraint issues
+        if obj.email is not None and obj.email.strip() == '':
+            obj.email = None
+
+        if obj.password:
+            obj.password = obj.gen_hash(obj.password)
 
     async def before_edit(self, request: Request, data: Dict[str, Any], obj: Any) -> None:
-        obj.password = obj.gen_hash(obj.password)
+        # Handle empty email field - convert empty string to None to avoid unique constraint issues
+        if data.get('email') is not None and data['email'].strip() == '':
+            obj.email = None
+
+        # Handle password field
+        if data.get('password') and data['password'].strip():
+            obj.password = obj.gen_hash(data['password'])
+        else:
+            existing_user = await self.find_by_pk(request, obj.id)
+            obj.password = existing_user.password
 
 
 class ServerView(ModelView):
@@ -74,47 +119,13 @@ class ServerView(ModelView):
         "api_key",
         "master_template",
         "slave_template",
+        "config_dirty",
+        "last_config_sync",
         "master_zones",
         "slave_zones",
         "created_at",
         "updated_at",
     ]
-    
-    actions = ["update_many", "delete"]
-    row_actions = ["update_one", "view", "edit", "delete"]
-    #row_actions_display_type = RowActionsDisplayType.DROPDOWN
-
-    @action(
-        name="update_many",
-        text="Push configs",
-        confirmation="Are you sure you want to push config updates to selected servers?",
-        submit_btn_text="Yes, proceed",
-        submit_btn_class="btn-success",
-    )
-    async def update_many(self, request: Request, pks: List[Any]) -> str:
-        #session = request.state.session
-        affected = []
-        for pk in pks:
-            server: Server = await self.find_by_pk(request, pk)
-            await defer_update_config(server)
-            affected.append(server.name)
-        return f"Started config update for servers {', '.join(affected)}"
-
-    @row_action(
-        name="update_one",
-        text="Push config",
-        confirmation="Are you sure you want to push config updates to the server?",
-        icon_class="fas fa-cogs",
-        submit_btn_text="Yes, proceed",
-        submit_btn_class="btn-success",
-        action_btn_class="btn-info",
-    )
-    async def update_one(self, request: Request, pk: Any) -> str:
-        #session = request.state.session
-        affected = []
-        server: Server = await self.find_by_pk(request, pk)
-        await defer_update_config(server)
-        return f"Started config update for server {server.name}"
 
 
 
@@ -132,71 +143,35 @@ class MasterZoneView(ModelView):
         "soa_RETRY",
         "soa_EXPIRE",
         "soa_MINIMUM",
-        "access_rules",
+        "owner",
+        "group",
+        "content_dirty",
+        "last_content_sync",
         "master_server",
         "slave_servers",
         "created_at",
         "updated_at",
         ]
-    
-    actions = ["update_many", "delete"]
-    row_actions = ["check_one", "update_one", "view", "edit", "delete"]
-    #row_actions_display_type = RowActionsDisplayType.DROPDOWN
 
-    @action(
-        name="update_many",
-        text="Update Zones on Master Server",
-        confirmation="Are you sure you want to Update Zones on Master Server?",
-        submit_btn_text="Yes, proceed",
-        submit_btn_class="btn-success",
-    )
-    async def update_many(self, request: Request, pks: List[Any]) -> str:
-        #session = request.state.session
-        affected = []
-        for pk in pks:
-            zone: MasterZone = await self.find_by_pk(request, pk)
-            await defer_update_zone(zone)
-            affected.append(zone.origin)
-        return f"Started zone update for zones {', '.join(affected)}"
+    async def after_create(self, request: Request, obj: Any) -> None:
+        with Session(engine) as session:
+            zone = session.merge(obj)
+            zone.content_dirty = True
+            if zone.master_server:
+                zone.master_server.config_dirty = True
+            for slave_server in zone.slave_servers:
+                slave_server.server.config_dirty = True
+            session.commit()
 
-    @row_action(
-        name="check_one",
-        text="Check Zone on Master Server",
-        icon_class="fas fa-check-circle",
-        action_btn_class="btn-info",
-    )
-    async def check_one(self, request: Request, pk: Any) -> str:
-        zone: MasterZone = await self.find_by_pk(request, pk)
-        result = await run_check_zone(zone)
-        sdo = result.get('stdout', '').replace("\n", "<br>")
-        if result.get('retcode', 1) != 0:
-            raise ActionFailed(f"Zone check failed for {zone.origin}:<br>{sdo}")
-        else:
-            return f"Zone check succeeded for {zone.origin}:<br>{sdo}"
-    
-    @row_action(
-        name="update_one",
-        text="Update Zones on Master Server",
-        confirmation="Are you sure you want to Update Zone on Master Server?",
-        icon_class="fas fa-cloud-upload-alt",
-        submit_btn_text="Yes, proceed",
-        submit_btn_class="btn-success",
-        action_btn_class="btn-info",
-    )
-    async def update_one(self, request: Request, pk: Any) -> str:
-        #session = request.state.session
-        zone: MasterZone = await self.find_by_pk(request, pk)
-        await defer_update_zone(zone)
-        return f"Started zone update for zone {zone.origin}"
-
-#    async def after_create(self, request: Request, obj: Any) -> None:
-#        await update_config(obj)
-#
-#    async def after_edit(self, request: Request, obj: Any) -> None:
-#        await update_config(obj)
-#
-#    async def after_delete(self, request: Request, obj: Any) -> None:
-#        await update_config(obj)
+    async def after_edit(self, request: Request, obj: Any) -> None:
+        with Session(engine) as session:
+            zone = session.merge(obj)
+            zone.content_dirty = True
+            if zone.master_server:
+                zone.master_server.config_dirty = True
+            for slave_server in zone.slave_servers:
+                slave_server.server.config_dirty = True
+            session.commit()
 
 
 def add_admin(app):
@@ -206,9 +181,13 @@ def add_admin(app):
 
     admin.add_view(ServerView(Server))
     admin.add_view(UserView(User))
+    admin.add_view(ModelView(UserToken))
+    admin.add_view(ModelView(Group))
+    admin.add_view(ModelView(UserPassKey))
+    admin.add_view(ModelView(UserLabelAuthorization))
+    admin.add_view(ModelView(GroupLabelAuthorization))
     admin.add_view(MasterZoneView(MasterZone))
-    admin.add_view(ModelView(AccessRule))
     for cls in RR_CLASSES:
         admin.add_view(RRView(cls, name=cls.__name__, label=cls.__name__))
-    
+
     admin.mount_to(app)
