@@ -14,8 +14,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import Optional
-from pydantic import Field
+from typing import Optional, Union
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 import secrets
 import logging
@@ -66,6 +66,19 @@ class Settings(BaseSettings, cli_parse_args=not os.getenv('DISABLE_CLI_PARSING',
     # Health monitoring settings
     WARN_ON_NOUPDATE: int = 7200
     WARN_ON_NOPUSH: int = 3600
+
+    @field_validator('LOG_LEVEL', mode='before')
+    @classmethod
+    def validate_log_level(cls, v) -> Union[LogLevel, int, str]:
+        if isinstance(v, str):
+            try:
+                return LogLevel[v.upper()]
+            except KeyError:
+                try:
+                    return LogLevel(int(v))
+                except (ValueError, TypeError):
+                    raise ValueError(f"Invalid log level: {v}. Must be one of: DEBUG, INFO, WARNING, ERROR, CRITICAL or their numeric equivalents")
+        return v
 
 settings = Settings()
 
