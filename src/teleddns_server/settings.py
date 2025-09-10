@@ -62,6 +62,8 @@ class Settings(BaseSettings, cli_parse_args=not os.getenv('DISABLE_CLI_PARSING',
     UPDATE_DELAY: int = 10
     UPDATE_MINIMUM_DELAY: int = 30
     UPDATE_INTERVAL: int = 600
+    BACKEND_SYNC_PERIOD: int = 300  # Background sync period in seconds
+    BACKEND_SYNC_DELAY: int = 10    # Delay before starting sync to batch updates
 
     # Health monitoring settings
     WARN_ON_NOUPDATE: int = 7200

@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from teleddns_server.model import (
     User, Group, MasterZone, Server, A, AAAA, RRClass, engine as default_engine
 )
-from teleddns_server.backend import background_sync_loop
+from teleddns_server.view import do_background_sync
 
 
 class MockBackendServer:
@@ -59,8 +59,9 @@ class MockBackendServer:
         """Set up mock backend API routes"""
 
         @self.app.get("/configwrite")
-        async def config_write():
-            self.log_request("GET", "/configwrite", None, {})
+        async def config_write(request: Request):
+            headers = dict(request.headers)
+            self.log_request("GET", "/configwrite", None, headers)
             return PlainTextResponse("Config write OK", status_code=200)
 
         @self.app.post("/configwrite")
@@ -71,13 +72,15 @@ class MockBackendServer:
             return PlainTextResponse("Config write OK", status_code=200)
 
         @self.app.get("/configreload")
-        async def config_reload():
-            self.log_request("GET", "/configreload", None, {})
+        async def config_reload(request: Request):
+            headers = dict(request.headers)
+            self.log_request("GET", "/configreload", None, headers)
             return PlainTextResponse("Config reload OK", status_code=200)
 
         @self.app.get("/zonewrite")
-        async def zone_write():
-            self.log_request("GET", "/zonewrite", None, {})
+        async def zone_write(request: Request):
+            headers = dict(request.headers)
+            self.log_request("GET", "/zonewrite", None, headers)
             return PlainTextResponse("Zone write OK", status_code=200)
 
         @self.app.post("/zonewrite")
@@ -90,14 +93,16 @@ class MockBackendServer:
 
         @self.app.get("/zonereload")
         async def zone_reload(request: Request):
+            headers = dict(request.headers)
             query_params = dict(request.query_params)
-            self.log_request("GET", "/zonereload", None, {}, query_params)
+            self.log_request("GET", "/zonereload", None, headers, query_params)
             return PlainTextResponse("Zone reload OK", status_code=200)
 
         @self.app.get("/zonecheck")
         async def zone_check(request: Request):
+            headers = dict(request.headers)
             query_params = dict(request.query_params)
-            self.log_request("GET", "/zonecheck", None, {}, query_params)
+            self.log_request("GET", "/zonecheck", None, headers, query_params)
             return {"status": "ok", "errors": []}
 
     def log_request(self, method, path, body, headers, query_params=None):
@@ -188,10 +193,10 @@ def setup_backend_test_data(test_db, mock_backend):
     """Set up test data: server, zones, and users"""
     # Patch the global engine for this test
     import teleddns_server.model
-    import teleddns_server.backend
+    import teleddns_server.view
     original_engine = teleddns_server.model.engine
     teleddns_server.model.engine = test_db
-    teleddns_server.backend.engine = test_db
+    teleddns_server.view.engine = test_db
 
     # Clear mock backend log
     mock_backend.clear_log()
@@ -303,7 +308,7 @@ def setup_backend_test_data(test_db, mock_backend):
 
     # Restore original engine
     teleddns_server.model.engine = original_engine
-    teleddns_server.backend.engine = original_engine
+    teleddns_server.view.engine = original_engine
 
 
 class TestBackendIntegration:
@@ -446,78 +451,8 @@ www  IN  AAAA 2001:db8::100
         # Clear any existing logs
         backend.clear_log()
 
-        # Run one iteration of the background sync
-        async def run_sync():
-            # Import the sync functions directly and run them once
-            from teleddns_server.backend import update_config, update_zone
-            from datetime import datetime, timezone
-            from sqlmodel import Session, select
-            from teleddns_server.model import Server, MasterZone, RR_CLASSES
-
-            with Session(data['engine']) as session:
-                # Sync servers with dirty configs
-                dirty_servers = session.exec(
-                    select(Server).where(Server.config_dirty == True)
-                ).all()
-
-                for server in dirty_servers:
-                    # Generate config data
-                    config_data = []
-
-                    # Add master zones
-                    master_zones = session.exec(
-                        select(MasterZone).where(MasterZone.master_server_id == server.id)
-                    ).all()
-
-                    for zone in master_zones:
-                        config_data.append(f"zone:\n- domain: {zone.origin}\n  template: {server.master_template}\n  file: {zone.origin.rstrip('.').strip()}.zone")
-
-                    config_content = '\n'.join(config_data) + '\n' if config_data else '\n'
-
-                    # Send config to backend
-                    await update_config(config_content, server.api_url, server.api_key)
-
-                    # Clear dirty flag and update timestamp
-                    server.config_dirty = False
-                    server.last_config_sync = datetime.now(timezone.utc)
-                    session.add(server)
-                    session.commit()
-
-                # Sync zones with dirty content
-                dirty_zones = session.exec(
-                    select(MasterZone).where(MasterZone.content_dirty == True)
-                ).all()
-
-                for zone in dirty_zones:
-                    # Generate zone data
-                    zone_data = [zone.format_bind_zone()]
-
-                    # Add all RR records for this zone
-                    for rrclass in RR_CLASSES:
-                        rr_records = session.exec(
-                            select(rrclass).where(rrclass.zone_id == zone.id)
-                        ).all()
-                        for rr in rr_records:
-                            zone_data.append(rr.format_bind_zone())
-
-                    zone_content = '\n'.join(zone_data) + '\n'
-
-                    # Send zone to backend
-                    await update_zone(
-                        zone.origin.rstrip('.').strip(),
-                        zone_content,
-                        zone.master_server.api_url,
-                        zone.master_server.api_key
-                    )
-
-                    # Clear dirty flag and update timestamp
-                    zone.content_dirty = False
-                    zone.last_content_sync = datetime.now(timezone.utc)
-                    session.add(zone)
-                    session.commit()
-
-        # Run the sync
-        asyncio.run(run_sync())
+        # Run one iteration of the background sync using the actual implementation
+        asyncio.run(do_background_sync())
 
         # Wait for backend to receive requests
         assert backend.wait_for_requests(min_count=4, timeout=5), "Expected at least 4 requests (config + 2 zones)"
@@ -537,9 +472,10 @@ www  IN  AAAA 2001:db8::100
         zone2_req = None
 
         for req in zone_write_requests:
-            if 'zonename=test1.example.com' in str(req['query_params']):
+            query_params = req.get('query_params', {})
+            if query_params.get('zonename') == 'test1.example.com':
                 zone1_req = req
-            elif 'zonename=test2.example.com' in str(req['query_params']):
+            elif query_params.get('zonename') == 'test2.example.com':
                 zone2_req = req
 
         assert zone1_req is not None, "Should have received zone write request for test1.example.com"

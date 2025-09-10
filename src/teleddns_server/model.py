@@ -315,11 +315,11 @@ class MasterZone(SQLModel, table=True):
         else:
             raise ValueError(f"SOA root name {value} does not match '{_NAME_REGEX}'")
 
-    async def __admin_repr__(self, request: Request):
-        return f"{escape(self.origin)}"
-
-    async def __admin_select2_repr__(self, request: Request) -> str:
-        return f"<span>{escape(await self.__admin_repr__(request))}</span>"
+    #async def __admin_repr__(self, request: Request):
+    #    return f"{escape(self.origin)}"
+    #
+    #async def __admin_select2_repr__(self, request: Request) -> str:
+    #    return f"<span>{escape(await self.__admin_repr__(request))}</span>"
 
     def format_bind_zone(self):
         return f"""$ORIGIN {self.origin};

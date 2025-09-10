@@ -21,25 +21,29 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer, HTTPAu
 from fastapi.exceptions import HTTPException
 import logging
 import asyncio
-
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 from .admin import add_admin
-from .view import ddns_update_basic, ddns_update_token
+from .view import ddns_update_basic, ddns_update_token, background_sync_loop
 from .model import User
 from .settings import settings
-from .backend import background_sync_loop
 
-app = FastAPI(root_path=settings.ROOT_PATH)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    background_sync_task = asyncio.create_task(background_sync_loop())
+    yield
+    background_sync_task.cancel()
+
+app = FastAPI(root_path=settings.ROOT_PATH, lifespan=lifespan)
 basic_security = HTTPBasic()
 bearer_security = HTTPBearer(auto_error=False)
 add_admin(app)
 
-@app.on_event("startup")
-async def startup_event():
-    """Start the background sync loop on startup"""
-    asyncio.create_task(background_sync_loop())
-
+#@app.on_event("startup")
+#async def startup_event():
+#    """Start the background sync loop on startup"""
+#    asyncio.create_task(background_sync_loop())
 
 class Status(BaseModel):
     detail: str

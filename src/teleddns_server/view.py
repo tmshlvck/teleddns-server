@@ -21,10 +21,157 @@ from sqlmodel import Session, select
 import logging
 import asyncio
 import ipaddress
-from datetime import timezone
-
+from datetime import datetime, timezone
 from .model import *
 from .backend import update_zone, update_config
+from .settings import settings
+
+# Global event for triggering immediate background sync
+_sync_event = None
+
+
+def trigger_background_sync():
+    """Trigger immediate background sync by setting the event."""
+    if _sync_event is not None:
+        _sync_event.set()
+
+
+# Output data formatting
+def generate_bind_zone_content(session: Session, zone: MasterZone) -> str:
+    """Generate BIND zone file content from a zone and its RR records.
+
+    Args:
+        session: SQLModel.Session
+        zone: MasterZone instance
+        rrs: Dict mapping RR class to list of RR instances
+
+    Returns:
+        Complete BIND zone file content as string
+    """
+    zone_data = [zone.format_bind_zone()]
+
+    # Collect all RR records for this zone
+    for rrclass in RR_CLASSES:
+        for rr in session.exec(
+            select(rrclass).where(rrclass.zone_id == zone.id)
+        ).all():
+            zone_data.append(rr.format_bind_zone())
+
+    return '\n'.join(zone_data) + '\n'
+
+
+def generate_knot_config_content(session: Session, server: Server) -> str:
+    """Generate Knot DNS configuration content.
+
+    Args:
+        session: SQLModel.Session
+        server: .model.Server
+
+    Returns:
+        Knot DNS configuration content as string
+    """
+    config_data = []
+
+    # Add master zones
+    for zone in server.master_zones:
+        config_data.append(f"zone:\n- domain: {zone.origin}\n  template: {server.master_template}\n  file: {zone.origin.rstrip('.').strip()}.zone")
+
+    for zone in server.slave_zones:
+        config_data.append(f"zone:\n- domain: {zone.origin}\n  template: {server.slave_template}\n  file: {zone.origin.rstrip('.').strip()}.zone")
+
+    return '\n'.join(config_data) + '\n' if config_data else '\n'
+
+async def do_background_sync():
+    """Perform one iteration of background sync - sync dirty configs and zones to backend servers"""
+
+    logging.debug("Background sync iteration starting")
+
+    with Session(engine) as session:
+        # Sync servers with dirty configs
+        dirty_servers = session.exec(
+            select(Server).where(Server.config_dirty == True)
+        ).all()
+
+        for server in dirty_servers:
+            try:
+                logging.info(f"Syncing config for server {server.name} (id={server.id})")
+
+                # Generate config content using view function
+                config_content = generate_knot_config_content(session, server)
+
+                # Send config to backend
+                await update_config(config_content, server.api_url, server.api_key)
+
+                # Clear dirty flag and update timestamp
+                server.config_dirty = False
+                server.last_config_sync = datetime.now(timezone.utc)
+                session.add(server)
+                session.commit()
+
+                logging.info(f"Successfully synced config for server {server.name}")
+
+            except Exception as e:
+                logging.error(f"Failed to sync config for server {server.name}: {e}")
+
+        # Sync zones with dirty content
+        dirty_zones = session.exec(
+            select(MasterZone).where(MasterZone.content_dirty == True)
+        ).all()
+
+        for zone in dirty_zones:
+            try:
+                logging.info(f"Syncing content for zone {zone.origin} (id={zone.id})")
+
+                # Generate zone content using view function
+                zone_content = generate_bind_zone_content(session, zone)
+
+                # Send zone to backend
+                await update_zone(
+                    zone.origin.rstrip('.').strip(),
+                    zone_content,
+                    zone.master_server.api_url,
+                    zone.master_server.api_key
+                )
+
+                # Clear dirty flag and update timestamp
+                zone.content_dirty = False
+                zone.last_content_sync = datetime.now(timezone.utc)
+                session.add(zone)
+                session.commit()
+
+                logging.info(f"Successfully synced content for zone {zone.origin}")
+
+            except Exception as e:
+                logging.error(f"Failed to sync content for zone {zone.origin}: {e}")
+
+    logging.debug("Background sync iteration finished")
+
+async def background_sync_loop():
+    """Background task that syncs dirty configs and zones to backend servers.
+
+    Runs every BACKEND_SYNC_PERIOD seconds or immediately when triggered by DDNS updates.
+    """
+    global _sync_event
+    _sync_event = asyncio.Event()
+
+    while True:
+        try:
+            # Wait for either configured timeout or sync event trigger
+            try:
+                await asyncio.wait_for(_sync_event.wait(), timeout=settings.BACKEND_SYNC_PERIOD)
+                _sync_event.clear()
+                logging.debug("Background sync triggered by event")
+            except asyncio.TimeoutError:
+                logging.debug(f"Background sync triggered by timeout ({settings.BACKEND_SYNC_PERIOD}s)")
+
+            # Add a short delay before starting sync (to batch multiple updates)
+            await asyncio.sleep(settings.BACKEND_SYNC_DELAY)
+            await do_background_sync()
+
+        except Exception as e:
+            logging.error(f"Error in background sync loop: {e}")
+            # Continue running even if there's an error
+
 
 # helper functions not bound to web views
 def verify_user(username: str, password: str) -> Optional[User]:
@@ -270,6 +417,8 @@ async def _ddns_update(user: User, domain_name: str, ipaddr: str) -> str:
             zone.soa_SERIAL += 1
             zone.content_dirty = True
             session.commit()
+            # Trigger immediate background sync after DDNS update
+            trigger_background_sync()
             return f"DDNS updated {table.__name__} {label=} {zone.origin=} -> {norm_ipaddr}"
         else:
             return f"DDNS noop {table.__name__} {label=} {zone.origin=} -> {norm_ipaddr}"
