@@ -5,7 +5,7 @@
 teleddns-server is a DNS management with special features:
 * it supports orchestrating zones on multiple DNS servers
 * it offers REST API for its data model
-* there is an admin interface based on starlette-admin
+* there is the Django Admin interface
 * there is a DDNS update endpoint API
 
 ## Functions
@@ -23,7 +23,7 @@ DDNS request authorization uses either basic auth (with user+password stored in 
 asociated with the user, one user can have multiple tokens).
 If the user has 2FA or PassKey enabled then the basic auth is not allowed and the bearer token has to be used by the user.
 
-### DNS REST API
+### DNS data model + REST API
 
 There is a DB model that contains:
 * User and Groups, there is N:M user-group relation.
@@ -77,11 +77,6 @@ commands:
   parametes: [ "zonename", ]
   method: GET
   body: "command output, to be logged"
-- endpoint: "/zonecheck"
-  parametes: [ "zonename", ]
-  method: POST
-  request_body: "zonefile as application/octet-stream or text/plain"
-  body: "command output"
 - endpoint: "/configreload"
   parametes: [ ]
   method: GET
@@ -105,9 +100,9 @@ And the zones pushed to the server have to be valid BIND zone files (Knot is use
 
 ### Timing
 
-The teleddns-server supports dynamic timing for pushing the changes made over admin/web/REST API and DDNS API to the backend server. By default the server starts a background task on startup that waits for changes. We remember for each zone and server if there are any any un-synced changes and when was the last sync.
+The teleddns-server supports dynamic timing for pushing the changes made over admin/web/REST API and DDNS API to the backend server. By default the server starts a background task on startup that waits for changes. We remember for each zone and server if there are any any un-synced changes (for zone content_dirty flag and for server config_dirty flag) and when was the last successful sync.
 
-When there is a change from any source the background task wakes up, waits for UPDATE_DELAY=10 (seconds) and then checks what zones or servers need push & reload. Any zones that were updated in the interval (now-UPDATE_MINIMUM_DELAY, now) are skipped - default UPDATE_MINIMUM_DELAY=3*UPDATE_DELAY. Every UPDATE_INTERVAL=600 the background thread wakes and does the same procedure.
+When there is a change from any source the background task wakes up, waits for BACKEND_SYNC_DELAY=10 (seconds) and then checks what zones or servers need push & reload. Regardless of this event-driven sync there is also reguler BACKEND_SYNC_INTERVAL=300 (seconds) that will regularly check for dirty servers and zones and run the sync if needed.
 
 Only after the zone is successfully pushed and reloaded on the backend server the dirty flags get cleared and the update time is recorded. The same applies to server config sync.
 
@@ -119,23 +114,18 @@ The software produces an audit log (using Python logging library). The log recor
 
 The push operations to the backend server are also logged with the name and SOA serials for the zones that are being pushed.
 
-The app should also have `/healthcheck` endpoint that would report `OK uptime=<seconds> last_update=<timestamp1> last_push=<timestamp2>`. The last_update is the timestamp of the last update form any source and the last_push is the timestampt for the last successful sync to all backend servers.
-
-If `last_update > WARN_ON_NOUPDATE and uptime > WARN_ON_NOUPDATE` change `OK` to `WARN`. Default `WARN_ON_NOUPDATE=7200`.
-If `last_push > WARN_ON_NOPUSH and uptime > WARN_ON_NOPUSH` change `OK` to `WARN`. Default `WARN_ON_NOPUSH=3600`.
-
-Create also Prometheus observability endpoint that would show number of changes per zone, number of zones and number of records in each zone and backend sync time.
+The app should also have `/healthcheck` endpoint that would report
+* `OK` if there are no dirty servers and zones
+* `OK` if for all dirty zones or servers the time since last successful sync < BACKEND_SYNC_INTERVAL * 3
+* `WARN` if for all dirty zones or servers the time since last successful sync < 7200 and the previous conditions are not met
+* `ERR` otherwise
 
 ## Tech stack
 
 Use the following libraries:
 
 * Python & poetry
-* FastAPI
-* Pydantic for the API and for config
-* SQLModel + SQLAlchemy
-* FastAPI-Users
-* starlette-admin
+* Django
 * HTMX with Bootstrap
 * try to minimize use of JavaScript
 * Sqlite for the DB

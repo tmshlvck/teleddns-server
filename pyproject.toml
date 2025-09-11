@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "teleddns-server"
-version = "0.1.0"
+version = "0.3.0"
 description = "DDNS API server"
 authors = ["Tomas Hlavacek <tmshlvck@gmail.com>"]
 license = "GPL-3.0-or-later"
@@ -8,25 +8,25 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-fastapi = "^0.111.0"
-uvicorn = "^0.30.1"
-starlette-admin = "^0.14.0"
-sqlmodel = "^0.0.19"
-itsdangerous = "^2.2.0"
+Django = "^5.2.0"
+djangorestframework = "^3.16.1"
+django-environ = "^0.11.0"
+requests = "^2.31.0"
+dnspython = "^2.4.0"
+pyotp = "^2.9.0"
+django-cors-headers = "^4.3.0"
 pwdlib = {version = "^0.2.0", extras = ["argon2"]}
-pydantic-settings = "^2.3.3"
-aiohttp = "^3.9.5"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
+pytest-django = "^4.8.0"
 pytest-asyncio = "^0.21.0"
 httpx = "^0.27.0"
 requests = "^2.31.0"
+factory-boy = "^3.3.0"
 
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry.scripts]
-teleddns_server = "teleddns_server:main"
