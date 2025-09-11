@@ -24,11 +24,13 @@ from starlette_admin.contrib.sqlmodel import Admin, ModelView
 from starlette_admin.views import Link, CustomView
 from starlette_admin import PasswordField, EmailField, RowActionsDisplayType, BaseField
 from starlette_admin._types import RequestAction
+from starlette_admin.exceptions import FormValidationError
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from teleddns_server.model import *
 from teleddns_server.auth import AdminAuthProvider
+from teleddns_server.view import trigger_background_sync
 
 
 class EmptyPasswordField(PasswordField):
@@ -53,12 +55,14 @@ class RRView(ModelView):
             rr = session.merge(obj)
             rr.zone.content_dirty = True
             session.commit()
+            trigger_background_sync()
 
     async def after_edit(self, request: Request, obj: Any) -> None:
         with Session(engine) as session:
             rr = session.merge(obj)
             rr.zone.content_dirty = True
             session.commit()
+        trigger_background_sync()
 
     async def after_delete(self, request: Request, obj: Any) -> None:
         with Session(engine) as session:
@@ -67,6 +71,7 @@ class RRView(ModelView):
             if zone:
                 zone.content_dirty = True
                 session.commit()
+        trigger_background_sync()
 
 
 class UserView(ModelView):
@@ -92,7 +97,6 @@ class UserView(ModelView):
         # Handle empty email field - convert empty string to None to avoid unique constraint issues
         if obj.email is not None and obj.email.strip() == '':
             obj.email = None
-
         if obj.password:
             obj.password = obj.gen_hash(obj.password)
 
@@ -100,7 +104,6 @@ class UserView(ModelView):
         # Handle empty email field - convert empty string to None to avoid unique constraint issues
         if data.get('email') is not None and data['email'].strip() == '':
             obj.email = None
-
         # Handle password field
         if data.get('password') and data['password'].strip():
             obj.password = obj.gen_hash(data['password'])
@@ -125,6 +128,33 @@ class ServerView(ModelView):
         "updated_at",
     ]
 
+    async def after_create(self, request: Request, obj: Any) -> None:
+        with Session(engine) as session:
+            server = session.merge(obj)
+            server.config_dirty = True
+            session.commit()
+        trigger_background_sync()
+
+    async def after_edit(self, request: Request, obj: Any) -> None:
+        with Session(engine) as session:
+            server = session.merge(obj)
+            server.config_dirty = True
+            session.commit()
+        trigger_background_sync()
+
+    async def after_delete(self, request: Request, obj: Any) -> None:
+        # For server deletion, we need to mark all related zones as dirty
+        with Session(engine) as session:
+            # Mark all master zones that were using this server
+            master_zones = session.query(MasterZone).filter(MasterZone.master_server_id == obj.id).all()
+            for zone in master_zones:
+                zone.content_dirty = True
+            # Mark all slave zones that were using this server
+            slave_zones = session.query(MasterZone).join(SlaveZoneServer).filter(SlaveZoneServer.server_id == obj.id).all()
+            for zone in slave_zones:
+                zone.content_dirty = True
+            session.commit()
+        trigger_background_sync()
 
 
 class MasterZoneView(ModelView):
@@ -150,6 +180,9 @@ class MasterZoneView(ModelView):
         "created_at",
         "updated_at",
         ]
+    exclude_fields_from_create = ["id", "last_content_sync", "created_at", "updated_at"]
+    exclude_fields_from_list = ["id"]
+    exclude_fields_from_edit = ["id", "created_at", "updated_at"]
 
     async def after_create(self, request: Request, obj: Any) -> None:
         with Session(engine) as session:
@@ -160,6 +193,7 @@ class MasterZoneView(ModelView):
             for slave_server in zone.slave_servers:
                 slave_server.server.config_dirty = True
             session.commit()
+        trigger_background_sync()
 
     async def after_edit(self, request: Request, obj: Any) -> None:
         with Session(engine) as session:
@@ -170,6 +204,24 @@ class MasterZoneView(ModelView):
             for slave_server in zone.slave_servers:
                 slave_server.server.config_dirty = True
             session.commit()
+        trigger_background_sync()
+
+    async def after_delete(self, request: Request, obj: Any) -> None:
+        # When a zone is deleted, mark related servers as dirty
+        with Session(engine) as session:
+            # Mark master server as dirty if it was assigned
+            if obj.master_server_id:
+                master_server = session.get(Server, obj.master_server_id)
+                if master_server:
+                    master_server.config_dirty = True
+            # Mark all slave servers as dirty
+            slave_server_links = session.query(SlaveZoneServer).filter(SlaveZoneServer.zone_id == obj.id).all()
+            for link in slave_server_links:
+                slave_server = session.get(Server, link.server_id)
+                if slave_server:
+                    slave_server.config_dirty = True
+            session.commit()
+        trigger_background_sync()
 
 
 def add_admin(app):

@@ -217,61 +217,6 @@ def set_password(username: str, password: str, admin: bool = False):
         session.commit()
 
 
-#async def defer_update_zone(zone_id: int, master_server_api_url: str, master_server_api_key: str):
-#    zone_data = []
-#    with Session(engine) as session:
-#        zone = session.get(MasterZone, zone_id)
-#        if not zone:
-#            raise ValueError(f"Zone with id {zone_id} not found")
-#
-#        zone_data.append(zone.format_bind_zone())
-#        for rrclass in RR_CLASSES:
-#            statement = select(rrclass).where(rrclass.zone_id == zone_id)
-#            for rr in session.exec(statement).all():
-#                zone_data.append(rr.format_bind_zone())
-#    zone_data.append('')
-#
-#    await asyncio.create_task(update_zone(zone.origin.rstrip('.').strip(),
-#                                          '\n'.join(zone_data),
-#                                          master_server_api_url,
-#                                          master_server_api_key))
-#
-#
-#async def defer_update_config(server_id: int, server_api_url: str, server_api_key: str, master_template: str, slave_template: str):
-#    config_data = []
-#    with Session(engine) as session:
-#        statement = select(MasterZone).where(MasterZone.master_server_id == server_id)
-#        for zobj in session.exec(statement).all():
-#            config_data.append(f"""zone:
-#- domain: {zobj.origin}
-#  template: {master_template}
-#  file: {zobj.origin.rstrip('.').strip()}.zone
-#""")
-#
-#        statement = select(MasterZone, SlaveZoneServer).where(MasterZone.id == SlaveZoneServer.zone_id).where(SlaveZoneServer.server_id == server_id)
-#        for zobj, _ in session.exec(statement).all():
-#            config_data.append(f"""zone:
-#- domain: {zobj.origin}
-#  template: {slave_template}
-#  file: {zobj.origin.rstrip('.').strip()}.zone
-#""")
-#    config_data.append('')
-#
-#    await asyncio.create_task(update_config('\n'.join(config_data),
-#                                            server_api_url,
-#                                            server_api_key))
-#
-#async def run_check_zone(zone_id: int) -> Any:
-#    with Session(engine) as session:
-#        zone = session.get(MasterZone, zone_id)
-#        if not zone:
-#            raise ValueError(f"Zone with id {zone_id} not found")
-#        session.refresh(zone, ["master_server"])
-#        return await check_zone(zone.origin.rstrip('.').strip(),
-#                                zone.master_server.api_url,
-#                                zone.master_server.api_key)
-
-
 def can_write_to_zone(session: Session, user: User, zone: MasterZone, label: str) -> bool:
     # Admin has access to everything
     if user.is_admin:

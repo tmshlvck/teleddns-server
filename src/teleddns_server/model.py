@@ -39,8 +39,8 @@ password_hash = PasswordHash((Argon2Hasher(),))
 
 
 class UserGroup(SQLModel, table=True):
-    user_id: int = Field(foreign_key="user.id", primary_key=True)
-    group_id: int = Field(foreign_key="group.id", primary_key=True)
+    user_id: int = Field(foreign_key="user.id", primary_key=True, nullable=False)
+    group_id: int = Field(foreign_key="group.id", primary_key=True, nullable=False)
 
     created_at: Optional[datetime] = Field(
         default=None,
@@ -105,7 +105,7 @@ class UserToken(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     token_hash: str = Field(unique=True)
     description: Optional[str] = Field(default=None)
-    user_id: int = Field(foreign_key="user.id")
+    user_id: Optional[int] = Field(foreign_key="user.id", nullable=False)
     user: "User" = Relationship(back_populates="api_tokens")
 
     def __str__(self):
@@ -136,7 +136,7 @@ class UserToken(SQLModel, table=True):
 
 class UserPassKey(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="user.id")
+    user_id: Optional[int] = Field(foreign_key="user.id", nullable=False)
     user: "User" = Relationship(back_populates="passkeys")
 
     credential_id: str = Field(unique=True)
@@ -180,8 +180,8 @@ class Group(SQLModel, table=True):
 
 
 class SlaveZoneServer(SQLModel, table=True):
-    server_id: Union[int, None] = Field(default=None, foreign_key="server.id", primary_key=True)
-    zone_id: Union[int, None] = Field(default=None, foreign_key="masterzone.id", primary_key=True)
+    server_id: Optional[int] = Field(default=None, foreign_key="server.id", primary_key=True, nullable=False)
+    zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", primary_key=True, nullable=False)
     created_at: Optional[datetime] = Field(
         default=None,
         sa_type=DateTime(timezone=True),
@@ -248,10 +248,10 @@ class MasterZone(SQLModel, table=True):
     soa_MINIMUM: int
 
     # Owner and group assignment
-    owner_id: int = Field(foreign_key="user.id")
-    owner: "User" = Relationship(back_populates="owned_zones")
+    owner_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
+    owner: Optional["User"] = Relationship(back_populates="owned_zones")
 
-    group_id: Optional[int] = Field(default=None, foreign_key="group.id")
+    group_id: Optional[int] = Field(default=None, foreign_key="group.id", nullable=True)
     group: Optional["Group"] = Relationship(back_populates="owned_zones")
 
     # Backend sync tracking
@@ -262,8 +262,8 @@ class MasterZone(SQLModel, table=True):
         return self.origin
 
     # Relationships
-    master_server_id: Union[int, None] = Field(default=None, foreign_key="server.id")
-    master_server: Union["Server", None] = Relationship(back_populates="master_zones")
+    master_server_id: Optional[int] = Field(default=None, foreign_key="server.id", nullable=True)
+    master_server: Optional["Server"] = Relationship(back_populates="master_zones")
     slave_servers: List["Server"] = Relationship(back_populates="slave_zones", link_model=SlaveZoneServer)
     created_at: Optional[datetime] = Field(
         default=None,
@@ -329,10 +329,10 @@ $TTL {settings.DEFAULT_TTL};
 
 class UserLabelAuthorization(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="user.id")
+    user_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
     user: "User" = Relationship(back_populates="user_label_authorizations")
 
-    zone_id: int = Field(foreign_key="masterzone.id")
+    zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", nullable=False)
     zone: "MasterZone" = Relationship()
 
     label_pattern: str
@@ -360,10 +360,10 @@ class UserLabelAuthorization(SQLModel, table=True):
 
 class GroupLabelAuthorization(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    group_id: int = Field(foreign_key="group.id")
+    group_id: Optional[int] = Field(default=None, foreign_key="group.id", nullable=False)
     group: "Group" = Relationship(back_populates="group_label_authorizations")
 
-    zone_id: int = Field(foreign_key="masterzone.id")
+    zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", nullable=False)
     zone: "MasterZone" = Relationship()
 
     label_pattern: str
@@ -394,7 +394,7 @@ class GroupLabelAuthorization(SQLModel, table=True):
 _RRLABEL_REGEX = r"^(?![0-9]+$)(?!-)[a-zA-Z0-9\.-]{,63}(?<!-)$"
 class RR(SQLModel):
     id: Optional[int] = Field(default=None, primary_key=True)
-    zone_id: int = Field(default=None, foreign_key="masterzone.id")
+    zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", nullable=False)
     label: str
     ttl: int = Field(default=3600)
     rrclass: RRClass
