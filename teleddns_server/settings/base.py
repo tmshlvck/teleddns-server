@@ -163,3 +163,6 @@ BACKEND_SYNC_PERIOD = env.int('BACKEND_SYNC_PERIOD', default=300)    # Backgroun
 BACKEND_SYNC_DELAY = env.int('BACKEND_SYNC_DELAY', default=10)       # Delay before sync to batch updates
 DISABLE_BACKEND_SYNC = env.bool('DISABLE_BACKEND_SYNC', default=False)
 TESTING = env.bool('TESTING', default=False)  # Control sync service during tests
+
+# TeleDDNS DDNS Settings  
+DDNS_DEFAULT_TTL = env.int('DDNS_DEFAULT_TTL', default=10)          # Default TTL for DDNS records in seconds

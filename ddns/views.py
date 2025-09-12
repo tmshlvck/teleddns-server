@@ -16,6 +16,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.models import AnonymousUser
 from django.utils.decorators import method_decorator
 from django.views import View
+from django.conf import settings
 import base64
 
 from dns_manager.models import (
@@ -218,7 +219,7 @@ def _process_ddns_update(user: User, hostname: str, myip: str) -> JsonResponse:
             zone=zone,
             label=label,
             value=ip_str,
-            ttl=300,  # Default DDNS TTL
+            ttl=settings.DDNS_DEFAULT_TTL,
             last_update_metadata=f"DDNS create by {user.username}"
         )
         changed = True
