@@ -10,7 +10,7 @@ readme = "README.md"
 python = "^3.12"
 fastapi = "^0.111.0"
 uvicorn = "^0.30.1"
-starlette-admin = "^0.14.0"
+starlette-admin = "^0.15.1"
 sqlmodel = "^0.0.19"
 itsdangerous = "^2.2.0"
 pwdlib = {version = "^0.2.0", extras = ["argon2"]}

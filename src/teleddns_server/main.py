@@ -17,7 +17,7 @@
 from typing import Dict, Optional, Annotated, Union
 from fastapi import FastAPI, Depends, status, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBasic, HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.exceptions import HTTPException, RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import ValidationError
@@ -25,6 +25,10 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
 
 from .admin import add_admin
 from .view import ddns_update_basic, ddns_update_token, background_sync_loop
@@ -41,78 +45,20 @@ app = FastAPI(root_path=settings.ROOT_PATH, lifespan=lifespan)
 basic_security = HTTPBasic()
 bearer_security = HTTPBearer(auto_error=False)
 
-# Add 422 validation error logging for debugging
+# Add 422 validation error logging for debugging of starlette-admin
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     exc_str = f'{exc}'.replace('\n', ' ').replace('   ', ' ')
     logging.error(f"422 FastAPI Validation Error - Request: {request.method} {request.url} - Error: {exc_str}")
     logging.error(f"422 FastAPI Validation Error - Request body: {await request.body()}")
-    content = {
-        'detail': exc.errors(),
-        'body': exc.body,
-    }
-    return JSONResponse(
-        content=content, 
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
-    )
+    return await request_validation_exception_handler(request, exc)
 
-# Add handler for Pydantic validation errors
-@app.exception_handler(ValidationError)
-async def pydantic_validation_exception_handler(request: Request, exc: ValidationError):
-    exc_str = f'{exc}'.replace('\n', ' ').replace('   ', ' ')
-    logging.error(f"422 Pydantic Validation Error - Request: {request.method} {request.url} - Error: {exc_str}")
-    try:
-        body = await request.body()
-        logging.error(f"422 Pydantic Validation Error - Request body: {body}")
-    except:
-        logging.error(f"422 Pydantic Validation Error - Could not read request body")
-    
-    content = {
-        'detail': exc.errors(),
-        'message': 'Validation failed'
-    }
-    return JSONResponse(
-        content=content, 
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
-    )
-
-# Add handler for Starlette HTTP exceptions (including 422s from starlette-admin)
 @app.exception_handler(StarletteHTTPException)
-async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
-    if exc.status_code == 422:
-        logging.error(f"422 Starlette HTTP Error - Request: {request.method} {request.url} - Error: {exc.detail}")
-        try:
-            body = await request.body()
-            logging.error(f"422 Starlette HTTP Error - Request body: {body}")
-        except:
-            logging.error(f"422 Starlette HTTP Error - Could not read request body")
-    
-    # Re-raise the exception to let FastAPI handle it normally
-    raise exc
-
-# Add generic exception handler to catch all unhandled exceptions
-@app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception):
-    exc_str = f'{exc}'.replace('\n', ' ').replace('   ', ' ')
-    logging.error(f"Unhandled Exception - Request: {request.method} {request.url} - Type: {type(exc).__name__} - Error: {exc_str}")
-    
-    # If it's a 422-like error, log more details
-    if "422" in exc_str or "validation" in exc_str.lower() or "unprocessable" in exc_str.lower():
-        try:
-            body = await request.body()
-            logging.error(f"422-like Exception - Request body: {body}")
-        except:
-            logging.error(f"422-like Exception - Could not read request body")
-    
-    # Re-raise the exception to let FastAPI handle it normally
-    raise exc
+async def custom_http_exception_handler(request, exc):
+    logging.error(f"422 Starlette HTTP Error - Request: {request.method} {request.url} - Error: {exc.detail}")
+    return await http_exception_handler(request, exc)
 
 add_admin(app)
-
-#@app.on_event("startup")
-#async def startup_event():
-#    """Start the background sync loop on startup"""
-#    asyncio.create_task(background_sync_loop())
 
 class Status(BaseModel):
     detail: str
@@ -120,14 +66,6 @@ class Status(BaseModel):
 @app.get("/")
 def get_root() -> Status:
     return Status(detail="NOOP")
-
-#responses={400:{'model': Status, 'description': 'Bad request'},
-#           401:{'model': Status, 'description': 'Unauthorized request'},
-#           404:{'model': Status, 'description': 'Zone not found'}}
-#@app.get("/zone/{zonename}", response_class=PlainTextResponse, responses=responses)
-#async def get_zone(zonename: str) -> PlainTextResponse:
-#    # TODO: API key auth
-#    return PlainTextResponse(content=await gen_bind_zone(zonename))
 
 
 @app.get('/robots.txt', response_class=PlainTextResponse)

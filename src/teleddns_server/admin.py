@@ -21,10 +21,8 @@ from starlette.requests import Request
 from sqlmodel import Session
 
 from starlette_admin.contrib.sqlmodel import Admin, ModelView
-from starlette_admin.views import Link, CustomView
-from starlette_admin import PasswordField, EmailField, RowActionsDisplayType, BaseField
+from starlette_admin import PasswordField, EmailField, RowActionsDisplayType, BaseField, RelationField, FileField
 from starlette_admin._types import RequestAction
-from starlette_admin.exceptions import FormValidationError
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -32,18 +30,18 @@ from teleddns_server.model import *
 from teleddns_server.auth import AdminAuthProvider
 from teleddns_server.view import trigger_background_sync
 
+from starlette_admin.helpers import pydantic_error_to_form_validation_errors
+from pydantic import ValidationError
 
-class EmptyPasswordField(PasswordField):
-    """Custom password field that displays empty in edit forms"""
-
-    async def serialize_value(self, request: Request, value: Any, action: RequestAction) -> Any:
-        """Override to return empty string in edit forms"""
-        if action == RequestAction.EDIT:
-            return ""
-        return await super().serialize_value(request, value, action)
+class ExtendedModelView(ModelView):
+    def handle_exception(self, exc: Exception) -> None:
+        logging.exception("ExtendedModelView: ")
+        if isinstance(exc, ValidationError):
+                raise pydantic_error_to_form_validation_errors(exc)
+        return super().handle_exception(exc)  # pragma: no cover
 
 
-class RRView(ModelView):
+class RRView(ExtendedModelView):
     sortable_fields = ["label", "zone"]
     sortable_fields_mapping = { "zone": MasterZone.id, }
     exclude_fields_from_create = ["id"]
@@ -74,7 +72,16 @@ class RRView(ModelView):
         trigger_background_sync()
 
 
-class UserView(ModelView):
+class EmptyPasswordField(PasswordField):
+    """Custom password field that displays empty in edit forms"""
+
+    async def serialize_value(self, request: Request, value: Any, action: RequestAction) -> Any:
+        """Override to return empty string in edit forms"""
+        if action == RequestAction.EDIT:
+            return ""
+        return await super().serialize_value(request, value, action)
+
+class UserView(ExtendedModelView):
     fields = [
         "id",
         "username",
@@ -97,7 +104,7 @@ class UserView(ModelView):
         # Handle empty email field - convert empty string to None to avoid unique constraint issues
         if obj.email is not None and obj.email.strip() == '':
             obj.email = None
-        if obj.password:
+        if obj.password and len(obj.password.strip()) > 2:
             obj.password = obj.gen_hash(obj.password)
 
     async def before_edit(self, request: Request, data: Dict[str, Any], obj: Any) -> None:
@@ -105,14 +112,14 @@ class UserView(ModelView):
         if data.get('email') is not None and data['email'].strip() == '':
             obj.email = None
         # Handle password field
-        if data.get('password') and data['password'].strip():
+        if data.get('password') and len(data['password'].strip()) > 2:
             obj.password = obj.gen_hash(data['password'])
         else:
             existing_user = await self.find_by_pk(request, obj.id)
             obj.password = existing_user.password
 
 
-class ServerView(ModelView):
+class ServerView(ExtendedModelView):
     fields = [
         "id",
         "name",
@@ -157,7 +164,7 @@ class ServerView(ModelView):
         trigger_background_sync()
 
 
-class MasterZoneView(ModelView):
+class MasterZoneView(ExtendedModelView):
     fields = [
         "id",
         "origin",
@@ -231,11 +238,11 @@ def add_admin(app):
 
     admin.add_view(ServerView(Server))
     admin.add_view(UserView(User))
-    admin.add_view(ModelView(UserToken))
-    admin.add_view(ModelView(Group))
-    admin.add_view(ModelView(UserPassKey))
-    admin.add_view(ModelView(UserLabelAuthorization))
-    admin.add_view(ModelView(GroupLabelAuthorization))
+    admin.add_view(ExtendedModelView(UserToken))
+    admin.add_view(ExtendedModelView(UserPassKey))
+    admin.add_view(ExtendedModelView(Group))
+    admin.add_view(ExtendedModelView(UserLabelAuthorization))
+    admin.add_view(ExtendedModelView(GroupLabelAuthorization))
     admin.add_view(MasterZoneView(MasterZone))
     for cls in RR_CLASSES:
         admin.add_view(RRView(cls, name=cls.__name__, label=cls.__name__))

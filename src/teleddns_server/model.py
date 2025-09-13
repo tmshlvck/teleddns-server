@@ -17,6 +17,7 @@
 from typing import Optional, List, Union
 from enum import StrEnum
 
+import logging
 from fastapi import Request
 from markupsafe import escape
 
@@ -91,11 +92,15 @@ class User(SQLModel, table=True):
     )
 
     @classmethod
-    def gen_hash(cls, passwd: str):
+    def gen_hash(cls, passwd: str) -> str:
         return password_hash.hash(passwd)
 
-    def verify_password(self, passwd: str):
-        return password_hash.verify(passwd, self.password)
+    def verify_password(self, passwd: str) -> bool:
+        try:
+            return password_hash.verify(passwd, self.password)
+        except Exception as e:
+            logging.exception(e)
+            return False
 
     def __str__(self):
         return self.username
@@ -105,8 +110,8 @@ class UserToken(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     token_hash: str = Field(unique=True)
     description: Optional[str] = Field(default=None)
-    user_id: Optional[int] = Field(foreign_key="user.id", nullable=False)
-    user: "User" = Relationship(back_populates="api_tokens")
+    user_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
+    user: User = Relationship(back_populates="api_tokens")
 
     def __str__(self):
         return f"{self.description or 'Token'} ({self.user.username if self.user else 'Unknown'})"
@@ -136,8 +141,8 @@ class UserToken(SQLModel, table=True):
 
 class UserPassKey(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: Optional[int] = Field(foreign_key="user.id", nullable=False)
-    user: "User" = Relationship(back_populates="passkeys")
+    user_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
+    user: User = Relationship(back_populates="passkeys")
 
     credential_id: str = Field(unique=True)
     public_key: str
@@ -249,10 +254,10 @@ class MasterZone(SQLModel, table=True):
 
     # Owner and group assignment
     owner_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
-    owner: Optional["User"] = Relationship(back_populates="owned_zones")
+    owner: Optional[User] = Relationship(back_populates="owned_zones")
 
     group_id: Optional[int] = Field(default=None, foreign_key="group.id", nullable=True)
-    group: Optional["Group"] = Relationship(back_populates="owned_zones")
+    group: Optional[Group] = Relationship(back_populates="owned_zones")
 
     # Backend sync tracking
     content_dirty: bool = Field(default=True)
@@ -263,8 +268,8 @@ class MasterZone(SQLModel, table=True):
 
     # Relationships
     master_server_id: Optional[int] = Field(default=None, foreign_key="server.id", nullable=True)
-    master_server: Optional["Server"] = Relationship(back_populates="master_zones")
-    slave_servers: List["Server"] = Relationship(back_populates="slave_zones", link_model=SlaveZoneServer)
+    master_server: Optional[Server] = Relationship(back_populates="master_zones")
+    slave_servers: List[Server] = Relationship(back_populates="slave_zones", link_model=SlaveZoneServer)
     created_at: Optional[datetime] = Field(
         default=None,
         sa_type=DateTime(timezone=True),
