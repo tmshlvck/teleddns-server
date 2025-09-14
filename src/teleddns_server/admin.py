@@ -186,25 +186,27 @@ class UserView(ExtendedModelView):
     ]
 
     async def before_create(self, request: Request, data: Dict[str, Any], obj: Any) -> None:
-        # Call parent hook for last_update_info
-        await super().before_create(request, data, obj)
-
         # Handle empty email field - convert empty string to None to avoid unique constraint issues
         if obj.email is not None and obj.email.strip() == '':
             obj.email = None
         if obj.password and len(obj.password.strip()) > 2:
             obj.password = obj.gen_hash(obj.password)
 
-    async def before_edit(self, request: Request, data: Dict[str, Any], obj: Any) -> None:
         # Call parent hook for last_update_info
-        await super().before_edit(request, data, obj)
+        await super().before_create(request, data, obj)
 
+
+    async def before_edit(self, request: Request, data: Dict[str, Any], obj: Any) -> None:
         # Handle password field
         if data.get('password') and len(data['password'].strip()) > 2:
             obj.password = obj.gen_hash(data['password'])
         else:
-            existing_user = await self.find_by_pk(request, obj.id)
+            with Session(engine) as session:
+                existing_user = session.get(User, obj.id)
             obj.password = existing_user.password
+
+        # Call parent hook for last_update_info
+        await super().before_edit(request, data, obj)
 
 
 class ServerView(ExtendedModelView):

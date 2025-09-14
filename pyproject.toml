@@ -12,6 +12,7 @@ fastapi = "^0.111.0"
 uvicorn = "^0.30.1"
 starlette-admin = "^0.15.1"
 sqlmodel = "^0.0.19"
+alembic = "^1.16.0"
 itsdangerous = "^2.2.0"
 pwdlib = {version = "^0.2.0", extras = ["argon2"]}
 pydantic-settings = "^2.3.3"
