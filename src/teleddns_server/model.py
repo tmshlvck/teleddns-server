@@ -19,7 +19,6 @@ from enum import StrEnum
 
 import logging
 from fastapi import Request
-from markupsafe import escape
 
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, create_engine
@@ -569,6 +568,8 @@ else:
         max_overflow=0,
         pool_pre_ping=True
     )
-SQLModel.metadata.create_all(engine)
+
+## Do not create DB tables, use alembic - see README.md
+#SQLModel.metadata.create_all(engine)
 
 RR_CLASSES = [A, AAAA, NS, PTR, CNAME, TXT, CAA, MX, SRV, SSHFP, TLSA, DNSKEY, DS, NAPTR]

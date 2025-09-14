@@ -9,12 +9,33 @@ Features:
 
 ## Deployment
 
-Install & configure Knot:
+### Install and configure Knot
+
+`apt-get install knot` and configure `/etc/knot/knot.conf`:
+
 ```
-apt-get install knot
+server:
+    rundir: "/run/knot"
+    user: knot:knot
+    listen: [0.0.0.0@53, ::@53]
+
+log:
+  - target: syslog
+    any: info
+
+database:
+    storage: "/var/lib/knot"
+
+template:
+  - id: t_master
+    storage: "/var/lib/knot"
+  - id: t_slave
+    storage: "/var/lib/knot"
+
+include: knot-ddnsm.conf
 ```
 
-Deploy TeleAPI:
+### Deploy TeleAPI:
 ```
 git clone https://github.com/tmshlvck/teleapi.git
 cd teleapi
@@ -49,6 +70,8 @@ sudo systemctl enable teleapi
 sudo systemctl restart teleapi
 ```
 
+### Deploy TeleDDNS-server
+
 To build, deploy, install and inspect logs of the Podman container run
 the following as `root`:
 ```
@@ -65,6 +88,8 @@ Reset admin password to `xyz123`:
 ```
 podman exec -it teleddns-server poetry run teleddns_server --admin_password xyz123
 ```
+
+### Expose container to the network
 
 Create NGINX proxy and use Certbot to create SSL certificate for the domain. The DDNS update protocol uses Basic Authentication that transmits passwords as plain-text and therefore it would be absolutely insecure and prone to all kinds of MITM attacks without HTTPS.
 
@@ -87,30 +112,38 @@ server {
 }
 ```
 
-Install and configure Knot: `apt-get install knot` and configure `/etc/knot/knot.conf`:
-```
-server:
-    rundir: "/run/knot"
-    user: knot:knot
-    listen: [0.0.0.0@53, ::@53]
-
-log:
-  - target: syslog
-    any: info
-
-database:
-    storage: "/var/lib/knot"
-
-template:
-  - id: t_master
-    storage: "/var/lib/knot"
-  - id: t_slave
-    storage: "/var/lib/knot"
-
-include: knot-ddnsm.conf
-```
-
 ## Development
+
+### Database Migrations
+
+This project uses Alembic for database migrations. The migration system is already set up and configured.
+
+#### Running Migrations
+
+To apply migrations to your database:
+
+```bash
+# Apply all pending migrations
+DISABLE_CLI_PARSING=1 poetry run alembic upgrade head
+
+# Check current migration status
+DISABLE_CLI_PARSING=1 poetry run alembic current
+
+# View migration history
+DISABLE_CLI_PARSING=1 poetry run alembic history
+```
+
+#### Creating New Migrations
+
+When you modify the SQLModel classes in `src/teleddns_server/model.py`, create a new migration:
+
+```bash
+# Auto-generate migration from model changes
+DISABLE_CLI_PARSING=1 poetry run alembic revision --autogenerate -m "Description of changes"
+
+# Create empty migration template (for complex changes)
+DISABLE_CLI_PARSING=1 poetry run alembic revision -m "Description of changes"
+```
 
 ### Running Tests
 
@@ -136,14 +169,13 @@ The authentication tests cover:
 - 2FA/PassKey enforcement (users with 2FA must use bearer tokens)
 - Unauthorized access scenarios and proper error handling
 
-## Usage guide
+### TODOs:
 
-Before the server can accept updates few items need to be configured:
+* HTMX-based web
+* 2FA
+* PassKeys
+* SAML/OAuth2
 
-* Create admin user (using `podman exec` call above) and/or reset the admin password over web interface
-* Create other non-admin users
-* Create Server(s), configure API URL, API key and template names
-* Create MasterZone(s) with the values needed for SOA RR
-* Create Access Rules to give access for non-admin users to specific zones or specific RRs in specific zones
-* Test server config sync for each server
-* Test zone upload for each zone
+## Credits
+
+* Tomas Hlavacek + Claude Code

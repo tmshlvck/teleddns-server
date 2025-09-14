@@ -15,10 +15,11 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y python3-poetry
 
-COPY pyproject.toml poetry.lock* README.md ./
+COPY pyproject.toml poetry.lock* README.md alembic.ini ./
+COPY alembic/ ./alembic/
 COPY src/ ./src/
 
 RUN poetry lock && poetry install --only=main && rm -rf $POETRY_CACHE_DIR
 
 EXPOSE $LISTEN_PORT
-CMD ["poetry", "run", "teleddns_server"]
+CMD ["bash", "-c", "DISABLE_CLI_PARSING=1 poetry run alembic upgrade head; poetry run teleddns_server"]
