@@ -226,6 +226,15 @@ def setup_backend_test_data(test_db, mock_backend):
         session.commit()
         session.refresh(admin_user)
 
+        # Create test group
+        test_group = Group(
+            name="test_group",
+            description="Test group for backend integration tests"
+        )
+        session.add(test_group)
+        session.commit()
+        session.refresh(test_group)
+
         # Create test zones
         zone1 = MasterZone(
             origin="test1.example.com.",
@@ -240,6 +249,7 @@ def setup_backend_test_data(test_db, mock_backend):
             soa_EXPIRE=1209600,
             soa_MINIMUM=86400,
             owner_id=admin_user.id,
+            group_id=test_group.id,
             master_server_id=server.id,
             content_dirty=True  # Mark as needing content sync
         )
@@ -258,6 +268,7 @@ def setup_backend_test_data(test_db, mock_backend):
             soa_EXPIRE=1209600,
             soa_MINIMUM=86400,
             owner_id=admin_user.id,
+            group_id=test_group.id,
             master_server_id=server.id,
             content_dirty=True  # Mark as needing content sync
         )

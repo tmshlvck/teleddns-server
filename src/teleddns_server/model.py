@@ -39,19 +39,24 @@ from .settings import settings
 password_hash = PasswordHash((Argon2Hasher(),))
 
 
-class UserGroup(SQLModel, table=True):
-    user_id: int = Field(foreign_key="user.id", primary_key=True, nullable=False)
-    group_id: int = Field(foreign_key="group.id", primary_key=True, nullable=False)
-
+class AuditableModel(SQLModel):
     created_at: Optional[datetime] = Field(
         default=None,
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"server_default": func.now()},
         nullable=False,
     )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
+    )
 
+class UserGroup(AuditableModel, table=True):
+    user_id: int = Field(foreign_key="user.id", primary_key=True, nullable=False)
+    group_id: int = Field(foreign_key="group.id", primary_key=True, nullable=False)
 
-class User(SQLModel, table=True):
+class User(AuditableModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(min_length=2)
     email: Optional[str] = Field(default=None, unique=True)
@@ -79,18 +84,6 @@ class User(SQLModel, table=True):
     owned_zones: List["MasterZone"] = Relationship(back_populates="owner")
     passkeys: List["UserPassKey"] = Relationship(back_populates="user")
 
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
-    )
-
     @classmethod
     def gen_hash(cls, passwd: str) -> str:
         return password_hash.hash(passwd)
@@ -106,11 +99,12 @@ class User(SQLModel, table=True):
         return self.username
 
 
-class UserToken(SQLModel, table=True):
+class UserToken(AuditableModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     token_hash: str = Field(unique=True)
     description: Optional[str] = Field(default=None)
-    user_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
+    #user_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
+    user_id: int = Field(foreign_key="user.id")
     user: User = Relationship(back_populates="api_tokens")
 
     def __str__(self):
@@ -122,26 +116,14 @@ class UserToken(SQLModel, table=True):
 
     scopes: Optional[str] = Field(default="*")
 
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
-    )
-
     @classmethod
     def hash(cls, plaintext: str) -> str:
         return hashlib.sha256(plaintext.encode()).hexdigest()
 
 
-class UserPassKey(SQLModel, table=True):
+class UserPassKey(AuditableModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
+    user_id: int = Field(default=None, foreign_key="user.id")
     user: User = Relationship(back_populates="passkeys")
 
     credential_id: str = Field(unique=True)
@@ -149,17 +131,11 @@ class UserPassKey(SQLModel, table=True):
     sign_count: int = Field(default=0)
 
     name: Optional[str] = Field(default=None)
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
     last_used: Optional[datetime] = Field(default=None)
     is_active: bool = Field(default=True)
 
 
-class Group(SQLModel, table=True):
+class Group(AuditableModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(unique=True, min_length=2)
     description: Optional[str] = Field(default=None)
@@ -171,36 +147,16 @@ class Group(SQLModel, table=True):
     def __str__(self):
         return self.name
 
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
-    )
+
+class SlaveZoneServer(AuditableModel, table=True):
+    #server_id: Optional[int] = Field(default=None, foreign_key="server.id", primary_key=True, nullable=False)
+    #zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", primary_key=True, nullable=False)
+
+    server_id: int = Field(default=None, foreign_key="server.id", primary_key=True)
+    zone_id: int = Field(default=None, foreign_key="masterzone.id", primary_key=True)
 
 
-class SlaveZoneServer(SQLModel, table=True):
-    server_id: Optional[int] = Field(default=None, foreign_key="server.id", primary_key=True, nullable=False)
-    zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", primary_key=True, nullable=False)
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
-    )
-
-
-class Server(SQLModel, table=True):
+class Server(AuditableModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     api_url: str
@@ -219,17 +175,6 @@ class Server(SQLModel, table=True):
     # Relationships
     master_zones: List["MasterZone"] = Relationship(back_populates="master_server")
     slave_zones: List["MasterZone"] = Relationship(back_populates="slave_servers", link_model=SlaveZoneServer)
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
-    )
 
 
 class RRClass(StrEnum):
@@ -238,7 +183,7 @@ class RRClass(StrEnum):
 
 _ORIGIN_REGEX = r"^((?![0-9]+$)(?!-)[a-zA-Z0-9\.-]{,1024}(?<!-))\.$"
 _NAME_REGEX = r"^((?![0-9]+$)(?!-)[a-zA-Z0-9\.-]{,1024}(?<!-))$"
-class MasterZone(SQLModel, table=True):
+class MasterZone(AuditableModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     origin: str
     soa_NAME: str
@@ -253,11 +198,11 @@ class MasterZone(SQLModel, table=True):
     soa_MINIMUM: int
 
     # Owner and group assignment
-    owner_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
-    owner: Optional[User] = Relationship(back_populates="owned_zones")
+    owner_id: int = Field(foreign_key="user.id")
+    owner: User = Relationship(back_populates="owned_zones")
 
-    group_id: Optional[int] = Field(default=None, foreign_key="group.id", nullable=True)
-    group: Optional[Group] = Relationship(back_populates="owned_zones")
+    group_id: int = Field(foreign_key="group.id")
+    group: Group = Relationship(back_populates="owned_zones")
 
     # Backend sync tracking
     content_dirty: bool = Field(default=True)
@@ -270,17 +215,6 @@ class MasterZone(SQLModel, table=True):
     master_server_id: Optional[int] = Field(default=None, foreign_key="server.id", nullable=True)
     master_server: Optional[Server] = Relationship(back_populates="master_zones")
     slave_servers: List[Server] = Relationship(back_populates="slave_zones", link_model=SlaveZoneServer)
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
-    )
 
     @field_validator("origin")
     def validate_origin(cls, value):
@@ -332,27 +266,15 @@ $TTL {settings.DEFAULT_TTL};
 {self.soa_NAME : <63} {self.soa_TTL : <5} {self.soa_CLASS: <2} SOA {self.soa_MNAME} {self.soa_RNAME.replace('@', '.')} {self.soa_SERIAL} {self.soa_REFRESH} {self.soa_RETRY} {self.soa_EXPIRE} {self.soa_MINIMUM}"""
 
 
-class UserLabelAuthorization(SQLModel, table=True):
+class UserLabelAuthorization(AuditableModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: Optional[int] = Field(default=None, foreign_key="user.id", nullable=False)
-    user: "User" = Relationship(back_populates="user_label_authorizations")
+    user_id: int = Field(foreign_key="user.id")
+    user: User = Relationship(back_populates="user_label_authorizations")
 
-    zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", nullable=False)
+    zone_id: int = Field(foreign_key="masterzone.id")
     zone: "MasterZone" = Relationship()
 
     label_pattern: str
-
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
-    )
 
     def verify_access(self, label):
         if not self.label_pattern:
@@ -363,27 +285,15 @@ class UserLabelAuthorization(SQLModel, table=True):
             return False
 
 
-class GroupLabelAuthorization(SQLModel, table=True):
+class GroupLabelAuthorization(AuditableModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    group_id: Optional[int] = Field(default=None, foreign_key="group.id", nullable=False)
-    group: "Group" = Relationship(back_populates="group_label_authorizations")
+    group_id: int = Field(foreign_key="group.id")
+    group: Group = Relationship(back_populates="group_label_authorizations")
 
-    zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", nullable=False)
-    zone: "MasterZone" = Relationship()
+    zone_id: int = Field(foreign_key="masterzone.id")
+    zone: MasterZone = Relationship()
 
     label_pattern: str
-
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
-    )
 
     def verify_access(self, label):
         if not self.label_pattern:
@@ -397,24 +307,13 @@ class GroupLabelAuthorization(SQLModel, table=True):
 
 
 _RRLABEL_REGEX = r"^(?![0-9]+$)(?!-)[a-zA-Z0-9\.-]{,63}(?<!-)$"
-class RR(SQLModel):
+class RR(AuditableModel):
     id: Optional[int] = Field(default=None, primary_key=True)
-    zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", nullable=False)
+    zone_id: int = Field(foreign_key="masterzone.id")
     label: str
     ttl: int = Field(default=3600)
     rrclass: RRClass
     value: str
-    created_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"server_default": func.now()},
-        nullable=False,
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
-    )
 
     @field_validator("label")
     def validate_label(cls, value):
@@ -428,7 +327,7 @@ class RR(SQLModel):
 
 
 class A(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
 
     @field_validator("value")
     def validate_value(cls, value):
@@ -440,7 +339,7 @@ class A(RR, table=True):
 
 
 class AAAA(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
 
     @field_validator("value")
     def validate_value(cls, value):
@@ -460,7 +359,7 @@ def _validate_dns_name(name: str):
 
 
 class PTR(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
 
     @field_validator("value")
     def validate_value(cls, value):
@@ -471,7 +370,7 @@ class PTR(RR, table=True):
 
 
 class NS(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
 
     @field_validator("value")
     def validate_value(cls, value):
@@ -482,7 +381,7 @@ class NS(RR, table=True):
 
 
 class CNAME(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
 
     @field_validator("value")
     def validate_value(cls, value):
@@ -493,7 +392,7 @@ class CNAME(RR, table=True):
 
 
 class TXT(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
 
     def format_bind_zone(self):
         return f'{self.label : <63} {self.ttl : <5} {self.rrclass : <2} TXT	"{self.value}"'
@@ -508,7 +407,7 @@ class CAATag(StrEnum):
 
 
 class CAA(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
     flag: int
     tag: CAATag
 
@@ -517,7 +416,7 @@ class CAA(RR, table=True):
 
 
 class MX(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
     priority: int
 
     @field_validator("value")
@@ -529,7 +428,7 @@ class MX(RR, table=True):
 
 
 class SRV(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
     priority: int
     weight: int
     port: int
@@ -547,7 +446,7 @@ class SRV(RR, table=True):
 
 
 class SSHFP(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
     algorithm: int
     hash_type: int
     fingerprint: str
@@ -569,7 +468,7 @@ class SSHFP(RR, table=True):
 
 
 class TLSA(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
     cert_usage: int
     selector: int
     matching_type: int
@@ -598,7 +497,7 @@ class TLSA(RR, table=True):
 
 
 class DNSKEY(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
     flags: int
     protocol: int = Field(default=3)
     algorithm: int
@@ -615,7 +514,7 @@ class DNSKEY(RR, table=True):
 
 
 class DS(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
     key_tag: int
     algorithm: int
     digest_type: int
@@ -632,7 +531,7 @@ class DS(RR, table=True):
 
 
 class NAPTR(RR, table=True):
-    zone: "MasterZone" = Relationship()
+    zone: MasterZone = Relationship()
     order: int
     preference: int
     flags: str

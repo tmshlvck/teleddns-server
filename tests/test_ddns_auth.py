@@ -124,11 +124,15 @@ def setup_test_data(test_db):
         session.refresh(admin_user)
         session.refresh(user1)
 
-        # Create group
+        # Create groups
         group1 = Group(name="group1", description="Test group 1")
         session.add(group1)
+        
+        admin_group = Group(name="admin_group", description="Admin only group")
+        session.add(admin_group)
         session.commit()
         session.refresh(group1)
+        session.refresh(admin_group)
 
         # Add user1 to group1
         user_group = UserGroup(user_id=user1.id, group_id=group1.id)
@@ -170,6 +174,7 @@ def setup_test_data(test_db):
             soa_EXPIRE=1209600,
             soa_MINIMUM=86400,
             owner_id=user1.id,
+            group_id=group1.id,
             master_server_id=server.id
         )
         session.add(zone1)
@@ -193,7 +198,7 @@ def setup_test_data(test_db):
         )
         session.add(zone2)
 
-        # Zone3: owned by admin, no group (user1 should not have access)
+        # Zone3: owned by admin, admin-only group (user1 should not have access)
         zone3 = MasterZone(
             origin="zone3.tld.",
             soa_NAME="@",
@@ -207,6 +212,7 @@ def setup_test_data(test_db):
             soa_EXPIRE=1209600,
             soa_MINIMUM=86400,
             owner_id=admin_user.id,
+            group_id=admin_group.id,
             master_server_id=server.id
         )
         session.add(zone3)

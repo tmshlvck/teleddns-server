@@ -37,6 +37,33 @@ from typing import Type
 from starlette_admin.contrib.sqla.converters import BaseSQLAModelConverter
 
 class ExtendedModelView(ModelView):
+    async def _arrange_data(
+            self,
+            request: Request,
+            data: Dict[str, Any],
+            is_edit: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        This function will return a new dict with relationships loaded from
+        database.
+        """
+        arranged_data: Dict[str, Any] = {}
+        for field in self.get_fields_list(request, request.state.action):
+            if isinstance(field, RelationField) and data[field.name] is not None:
+                foreign_model = self._find_foreign_model(field.identity)  # type: ignore
+                if not field.multiple:
+                    arranged_data[field.name] = await foreign_model.find_by_pk(
+                        request, data[field.name]
+                    )
+                    arranged_data[f"{field.name}_id"] = arranged_data[field.name].id
+                else:
+                    arranged_data[field.name] = await foreign_model.find_by_pks(
+                        request, data[field.name]
+                    )
+            else:
+                arranged_data[field.name] = data[field.name]
+        return arranged_data
+
     def handle_exception(self, exc: Exception) -> None:
         logging.exception("ExtendedModelView: ")
         if isinstance(exc, ValidationError):
@@ -58,8 +85,9 @@ class ExtendedModelView(ModelView):
         for f in self.fields:
             if f.type == 'HasOne':
                 if orig_model.model_fields.get(f"{f.name}_id"):
-                    if not orig_model.model_fields.get(f"{f.name}_id").nullable:
-                        print(f"model {model} field {f} set required=True")
+                    if orig_model.model_fields.get(f"{f.name}_id").is_required(): # based on pydantic model
+                        f.required = True
+                    if not orig_model.model_fields.get(f"{f.name}_id").nullable: # based on Field(..., nullable=False)
                         f.required = True
 
     async def validate(self, request: Request, data: Dict[str, Any]) -> None:
@@ -68,7 +96,7 @@ class ExtendedModelView(ModelView):
         for f in self.get_fields_list(request, request.state.action):
                 if isinstance(f, RelationField) and f.required:
                     if data.get(f.name, None) is None:
-                        errors[f.name] = f"Field {f.name} is required"
+                        errors[f.name] = f"Field {f.label} is required"
 
         if len(errors) > 0:
             raise FormValidationError(errors)
