@@ -21,7 +21,7 @@ from starlette.requests import Request
 from sqlmodel import Session
 
 from starlette_admin.contrib.sqlmodel import Admin, ModelView
-from starlette_admin import PasswordField, EmailField, RowActionsDisplayType, BaseField, RelationField, FileField
+from starlette_admin import PasswordField, EmailField, RowActionsDisplayType, BaseField, RelationField, FileField, HasOne
 from starlette_admin._types import RequestAction
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -32,6 +32,9 @@ from teleddns_server.view import trigger_background_sync
 
 from starlette_admin.helpers import pydantic_error_to_form_validation_errors
 from pydantic import ValidationError
+from starlette_admin.exceptions import FormValidationError
+from typing import Type
+from starlette_admin.contrib.sqla.converters import BaseSQLAModelConverter
 
 class ExtendedModelView(ModelView):
     def handle_exception(self, exc: Exception) -> None:
@@ -39,6 +42,38 @@ class ExtendedModelView(ModelView):
         if isinstance(exc, ValidationError):
                 raise pydantic_error_to_form_validation_errors(exc)
         return super().handle_exception(exc)  # pragma: no cover
+
+    def __init__(
+            self,
+            model: Type[Any],
+            icon: Optional[str] = None,
+            name: Optional[str] = None,
+            label: Optional[str] = None,
+            identity: Optional[str] = None,
+            converter: Optional[BaseSQLAModelConverter] = None,
+        ):
+
+        orig_model = model
+        super().__init__(model, icon, name, label, identity, converter)
+        for f in self.fields:
+            if f.type == 'HasOne':
+                if orig_model.model_fields.get(f"{f.name}_id"):
+                    if not orig_model.model_fields.get(f"{f.name}_id").nullable:
+                        print(f"model {model} field {f} set required=True")
+                        f.required = True
+
+    async def validate(self, request: Request, data: Dict[str, Any]) -> None:
+        errors: Dict[str, str] = {}
+
+        for f in self.get_fields_list(request, request.state.action):
+                if isinstance(f, RelationField) and f.required:
+                    if data.get(f.name, None) is None:
+                        errors[f.name] = f"Field {f.name} is required"
+
+        if len(errors) > 0:
+            raise FormValidationError(errors)
+
+        return await super().validate(request, data)
 
 
 class RRView(ExtendedModelView):
@@ -198,7 +233,7 @@ class MasterZoneView(ExtendedModelView):
             if zone.master_server:
                 zone.master_server.config_dirty = True
             for slave_server in zone.slave_servers:
-                slave_server.server.config_dirty = True
+                slave_server.config_dirty = True
             session.commit()
         trigger_background_sync()
 
@@ -209,7 +244,7 @@ class MasterZoneView(ExtendedModelView):
             if zone.master_server:
                 zone.master_server.config_dirty = True
             for slave_server in zone.slave_servers:
-                slave_server.server.config_dirty = True
+                slave_server.config_dirty = True
             session.commit()
         trigger_background_sync()
 
