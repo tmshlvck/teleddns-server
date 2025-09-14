@@ -60,7 +60,7 @@ class UserGroup(AuditableModel, table=True):
 class User(AuditableModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(min_length=2)
-    email: Optional[str] = Field(default=None, unique=True)
+    email: Optional[str] = Field(default=None)
     password: str
     is_admin: bool = Field(default=False)
 

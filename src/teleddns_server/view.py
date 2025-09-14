@@ -195,7 +195,7 @@ def verify_bearer_token(token: str) -> Optional[User]:
         )
         user_token = session.exec(statement).one_or_none()
 
-        if user_token and (not user_token.expires_at or user_token.expires_at > datetime.now(timezone.utc)) and
+        if user_token and (not user_token.expires_at or user_token.expires_at > datetime.now(timezone.utc)) and \
             user_token.is_active and user_token.user.is_active:
             # Update last used timestamp
             user_token.last_used = datetime.now(timezone.utc)
