@@ -105,13 +105,11 @@ And the zones pushed to the server have to be valid BIND zone files (Knot is use
 
 ### Timing
 
-The teleddns-server supports dynamic timing for pushing the changes made over admin/web/REST API and DDNS API to the backend server. By default the server starts a background task on startup that waits for changes. We remember for each zone and server if there are any any un-synced changes and when was the last sync.
+The teleddns-server supports dynamic timing for pushing the changes made over admin/web/REST API and DDNS API to the backend server. By default teleddns_server starts a background task on startup that waits for changes. We remember for each zone and server if there are any any un-synced changes and when was the last sync.
 
-When there is a change from any source the background task wakes up, waits for UPDATE_DELAY=10 (seconds) and then checks what zones or servers need push & reload. Any zones that were updated in the interval (now-UPDATE_MINIMUM_DELAY, now) are skipped - default UPDATE_MINIMUM_DELAY=3*UPDATE_DELAY. Every UPDATE_INTERVAL=600 the background thread wakes and does the same procedure.
+When there is a change from any source the background task wakes up, waits for BACKEND_SYNCE_DELAY=10 (seconds) and then checks what zones or servers need push & reload. Every BACKEND_SYNC_PERIOD=300 (seconds) the backend sync loop wakes up and does the checks and sync & reload anyway.
 
 Only after the zone is successfully pushed and reloaded on the backend server the dirty flags get cleared and the update time is recorded. The same applies to server config sync.
-
-There is a parameter --disable-backend-loop that prevents this backend loop to start.
 
 ## Security, auditing and observability
 

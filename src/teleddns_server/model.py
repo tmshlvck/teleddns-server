@@ -150,9 +150,6 @@ class Group(AuditableModel, table=True):
 
 
 class SlaveZoneServer(AuditableModel, table=True):
-    #server_id: Optional[int] = Field(default=None, foreign_key="server.id", primary_key=True, nullable=False)
-    #zone_id: Optional[int] = Field(default=None, foreign_key="masterzone.id", primary_key=True, nullable=False)
-
     server_id: int = Field(default=None, foreign_key="server.id", primary_key=True)
     zone_id: int = Field(default=None, foreign_key="masterzone.id", primary_key=True)
 

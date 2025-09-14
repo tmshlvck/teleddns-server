@@ -199,9 +199,6 @@ class UserView(ExtendedModelView):
         # Call parent hook for last_update_info
         await super().before_edit(request, data, obj)
 
-        # Handle empty email field - convert empty string to None to avoid unique constraint issues
-        if data.get('email') is not None and data['email'].strip() == '':
-            obj.email = None
         # Handle password field
         if data.get('password') and len(data['password'].strip()) > 2:
             obj.password = obj.gen_hash(data['password'])
@@ -216,6 +213,7 @@ class ServerView(ExtendedModelView):
         "name",
         "api_url",
         "api_key",
+        "is_active",
         "master_template",
         "slave_template",
         "config_dirty",

@@ -89,7 +89,7 @@ async def do_background_sync():
     with Session(engine) as session:
         # Sync servers with dirty configs
         dirty_servers = session.exec(
-            select(Server).where(Server.config_dirty == True)
+            select(Server).where(Server.config_dirty == True).where(Server.is_active == True)
         ).all()
 
         for server in dirty_servers:
@@ -126,12 +126,15 @@ async def do_background_sync():
                 zone_content = generate_bind_zone_content(session, zone)
 
                 # Send zone to backend
-                await update_zone(
-                    zone.origin.rstrip('.').strip(),
-                    zone_content,
-                    zone.master_server.api_url,
-                    zone.master_server.api_key
-                )
+                if zone.master_server.is_active:
+                    await update_zone(
+                        zone.origin.rstrip('.').strip(),
+                        zone_content,
+                        zone.master_server.api_url,
+                        zone.master_server.api_key
+                    )
+                else:
+                    logging.warning(f"Skipping zone {zone.origin} sync for inactive master server {zone.master_server.name}")
 
                 # Clear dirty flag and update timestamp
                 zone.content_dirty = False
@@ -178,7 +181,7 @@ def verify_user(username: str, password: str) -> Optional[User]:
     with Session(engine) as session:
         statement = select(User).where(User.username == username)
         user = session.exec(statement).one_or_none()
-        if user and user.verify_password(password):
+        if user and user.verify_password(password) and user.is_active:
             return user
         else:
             return None
@@ -192,9 +195,8 @@ def verify_bearer_token(token: str) -> Optional[User]:
         )
         user_token = session.exec(statement).one_or_none()
 
-        print(f"TOKEN AUTH RESULT: {str(user_token)}")
-
-        if user_token and (not user_token.expires_at or user_token.expires_at > datetime.now(timezone.utc)):
+        if user_token and (not user_token.expires_at or user_token.expires_at > datetime.now(timezone.utc)) and
+            user_token.is_active and user_token.user.is_active:
             # Update last used timestamp
             user_token.last_used = datetime.now(timezone.utc)
             session.commit()

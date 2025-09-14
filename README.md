@@ -53,8 +53,8 @@ To build, deploy, install and inspect logs of the Podman container run
 the following as `root`:
 ```
 mkdir /srv/teleddns-server
-podman build -f Dockerfile -t teleddns-server:0.1
-podman run -d --network=host -v /srv/teleddns-server:/data --name teleddns-server -e ROOT_PATH="/ddns" teleddns-server:0.1
+podman build -f Dockerfile -t teleddns-server:latest .
+podman run -d --network=host -e SESSION_SECRET="`date +%s | sha256sum | base64 | head -c 16`" -e JWT_SECRET_KEY="`date +%s | sha256sum | base64 | head -c 32`" -v /srv/teleddns-server:/data --name teleddns-server teleddns-server:latest
 podman logs teleddns-server
 podman generate systemd teleddns-server >/etc/systemd/system/teleddns-server.service
 systemctl daemon-reload
@@ -63,7 +63,7 @@ systemctl enable teleddns-server
 
 Reset admin password to `xyz123`:
 ```
-podman exec -e ADMIN_PASSWORD=xyz123 -it teleddns-server teleddns_server
+podman exec -it teleddns-server poetry run teleddns_server --admin_password xyz123
 ```
 
 Create NGINX proxy and use Certbot to create SSL certificate for the domain. The DDNS update protocol uses Basic Authentication that transmits passwords as plain-text and therefore it would be absolutely insecure and prone to all kinds of MITM attacks without HTTPS.
