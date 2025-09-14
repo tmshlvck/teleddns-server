@@ -21,7 +21,7 @@ from starlette.requests import Request
 from sqlmodel import Session
 
 from starlette_admin.contrib.sqlmodel import Admin, ModelView
-from starlette_admin import PasswordField, EmailField, RowActionsDisplayType, BaseField, RelationField, FileField, HasOne
+from starlette_admin import PasswordField, EmailField, RelationField
 from starlette_admin._types import RequestAction
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -37,6 +37,19 @@ from typing import Type
 from starlette_admin.contrib.sqla.converters import BaseSQLAModelConverter
 
 class ExtendedModelView(ModelView):
+    async def before_create(self, request: Request, data: dict, obj: Any) -> None:
+        """Hook called before creating a new object."""
+        print("PARRENT HOOK CALL")
+        if hasattr(obj, 'last_update_info'):
+            client_ip = request.client.host if request.client else "unknown"
+            obj.last_update_info = f"Admin {client_ip}"
+
+    async def before_edit(self, request: Request, data: dict, obj: Any) -> None:
+        """Hook called before editing an existing object."""
+        if hasattr(obj, 'last_update_info'):
+            client_ip = request.client.host if request.client else "unknown"
+            obj.last_update_info = f"Admin {client_ip}"
+
     async def _arrange_data(
             self,
             request: Request,
@@ -111,6 +124,14 @@ class RRView(ExtendedModelView):
     exclude_fields_from_list = ["id"]
     exclude_fields_from_edit = ["id"]
 
+    async def before_create(self, request: Request, data: dict, obj: Any) -> None:
+        # Call parent hook for last_update_info
+        await super().before_create(request, data, obj)
+
+    async def before_edit(self, request: Request, data: dict, obj: Any) -> None:
+        # Call parent hook for last_update_info
+        await super().before_edit(request, data, obj)
+
     async def after_create(self, request: Request, obj: Any) -> None:
         with Session(engine) as session:
             rr = session.merge(obj)
@@ -161,9 +182,13 @@ class UserView(ExtendedModelView):
         "passkeys",
         "created_at",
         "updated_at",
+        "last_update_info",
     ]
 
     async def before_create(self, request: Request, data: Dict[str, Any], obj: Any) -> None:
+        # Call parent hook for last_update_info
+        await super().before_create(request, data, obj)
+
         # Handle empty email field - convert empty string to None to avoid unique constraint issues
         if obj.email is not None and obj.email.strip() == '':
             obj.email = None
@@ -171,6 +196,9 @@ class UserView(ExtendedModelView):
             obj.password = obj.gen_hash(obj.password)
 
     async def before_edit(self, request: Request, data: Dict[str, Any], obj: Any) -> None:
+        # Call parent hook for last_update_info
+        await super().before_edit(request, data, obj)
+
         # Handle empty email field - convert empty string to None to avoid unique constraint issues
         if data.get('email') is not None and data['email'].strip() == '':
             obj.email = None
@@ -196,7 +224,16 @@ class ServerView(ExtendedModelView):
         "slave_zones",
         "created_at",
         "updated_at",
+        "last_update_info",
     ]
+
+    async def before_create(self, request: Request, data: dict, obj: Any) -> None:
+        # Call parent hook for last_update_info
+        await super().before_create(request, data, obj)
+
+    async def before_edit(self, request: Request, data: dict, obj: Any) -> None:
+       # Call parent hook for last_update_info
+       await super().before_edit(request, data, obj)
 
     async def after_create(self, request: Request, obj: Any) -> None:
         with Session(engine) as session:
@@ -249,10 +286,19 @@ class MasterZoneView(ExtendedModelView):
         "slave_servers",
         "created_at",
         "updated_at",
+        "last_update_info",
         ]
     exclude_fields_from_create = ["id", "last_content_sync", "created_at", "updated_at"]
     exclude_fields_from_list = ["id"]
     exclude_fields_from_edit = ["id", "created_at", "updated_at"]
+
+    async def before_create(self, request: Request, data: dict, obj: Any) -> None:
+        # Call parent hook for last_update_info
+        await super().before_create(request, data, obj)
+
+    async def before_edit(self, request: Request, data: dict, obj: Any) -> None:
+        # Call parent hook for last_update_info
+        await super().before_edit(request, data, obj)
 
     async def after_create(self, request: Request, obj: Any) -> None:
         with Session(engine) as session:

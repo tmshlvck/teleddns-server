@@ -51,6 +51,7 @@ class AuditableModel(SQLModel):
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"onupdate": func.now(), "server_default": func.now()},
     )
+    last_update_info: Optional[str] = Field(default=None)
 
 class UserGroup(AuditableModel, table=True):
     user_id: int = Field(foreign_key="user.id", primary_key=True, nullable=False)

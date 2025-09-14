@@ -261,8 +261,8 @@ def can_write_to_zone(session: Session, user: User, zone: MasterZone, label: str
 
 
 # HTTP endpoints
-async def ddns_update_token(bearer_token: str, domain_name: str, ipaddr: str) -> str:
-    logging.info(f"DYNDNS GET update: bearer token auth hostname {domain_name} myip: {ipaddr}")
+async def ddns_update_token(bearer_token: str, domain_name: str, ipaddr: str, src_ip: str) -> str:
+    logging.info(f"DYNDNS GET update: (auth bearer) hostname {domain_name} myip: {ipaddr} source_ip: {src_ip}")
     user = verify_bearer_token(bearer_token)
     if not user:
         raise HTTPException(
@@ -270,12 +270,12 @@ async def ddns_update_token(bearer_token: str, domain_name: str, ipaddr: str) ->
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"})
 
-    logging.info(f"DYNDNS GET update: bearer token resolved to user {user}")
-    return await _ddns_update(user, domain_name, ipaddr)
+    logging.debug(f"DYNDNS GET update: bearer token resolved to user {user}")
+    return await _ddns_update(user, domain_name, ipaddr, src_ip)
 
 
-async def ddns_update_basic(username: str, password: str, domain_name: str, ipaddr: str) -> str:
-    logging.info(f"DYNDNS GET update: basic auth user {username} hostname {domain_name} myip: {ipaddr}")
+async def ddns_update_basic(username: str, password: str, domain_name: str, ipaddr: str, src_ip: str) -> str:
+    logging.info(f"DYNDNS GET update: (auth basic) hostname {domain_name} myip: {ipaddr} source_ip: {src_ip}")
     user = verify_user(username, password)
     if not user:
         raise HTTPException(
@@ -290,15 +290,16 @@ async def ddns_update_basic(username: str, password: str, domain_name: str, ipad
         has_passkeys = check_session.exec(select(UserPassKey).where(UserPassKey.user_id == user.id)).first() is not None
 
         if fresh_user.totp_enabled or fresh_user.sso_enabled or has_passkeys:
+            logging.error(f"User {user.username} has either TOTP or PassKey enabled -> Basic Auth denied. Use bearer token.")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Basic authentication not allowed for users with 2FA/PassKey/SSO enabled. Use bearer token.",
                 headers={"WWW-Authenticate": "Bearer"})
 
-    return await _ddns_update(user, domain_name, ipaddr)
+    return await _ddns_update(user, domain_name, ipaddr, src_ip)
 
 
-async def _ddns_update(user: User, domain_name: str, ipaddr: str) -> str:
+async def _ddns_update(user: User, domain_name: str, ipaddr: str, src_ip: str) -> str:
     def fqdn(domain: str) -> str:
         return domain.rstrip('.').strip() + '.'
 
@@ -355,12 +356,18 @@ async def _ddns_update(user: User, domain_name: str, ipaddr: str) -> str:
                 changed = True
         else:
             logging.info(f"Creating {table.__name__} RR {label=} {zone.origin=} {norm_ipaddr}")
-            session.add(table(label=label, rrclass=RRClass.IN, ttl=settings.DDNS_RR_TTL, zone=zone, value=str(norm_ipaddr)))
+            session.add(table(label=label, rrclass=RRClass.IN, ttl=settings.DDNS_RR_TTL, zone=zone, value=str(norm_ipaddr), last_update_info=f"DDNS {src_ip}"))
             changed = True
 
         if changed:
             zone.soa_SERIAL += 1
             zone.content_dirty = True
+            zone.last_update_info = f"DDNS {src_ip}"
+
+            # Update the record's last_update_info as well if it exists
+            if len(matched_rrs) >= 1:
+                matched_rrs[0].last_update_info = f"DDNS {src_ip}"
+
             session.commit()
             # Trigger immediate background sync after DDNS update
             trigger_background_sync()

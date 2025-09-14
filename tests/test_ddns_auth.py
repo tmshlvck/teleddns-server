@@ -248,12 +248,12 @@ class TestDDNSAuthentication:
         data = setup_test_data
 
         # Test IPv4 update on zone1
-        result = await ddns_update_basic("admin", "test", "label1.zone1.tld", "192.168.1.1")
+        result = await ddns_update_basic("admin", "test", "label1.zone1.tld", "192.168.1.1", "127.0.0.1")
         assert "DDNS updated A" in result
         assert "192.168.1.1" in result
 
         # Test IPv6 update on zone1
-        result = await ddns_update_basic("admin", "test", "label2.zone1.tld", "2001:db8::1")
+        result = await ddns_update_basic("admin", "test", "label2.zone1.tld", "2001:db8::1", "127.0.0.1")
         assert "DDNS updated AAAA" in result
         assert "2001:db8::1" in result
 
@@ -272,7 +272,7 @@ class TestDDNSAuthentication:
         """Test admin can authenticate using bearer token"""
         data = setup_test_data
 
-        result = await ddns_update_token(data['admin_token'], "label3.zone1.tld", "192.168.1.3")
+        result = await ddns_update_token(data['admin_token'], "label3.zone1.tld", "192.168.1.3", "127.0.0.1")
         assert "DDNS updated A" in result
         assert "192.168.1.3" in result
 
@@ -282,11 +282,11 @@ class TestDDNSAuthentication:
         data = setup_test_data
 
         # user1 owns zone1, should be able to update
-        result = await ddns_update_basic("user1", "test", "owner-label.zone1.tld", "10.0.0.1")
+        result = await ddns_update_basic("user1", "test", "owner-label.zone1.tld", "10.0.0.1", "127.0.0.1")
         assert "DDNS updated A" in result
 
         # user1 with bearer token
-        result = await ddns_update_token(data['user1_token'], "owner-label2.zone1.tld", "10.0.0.2")
+        result = await ddns_update_token(data['user1_token'], "owner-label2.zone1.tld", "10.0.0.2", "127.0.0.1")
         assert "DDNS updated A" in result
 
     @pytest.mark.asyncio
@@ -295,11 +295,11 @@ class TestDDNSAuthentication:
         data = setup_test_data
 
         # user1 is in group1, zone2 is owned by admin but group1 has access
-        result = await ddns_update_basic("user1", "test", "group-label.zone2.tld", "172.16.1.1")
+        result = await ddns_update_basic("user1", "test", "group-label.zone2.tld", "172.16.1.1", "127.0.0.1")
         assert "DDNS updated A" in result
 
         # Test with bearer token
-        result = await ddns_update_token(data['user1_token'], "group-label2.zone2.tld", "172.16.1.2")
+        result = await ddns_update_token(data['user1_token'], "group-label2.zone2.tld", "172.16.1.2", "127.0.0.1")
         assert "DDNS updated A" in result
 
     @pytest.mark.asyncio
@@ -309,13 +309,13 @@ class TestDDNSAuthentication:
 
         # user1 should not be able to access zone3 (owned by admin, no group access)
         with pytest.raises(HTTPException) as exc_info:
-            await ddns_update_basic("user1", "test", "unauthorized.zone3.tld", "192.168.1.100")
+            await ddns_update_basic("user1", "test", "unauthorized.zone3.tld", "192.168.1.100", "127.0.0.1")
         assert exc_info.value.status_code == 401
         assert "Unauthorized access" in str(exc_info.value.detail)
 
         # Test with bearer token too
         with pytest.raises(HTTPException) as exc_info:
-            await ddns_update_token(data['user1_token'], "unauthorized2.zone3.tld", "192.168.1.101")
+            await ddns_update_token(data['user1_token'], "unauthorized2.zone3.tld", "192.168.1.101", "127.0.0.1")
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
@@ -334,16 +334,16 @@ class TestDDNSAuthentication:
             session.commit()
 
         # user1 should be able to access zone3 with matching pattern
-        result = await ddns_update_basic("user1", "test", "special-label.zone3.tld", "203.0.113.1")
+        result = await ddns_update_basic("user1", "test", "special-label.zone3.tld", "203.0.113.1", "127.0.0.1")
         assert "DDNS updated A" in result
 
         # user1 should NOT be able to access zone3 with non-matching pattern
         with pytest.raises(HTTPException) as exc_info:
-            await ddns_update_basic("user1", "test", "regular-label.zone3.tld", "203.0.113.2")
+            await ddns_update_basic("user1", "test", "regular-label.zone3.tld", "203.0.113.2", "127.0.0.1")
         assert exc_info.value.status_code == 401
 
         # Test with bearer token - should work with pattern match
-        result = await ddns_update_token(data['user1_token'], "special-token.zone3.tld", "203.0.113.3")
+        result = await ddns_update_token(data['user1_token'], "special-token.zone3.tld", "203.0.113.3", "127.0.0.1")
         assert "DDNS updated A" in result
 
     @pytest.mark.asyncio
@@ -373,12 +373,12 @@ class TestDDNSAuthentication:
             session.commit()
 
         # user1 (in group1) should be able to access zone3 with matching pattern
-        result = await ddns_update_basic("user1", "test", "group-access.zone3.tld", "198.51.100.1")
+        result = await ddns_update_basic("user1", "test", "group-access.zone3.tld", "198.51.100.1", "127.0.0.1")
         assert "DDNS updated A" in result
 
         # user2 (not in group1) should NOT be able to access zone3 even with matching pattern
         with pytest.raises(HTTPException) as exc_info:
-            await ddns_update_basic("user2", "test", "group-access2.zone3.tld", "198.51.100.2")
+            await ddns_update_basic("user2", "test", "group-access2.zone3.tld", "198.51.100.2", "127.0.0.1")
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
@@ -388,17 +388,17 @@ class TestDDNSAuthentication:
 
         # Wrong password
         with pytest.raises(HTTPException) as exc_info:
-            await ddns_update_basic("user1", "wrong_password", "test.zone1.tld", "192.168.1.200")
+            await ddns_update_basic("user1", "wrong_password", "test.zone1.tld", "192.168.1.200", "127.0.0.1")
         assert exc_info.value.status_code == 401
 
         # Wrong username
         with pytest.raises(HTTPException) as exc_info:
-            await ddns_update_basic("nonexistent", "test", "test.zone1.tld", "192.168.1.201")
+            await ddns_update_basic("nonexistent", "test", "test.zone1.tld", "192.168.1.201", "127.0.0.1")
         assert exc_info.value.status_code == 401
 
         # Wrong bearer token
         with pytest.raises(HTTPException) as exc_info:
-            await ddns_update_token("invalid_token", "test.zone1.tld", "192.168.1.202")
+            await ddns_update_token("invalid_token", "test.zone1.tld", "192.168.1.202", "127.0.0.1")
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
@@ -414,12 +414,12 @@ class TestDDNSAuthentication:
 
         # user1 with 2FA should be rejected for basic auth
         with pytest.raises(HTTPException) as exc_info:
-            await ddns_update_basic("user1", "test", "test.zone1.tld", "192.168.1.210")
+            await ddns_update_basic("user1", "test", "test.zone1.tld", "192.168.1.210", "127.0.0.1")
         assert exc_info.value.status_code == 401
         assert "Basic authentication not allowed" in str(exc_info.value.detail)
 
         # But bearer token should still work
-        result = await ddns_update_token(data['user1_token'], "test2fa.zone1.tld", "192.168.1.211")
+        result = await ddns_update_token(data['user1_token'], "test2fa.zone1.tld", "192.168.1.211", "127.0.0.1")
         assert "DDNS updated A" in result
 
     def test_can_write_to_zone_function(self, setup_test_data):

@@ -98,22 +98,23 @@ async def get_ddns_update(
     except:
         bearer_token = None
 
-    logging.error(f"DEBUG: {str(bearer_token)}")
     try:
+        src_ip = str(request.client.host) if request.client else "unknown"
         if bearer_token and bearer_token.credentials:
             update_status = await ddns_update_token(
                 bearer_token.credentials,
                 hostname,
                 myip,
+                src_ip,
             )
             return Status(detail=update_status)
         elif basic_creds:
-            logging.info(f"DYNDNS GET update: basic auth hostname {hostname} myip: {myip}")
             update_status = await ddns_update_basic(
                 basic_creds.username,
                 basic_creds.password,
                 hostname,
                 myip,
+                src_ip,
             )
             return Status(detail=update_status)
         else:
