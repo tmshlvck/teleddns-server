@@ -15,10 +15,13 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from typing import Dict, Any, Awaitable
+import logging
+import re
 
 from fastapi.responses import RedirectResponse
 from starlette.requests import Request
 from sqlmodel import Session
+import sqlalchemy.exc
 
 from starlette_admin.contrib.sqlmodel import Admin, ModelView
 from starlette_admin import PasswordField, EmailField, RelationField
@@ -79,8 +82,50 @@ class ExtendedModelView(ModelView):
 
     def handle_exception(self, exc: Exception) -> None:
         logging.exception("ExtendedModelView: ")
+
         if isinstance(exc, ValidationError):
-                raise pydantic_error_to_form_validation_errors(exc)
+            raise pydantic_error_to_form_validation_errors(exc)
+
+        if isinstance(exc, sqlalchemy.exc.IntegrityError):
+            # Convert SQLAlchemy IntegrityError to user-friendly form validation errors
+            error_message = str(exc.orig) if hasattr(exc, 'orig') else str(exc)
+
+            # Parse common constraint violation patterns
+            field_errors = {}
+
+            # UNIQUE constraint failed: table.field
+            unique_match = re.search(r'UNIQUE constraint failed: (\w+)\.(\w+)', error_message)
+            if unique_match:
+                table_name, field_name = unique_match.groups()
+                if field_name == 'token_hash':
+                    field_errors['token_hash'] = "This token hash already exists. Please use a different value."
+                elif field_name == 'email':
+                    field_errors['email'] = "This email address is already registered."
+                elif field_name == 'username':
+                    field_errors['username'] = "This username is already taken."
+                else:
+                    field_errors[field_name] = f"This {field_name} already exists. Please use a different value."
+
+            # FOREIGN KEY constraint failed
+            elif 'FOREIGN KEY constraint failed' in error_message:
+                field_errors['_form'] = "Referenced record does not exist. Please check your selection."
+
+            # NOT NULL constraint failed: table.field
+            null_match = re.search(r'NOT NULL constraint failed: (\w+)\.(\w+)', error_message)
+            if null_match:
+                table_name, field_name = null_match.groups()
+                field_errors[field_name] = f"This field is required and cannot be empty."
+
+            # CHECK constraint failed
+            elif 'CHECK constraint failed' in error_message:
+                field_errors['_form'] = "The data violates a validation rule. Please check your input."
+
+            # Generic integrity error fallback
+            if not field_errors:
+                field_errors['_form'] = "Database constraint violation. Please check your input and try again."
+
+            raise FormValidationError(field_errors)
+
         return super().handle_exception(exc)  # pragma: no cover
 
     def __init__(
