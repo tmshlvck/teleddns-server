@@ -7,8 +7,8 @@ from sqlalchemy import pool
 
 from alembic import context
 
-# Add the src directory to the Python path so we can import our models
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Add the project root to the Python path so we can import our models
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from teleddns_server.model import SQLModel
 from teleddns_server.settings import settings

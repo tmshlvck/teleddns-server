@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y python3-poetry
 
 COPY pyproject.toml poetry.lock* README.md alembic.ini ./
 COPY alembic/ ./alembic/
-COPY src/ ./src/
+COPY teleddns_server/ ./teleddns_server/
 
 RUN poetry lock && poetry install --only=main && rm -rf $POETRY_CACHE_DIR
 

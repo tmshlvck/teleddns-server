@@ -135,7 +135,7 @@ DISABLE_CLI_PARSING=1 poetry run alembic history
 
 #### Creating New Migrations
 
-When you modify the SQLModel classes in `src/teleddns_server/model.py`, create a new migration:
+When you modify the SQLModel classes in `teleddns_server/model.py`, create a new migration:
 
 ```bash
 # Auto-generate migration from model changes
