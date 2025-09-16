@@ -42,7 +42,6 @@ from starlette_admin.contrib.sqla.converters import BaseSQLAModelConverter
 class ExtendedModelView(ModelView):
     async def before_create(self, request: Request, data: dict, obj: Any) -> None:
         """Hook called before creating a new object."""
-        print("PARRENT HOOK CALL")
         if hasattr(obj, 'last_update_info'):
             client_ip = request.client.host if request.client else "unknown"
             obj.last_update_info = f"Admin {client_ip}"
