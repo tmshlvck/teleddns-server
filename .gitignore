@@ -3,3 +3,6 @@ __pycache__/
 *$py.class
 poetry.lock
 *.sqlite
+
+# Legacy Python implementation kept locally for reference, not tracked
+obsolete/
