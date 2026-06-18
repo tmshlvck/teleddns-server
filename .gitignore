@@ -6,3 +6,6 @@ poetry.lock
 
 # Legacy Python implementation kept locally for reference, not tracked
 obsolete/
+
+# Local runtime config (copy config.sample.yaml → config.yaml)
+config.yaml

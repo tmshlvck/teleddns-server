@@ -1,0 +1,50 @@
+# teleddns-server sample configuration.
+#
+# Copy to config.yaml and run:  teleddns-server -config config.yaml
+# Every key is optional — omitted keys fall back to the built-in defaults
+# shown in brackets. Durations are strings ("10s", "5m", "2h"); a bare number
+# will NOT parse.
+
+# Database. Scheme picks the engine:
+#   sqlite://<path>      pure-Go SQLite (file is created if missing)
+#   postgres://<dsn...>  Postgres
+#
+# This points at a file in the working directory, so data persists across
+# restarts — delete the file to start fresh.
+db_dsn: "sqlite://teleddns.sqlite"
+# Postgres alternative:
+# db_dsn: "postgres://teleddns:secret@localhost:5432/teleddns?sslmode=disable"
+
+# Address the HTTP server listens on.            [":8080"]
+listen_addr: ":8080"
+
+# CIDRs allowed to connect; empty/omitted = allow all.   [all]
+# allowed_ips:
+#   - "127.0.0.1/32"
+#   - "10.0.0.0/8"
+
+# Trust reverse-proxy headers (X-Forwarded-For / X-Real-IP / X-Forwarded-Proto)
+# for the real client IP. Enable only behind a proxy you control.   [false]
+trust_proxy: false
+
+# Verbose (debug-level) logging. Same as the -debug flag.   [false]
+debug: true
+
+# TTLs (seconds).
+default_ttl: 3600   # $TTL + records created via the management API   [3600]
+ddns_rr_ttl: 60     # A/AAAA records touched via the DDNS endpoint    [60]
+
+# Backend-sync timing.
+backend_sync_delay:  "10s"    # debounce before pushing a change       ["10s"]
+backend_sync_period: "300s"   # safety-net full sweep                  ["300s"]
+
+# Healthcheck WARN thresholds.
+warn_on_noupdate: "7200s"     # WARN if no update for this long        ["7200s"]
+warn_on_nopush:   "3600s"     # WARN if no successful push this long   ["3600s"]
+
+# Global secondary (slave) teleddns-servers — every zone replicates to all of
+# them via their management/record API with the given bearer token.   [none]
+# slave_servers:
+#   - name: "ns2"
+#     base_url: "https://ns2.example.com"
+#     token: "gone_xxxxxxxx_..."
