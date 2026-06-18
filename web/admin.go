@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 
+	"github.com/a-h/templ"
 	"github.com/go-chi/chi/v5"
 	"github.com/tmshlvck/gone/auth"
 	"github.com/tmshlvck/gone/crud"
@@ -22,6 +23,11 @@ func RegisterAdmin(mux chi.Router, ag *auth.AuthGORM, db *gorm.DB, settings site
 	userMM := crud.DeriveMetaModel[auth.UserGORM](crud.MetaModel[auth.UserGORM]{
 		DisplayName: "Users",
 		Fields: []crud.MetaField{
+			// Clickable ID cell → opens the password-change modal for that
+			// user (HTMX GET /account/{id} into the table's L1 modal body).
+			{Name: "ID", DisplayValue: func(_ crud.MetaField, value any) templ.Component {
+				return userIDLink(fmt.Sprintf("%v", value), "admin-users-modal-l1-body")
+			}},
 			// Write-only password box: a non-blank entry is re-hashed, a blank
 			// one keeps the current hash. Never display the hash.
 			{Name: "PasswordHash", DisplayName: "Password", FormInputType: "password",
