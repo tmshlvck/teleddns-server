@@ -12,33 +12,29 @@ import (
 // delete must not orphan a zone's SOA or all its NS records).
 var ErrLastNSRecord = errors.New("cannot delete the last NS record of a zone")
 
-// This file defines the DNS data model (PRD §10.3 + Part A §4), scoped to the
-// co-located, master-only, Knot-only design (see PLAN.md):
+// This file defines the DNS data model, scoped to the co-located, master-only,
+// Knot-only design (see PLAN.md):
 //
-//   - Zone      — a master origin with inline SOA fields + sync tracking.
-//   - RR*        — one GORM table per RR type (PRD §4.2). Structs are flat (no
+//   - Zone — a master origin with inline SOA fields.
+//   - RR*   — one GORM table per RR type (PRD §4.2). Structs are flat (no
 //     embedding) because gone's CRUD reflection only walks top-level fields.
-//   - TSIGKey    — a shared secret for authenticating zone transfers.
-//   - ZoneSlave  — a per-zone transfer ACL: an allowed slave address + key.
 //   - GroupZoneRole / GroupRRRole — L2 / L1 grants (PRD §9.3).
 //
-// There is no Server table: the backend is the local Knot daemon (configured
-// from app Config). Slaves are not managed here — they auto-provision from the
-// catalog zone the backend generates (RFC 9432) and pull data via AXFR/TSIG.
+// Deliberately minimal: no remote Server, no owner, no dirty/sync columns, no
+// per-row audit string. The backend is the local Knot (from Config); slaves +
+// TSIG keys live in Config and replicate via a catalog zone (RFC 9432) over
+// AXFR. Sync state lives in the SyncTask journal (M5), not on these rows.
 //
-// Invariants enforced by GORM hooks (so they hold on every write path —
+// One invariant is enforced by GORM hooks (so it holds on every write path —
 // admin, API, DDNS): a new Zone gets SOA defaults + a default apex NS, and any
-// RR mutation bumps the owning zone's SOA serial and marks it dirty for the
-// backend push.
+// RR mutation bumps the owning zone's SOA serial.
 
-// Zone is a master DNS zone: an origin (FQDN with trailing dot), its owner,
-// the inline SOA fields (PRD §4.1; NAME=@ and CLASS=IN are implicit), and
-// content-sync tracking. It is always served by the local Knot as master.
+// Zone is a master DNS zone: an origin (FQDN with trailing dot) and the inline
+// SOA fields (PRD §4.1; NAME=@ and CLASS=IN are implicit). Always served by
+// the local Knot as master.
 type Zone struct {
-	ID      uint          `gorm:"primaryKey"`
-	Origin  string        `gorm:"uniqueIndex;size:255;not null"`
-	OwnerID uint          `gorm:"index"`
-	Owner   auth.UserGORM `gorm:"foreignKey:OwnerID"`
+	ID     uint   `gorm:"primaryKey"`
+	Origin string `gorm:"uniqueIndex;size:255;not null"`
 
 	SOATTL     uint32 `gorm:"not null;default:3600"`
 	SOAMName   string `gorm:"size:255"` // primary nameserver (SOA MNAME)
@@ -49,12 +45,8 @@ type Zone struct {
 	SOAExpire  uint32 `gorm:"not null;default:1209600"`
 	SOAMinimum uint32 `gorm:"not null;default:3600"`
 
-	ContentDirty    bool `gorm:"not null;default:false"`
-	LastContentSync *time.Time
-
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 func (Zone) TableName() string { return "zones" }
@@ -88,9 +80,7 @@ func (z *Zone) BeforeCreate(*gorm.DB) error {
 	return nil
 }
 
-// AfterCreate auto-generates the default apex NS record (PRD §4.1). Creating
-// it bumps the serial once via the NS hook, which is the desired "zone changed
-// → needs push" signal.
+// AfterCreate auto-generates the default apex NS record (PRD §4.1).
 func (z *Zone) AfterCreate(tx *gorm.DB) error {
 	ns := RRNS{ZoneID: z.ID, Label: "@", TTL: z.SOATTL, Value: z.SOAMName}
 	return tx.Session(&gorm.Session{NewDB: true}).Create(&ns).Error
@@ -102,213 +92,199 @@ func todaySerial() uint32 {
 	return uint32(t.Year()*1000000 + int(t.Month())*10000 + t.Day()*100)
 }
 
-// bumpZoneOnChange increments the owning zone's SOA serial and flags it dirty
-// for the backend push. Called from every RR type's AfterSave/AfterDelete so
-// the invariant holds regardless of write path. UpdateColumns skips hooks and
-// auto-timestamps, so there's no recursion.
+// bumpZoneOnChange increments the owning zone's SOA serial. Called from every
+// RR type's AfterSave/AfterDelete so the invariant holds regardless of write
+// path. UpdateColumn skips hooks and auto-timestamps, so there's no recursion.
+//
+// TODO(M5): also enqueue a SyncTask{kind: zone, origin} in this same tx so the
+// executor regenerates the zone + reloads Knot. The journal of pending tasks
+// replaces a per-zone dirty flag.
 func bumpZoneOnChange(tx *gorm.DB, zoneID uint) error {
 	if zoneID == 0 {
 		return nil
 	}
 	return tx.Session(&gorm.Session{NewDB: true}).
 		Model(&Zone{}).Where("id = ?", zoneID).
-		UpdateColumns(map[string]any{
-			"soa_serial":    gorm.Expr("soa_serial + 1"),
-			"content_dirty": true,
-		}).Error
+		UpdateColumn("soa_serial", gorm.Expr("soa_serial + 1")).Error
 }
 
 // ── RR tables (one per type, PRD §4.2). Common columns are repeated on each
 // struct because gone's reflection does not descend into embedded structs. ──
 
 type RRA struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Value          string `gorm:"size:45;not null"` // IPv4 literal
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Value     string `gorm:"size:45;not null"` // IPv4 literal
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRAAAA struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Value          string `gorm:"size:45;not null"` // IPv6 literal
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Value     string `gorm:"size:45;not null"` // IPv6 literal
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRNS struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Value          string `gorm:"size:255;not null"` // DNS name
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Value     string `gorm:"size:255;not null"` // DNS name
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRPTR struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Value          string `gorm:"size:255;not null"` // DNS name
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Value     string `gorm:"size:255;not null"` // DNS name
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRCNAME struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Value          string `gorm:"size:255;not null"` // DNS name
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Value     string `gorm:"size:255;not null"` // DNS name
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRTXT struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Value          string `gorm:"size:65535;not null"`
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Value     string `gorm:"size:65535;not null"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRMX struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Priority       uint16 `gorm:"not null"`
-	Value          string `gorm:"size:255;not null"` // DNS name
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Priority  uint16 `gorm:"not null"`
+	Value     string `gorm:"size:255;not null"` // DNS name
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRSRV struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Priority       uint16 `gorm:"not null"`
-	Weight         uint16 `gorm:"not null"`
-	Port           uint16 `gorm:"not null"`
-	Value          string `gorm:"size:255;not null"` // DNS name (target)
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Priority  uint16 `gorm:"not null"`
+	Weight    uint16 `gorm:"not null"`
+	Port      uint16 `gorm:"not null"`
+	Value     string `gorm:"size:255;not null"` // DNS name (target)
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRCAA struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Flag           uint8  `gorm:"not null"`
-	Tag            string `gorm:"size:16;not null"` // issue|issuewild|iodef|contactemail|contactphone
-	Value          string `gorm:"size:255;not null"`
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Flag      uint8  `gorm:"not null"`
+	Tag       string `gorm:"size:16;not null"` // issue|issuewild|iodef|contactemail|contactphone
+	Value     string `gorm:"size:255;not null"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRSSHFP struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Algorithm      uint8  `gorm:"not null"` // 1..4
-	HashType       uint8  `gorm:"not null"` // 1..2
-	Fingerprint    string `gorm:"size:255;not null"`
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID          uint   `gorm:"primaryKey"`
+	ZoneID      uint   `gorm:"index;not null"`
+	Zone        Zone   `gorm:"foreignKey:ZoneID"`
+	Label       string `gorm:"size:63;not null"`
+	TTL         uint32 `gorm:"not null;default:3600"`
+	Algorithm   uint8  `gorm:"not null"` // 1..4
+	HashType    uint8  `gorm:"not null"` // 1..2
+	Fingerprint string `gorm:"size:255;not null"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type RRTLSA struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	CertUsage      uint8  `gorm:"not null"` // 0..3
-	Selector       uint8  `gorm:"not null"` // 0..1
-	MatchingType   uint8  `gorm:"not null"` // 0..2
-	CertData       string `gorm:"size:1024;not null"`
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID           uint   `gorm:"primaryKey"`
+	ZoneID       uint   `gorm:"index;not null"`
+	Zone         Zone   `gorm:"foreignKey:ZoneID"`
+	Label        string `gorm:"size:63;not null"`
+	TTL          uint32 `gorm:"not null;default:3600"`
+	CertUsage    uint8  `gorm:"not null"` // 0..3
+	Selector     uint8  `gorm:"not null"` // 0..1
+	MatchingType uint8  `gorm:"not null"` // 0..2
+	CertData     string `gorm:"size:1024;not null"`
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type RRDNSKEY struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Flags          uint16 `gorm:"not null"`
-	Protocol       uint8  `gorm:"not null;default:3"`
-	Algorithm      uint8  `gorm:"not null"`
-	PublicKey      string `gorm:"size:1024;not null"`
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID        uint   `gorm:"primaryKey"`
+	ZoneID    uint   `gorm:"index;not null"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Label     string `gorm:"size:63;not null"`
+	TTL       uint32 `gorm:"not null;default:3600"`
+	Flags     uint16 `gorm:"not null"`
+	Protocol  uint8  `gorm:"not null;default:3"`
+	Algorithm uint8  `gorm:"not null"`
+	PublicKey string `gorm:"size:1024;not null"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RRDS struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	KeyTag         uint16 `gorm:"not null"`
-	Algorithm      uint8  `gorm:"not null"`
-	DigestType     uint8  `gorm:"not null"`
-	Digest         string `gorm:"size:512;not null"`
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID         uint   `gorm:"primaryKey"`
+	ZoneID     uint   `gorm:"index;not null"`
+	Zone       Zone   `gorm:"foreignKey:ZoneID"`
+	Label      string `gorm:"size:63;not null"`
+	TTL        uint32 `gorm:"not null;default:3600"`
+	KeyTag     uint16 `gorm:"not null"`
+	Algorithm  uint8  `gorm:"not null"`
+	DigestType uint8  `gorm:"not null"`
+	Digest     string `gorm:"size:512;not null"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type RRNAPTR struct {
-	ID             uint   `gorm:"primaryKey"`
-	ZoneID         uint   `gorm:"index;not null"`
-	Zone           Zone   `gorm:"foreignKey:ZoneID"`
-	Label          string `gorm:"size:63;not null"`
-	TTL            uint32 `gorm:"not null;default:3600"`
-	Order          uint16 `gorm:"not null"`
-	Preference     uint16 `gorm:"not null"`
-	Flags          string `gorm:"size:16"`
-	Service        string `gorm:"size:255"`
-	Regexp         string `gorm:"size:255"`
-	Replacement    string `gorm:"size:255"` // DNS name
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUpdateInfo string `gorm:"size:255"`
+	ID          uint   `gorm:"primaryKey"`
+	ZoneID      uint   `gorm:"index;not null"`
+	Zone        Zone   `gorm:"foreignKey:ZoneID"`
+	Label       string `gorm:"size:63;not null"`
+	TTL         uint32 `gorm:"not null;default:3600"`
+	Order       uint16 `gorm:"not null"`
+	Preference  uint16 `gorm:"not null"`
+	Flags       string `gorm:"size:16"`
+	Service     string `gorm:"size:255"`
+	Regexp      string `gorm:"size:255"`
+	Replacement string `gorm:"size:255"` // DNS name
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 func (RRA) TableName() string      { return "rr_a" }
@@ -327,12 +303,36 @@ func (RRDS) TableName() string     { return "rr_ds" }
 func (RRNAPTR) TableName() string  { return "rr_naptr" }
 
 // AfterSave / AfterDelete on every RR type bump the owning zone's serial.
-func (r *RRA) AfterSave(tx *gorm.DB) error      { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRA) AfterDelete(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRAAAA) AfterSave(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRAAAA) AfterDelete(tx *gorm.DB) error { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRNS) AfterSave(tx *gorm.DB) error     { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRNS) AfterDelete(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRA) AfterSave(tx *gorm.DB) error       { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRA) AfterDelete(tx *gorm.DB) error     { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRAAAA) AfterSave(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRAAAA) AfterDelete(tx *gorm.DB) error  { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRNS) AfterSave(tx *gorm.DB) error      { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRNS) AfterDelete(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRPTR) AfterSave(tx *gorm.DB) error     { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRPTR) AfterDelete(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRCNAME) AfterSave(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRCNAME) AfterDelete(tx *gorm.DB) error { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRTXT) AfterSave(tx *gorm.DB) error     { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRTXT) AfterDelete(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRMX) AfterSave(tx *gorm.DB) error      { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRMX) AfterDelete(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRSRV) AfterSave(tx *gorm.DB) error     { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRSRV) AfterDelete(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRCAA) AfterSave(tx *gorm.DB) error     { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRCAA) AfterDelete(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRSSHFP) AfterSave(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRSSHFP) AfterDelete(tx *gorm.DB) error { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRTLSA) AfterSave(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRTLSA) AfterDelete(tx *gorm.DB) error  { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRDNSKEY) AfterSave(tx *gorm.DB) error  { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRDNSKEY) AfterDelete(tx *gorm.DB) error {
+	return bumpZoneOnChange(tx, r.ZoneID)
+}
+func (r *RRDS) AfterSave(tx *gorm.DB) error      { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRDS) AfterDelete(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRNAPTR) AfterSave(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
+func (r *RRNAPTR) AfterDelete(tx *gorm.DB) error { return bumpZoneOnChange(tx, r.ZoneID) }
 
 // BeforeDelete rejects removing a zone's last NS record (PRD §11.3).
 func (r *RRNS) BeforeDelete(tx *gorm.DB) error {
@@ -346,61 +346,6 @@ func (r *RRNS) BeforeDelete(tx *gorm.DB) error {
 	}
 	return nil
 }
-func (r *RRPTR) AfterSave(tx *gorm.DB) error      { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRPTR) AfterDelete(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRCNAME) AfterSave(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRCNAME) AfterDelete(tx *gorm.DB) error  { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRTXT) AfterSave(tx *gorm.DB) error      { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRTXT) AfterDelete(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRMX) AfterSave(tx *gorm.DB) error       { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRMX) AfterDelete(tx *gorm.DB) error     { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRSRV) AfterSave(tx *gorm.DB) error      { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRSRV) AfterDelete(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRCAA) AfterSave(tx *gorm.DB) error      { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRCAA) AfterDelete(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRSSHFP) AfterSave(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRSSHFP) AfterDelete(tx *gorm.DB) error  { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRTLSA) AfterSave(tx *gorm.DB) error     { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRTLSA) AfterDelete(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRDNSKEY) AfterSave(tx *gorm.DB) error   { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRDNSKEY) AfterDelete(tx *gorm.DB) error { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRDS) AfterSave(tx *gorm.DB) error       { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRDS) AfterDelete(tx *gorm.DB) error     { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRNAPTR) AfterSave(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
-func (r *RRNAPTR) AfterDelete(tx *gorm.DB) error  { return bumpZoneOnChange(tx, r.ZoneID) }
-
-// ── Zone transfer (AXFR/TSIG) — master side. ──
-
-// TSIGKey is a shared secret authenticating zone transfers (RFC 8945).
-// Referenced by ZoneSlave ACL rows and emitted into the Knot config.
-type TSIGKey struct {
-	ID        uint   `gorm:"primaryKey"`
-	Name      string `gorm:"uniqueIndex;size:255;not null"` // key name, e.g. "slave1."
-	Algorithm string `gorm:"size:32;not null;default:hmac-sha256"`
-	Secret    string `gorm:"size:255;not null"` // base64 HMAC secret
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
-
-func (TSIGKey) TableName() string { return "tsig_keys" }
-
-// ZoneSlave is one entry in a zone's transfer ACL: a slave permitted to AXFR
-// the zone (and receive NOTIFY), optionally authenticated with a TSIGKey. The
-// backend turns these into Knot ACL rules + the catalog membership, so the
-// listed slaves auto-provision and transfer the zone.
-type ZoneSlave struct {
-	ID        uint     `gorm:"primaryKey"`
-	ZoneID    uint     `gorm:"index;not null"`
-	Zone      Zone     `gorm:"foreignKey:ZoneID"`
-	Address   string   `gorm:"size:64;not null"` // slave IP or CIDR
-	TSIGKeyID *uint    `gorm:"index"`            // nil = IP-only ACL
-	TSIGKey   *TSIGKey `gorm:"foreignKey:TSIGKeyID"`
-	Notify    bool     `gorm:"not null;default:true"` // send NOTIFY to this slave
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
-
-func (ZoneSlave) TableName() string { return "zone_slaves" }
 
 // ── Authorization grants (PRD §9.3). ──
 
@@ -434,10 +379,10 @@ type GroupRRRole struct {
 func (GroupRRRole) TableName() string { return "group_rr_roles" }
 
 // MigrateDNS auto-migrates the DNS schema. Call after the auth tables exist
-// (NewAuthGORM) since Zone/roles carry FKs into auth_users / auth_groups.
+// (NewAuthGORM) since the role grants carry FKs into auth_groups.
 func MigrateDNS(db *gorm.DB) error {
 	return db.AutoMigrate(
-		&Zone{}, &TSIGKey{}, &ZoneSlave{},
+		&Zone{},
 		&RRA{}, &RRAAAA{}, &RRNS{}, &RRPTR{}, &RRCNAME{}, &RRTXT{},
 		&RRMX{}, &RRSRV{}, &RRCAA{}, &RRSSHFP{}, &RRTLSA{}, &RRDNSKEY{}, &RRDS{}, &RRNAPTR{},
 		&GroupZoneRole{}, &GroupRRRole{},

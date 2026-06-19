@@ -9,6 +9,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// TSIGKey is a shared transfer secret (RFC 8945) referenced by a Slave. Lives
+// in Config (not the DB) because the catalog zone applies keys uniformly.
+type TSIGKey struct {
+	Name      string `yaml:"name"`
+	Algorithm string `yaml:"algorithm"` // default hmac-sha256
+	Secret    string `yaml:"secret"`    // base64 HMAC secret
+}
+
+// Slave is a secondary DNS server allowed to AXFR/receive NOTIFY for all zones
+// (applied uniformly via the catalog zone). TSIGKey names a Config TSIGKey.
+type Slave struct {
+	Address string `yaml:"address"`  // IP or CIDR
+	TSIGKey string `yaml:"tsig_key"` // name of a configured TSIG key (optional)
+}
+
 // Config is the app-global configuration. It also satisfies gone's
 // site.Settings interface (TimeFormatter + PaginationSettings) by embedding
 // site.DefaultSettings and overriding the page-size default, so the same
@@ -25,6 +40,12 @@ type Config struct {
 	ListenAddr string   `yaml:"listen_addr"` // e.g. ":8080"
 	AllowedIPs []string `yaml:"allowed_ips"` // CIDRs allowed to connect; empty = all
 	TrustProxy bool     `yaml:"trust_proxy"` // honor X-Forwarded-For / X-Real-IP / X-Forwarded-Proto
+
+	// Backend / replication (consumed in M5). The local Knot serves master
+	// zones; slaves AXFR a catalog zone (RFC 9432) authenticated with TSIG.
+	CatalogZone string    `yaml:"catalog_zone"` // catalog zone origin (empty = none)
+	Slaves      []Slave   `yaml:"slaves"`
+	TSIGKeys    []TSIGKey `yaml:"tsig_keys"`
 
 	DefaultTTL uint32 `yaml:"default_ttl"` // TTL for $TTL + API-created RRs (PRD §5)
 	DDNSRRTTL  uint32 `yaml:"ddns_rr_ttl"` // TTL for A/AAAA touched via DDNS (PRD §5)

@@ -30,7 +30,8 @@ disk for reference only).
   (`auth.PageShellFunc` was removed) — auth + admin `RegisterRoutes` both take
   `site.Shell`.
 - **Admin sidebar is one ordered `[]crud.SidebarElementInterface`** (0.1.1):
-  interleave `*CRUDTable`s with `crud.Header` / `crud.Separator` / `crud.Link`.
+  interleave `*CRUDTable`s with `crud.SidebarHeader` / `crud.SidebarSeparator`
+  / `crud.SidebarLink`.
   `CRUDTable.Segment` is **gone** — a table's URL slug is derived from the Go
   type name (`lowercase(name)+"s"`, e.g. `UserGORM`→`usergorms`, `RRA`→`rras`,
   `Zone`→`zones`). The sidebar *label* is the `DisplayName`. So slugs are ugly
@@ -50,9 +51,12 @@ disk for reference only).
   **catalog zone (RFC 9432)** so slaves **auto-provision** member zones — no
   teleddns↔teleddns API, no slave-zone table here. Slaves are plain Knot
   instances consuming the catalog.
-- **Transfer ACL: per-zone.** `TSIGKey` (shared secret) + `ZoneSlave` (per-zone
-  allowed slave address + key + NOTIFY flag) tables feed the generated Knot
-  ACLs and catalog membership.
+- **Slaves + TSIG: global, in `Config`.** A uniform slave list + TSIG keys live
+  in `Config` (no DB tables) — the catalog zone applies them to every zone.
+- **Sync: task-log journal.** A zone/RR change enqueues a `SyncTask` in the
+  same DB transaction; an executor goroutine coalesces per zone, regenerates
+  the full zone + reloads Knot, marks `done`, and keeps rows as a journal
+  (retry + backoff + dead-letter). Replaces any per-zone dirty flag (M5).
 - **RR storage: one GORM table per RR type** — maps 1:1 to `crud.CRUDTable[T]`
   reflection; flat structs (gone reflection ignores embedded fields).
 - **CLI: `spf13/pflag`** — GNU `-c, --config` / `-d, --debug` (combined help,
@@ -185,12 +189,13 @@ Ordered to match the build sequence. Each milestone is independently runnable.
 
   M2 status: audit logging is wired (`source=ui`); the **push-scheduling**
   half of the callback is a TODO until `PendingPush` lands in M5.
-- **Done in M2:** all 14 RR tables + Zone/roles + `TSIGKey`/`ZoneSlave`
-  (per-zone transfer ACL) with validators, wired into one grouped admin
-  sidebar (Accounts / DNS / Records / Access); SOA defaults + auto apex-NS on
-  zone create (GORM hooks); serial bump + `content_dirty` on every RR change
-  (path-independent hooks); last-NS delete guard; audit observer. The remote
-  `Server` table was removed (co-located/Knot-only). Unit + HTTP e2e tested.
+- **Done in M2:** all 14 RR tables + Zone + role grants with validators, wired
+  into one grouped admin sidebar (Accounts / DNS / Records / Access); SOA
+  defaults + auto apex-NS on zone create; SOA-serial bump on every RR change
+  (path-independent GORM hooks); last-NS delete guard; audit observer. Model
+  trimmed to essentials — no Server table, no owner / dirty / sync / per-row
+  audit columns; slaves + TSIG moved to `Config`; sync state will live in the
+  `SyncTask` journal (M5). Unit + HTTP e2e tested.
 - **Deferred:** zone-delete cascade (deleting a Zone currently orphans its RR
   rows — add FK `OnDelete` or a `BeforeDelete` sweep); per-zone RR editor UX
   (the 14 per-type admin tables are functional but clunky — a nicer per-zone

@@ -2,10 +2,7 @@ package web
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"reflect"
-	"strings"
 
 	"github.com/tmshlvck/gone/auth"
 	"github.com/tmshlvck/gone/crud"
@@ -25,26 +22,15 @@ func dnsTables(db *gorm.DB, settings site.Settings, gate auth.Authz, log *slog.L
 	t := func(table crud.CRUDTableInterface) crud.SidebarElementInterface { return table }
 
 	return []crud.SidebarElementInterface{
-		crud.Separator(), crud.Header("DNS"),
+		crud.SidebarSeparator(), crud.SidebarHeader("DNS"),
 		t(dnsTable[model.Zone](db, settings, gate, log, ag, "Zones", []crud.MetaField{
 			{Name: "Origin", FieldValidate: crud.All(crud.NotEmpty, model.ValFQDN),
 				FormHelp: "FQDN with trailing dot, e.g. example.com."},
 			{Name: "SOAMName", DisplayName: "SOA MNAME", FieldValidate: model.ValDNSName},
 			{Name: "SOARName", DisplayName: "SOA RNAME", FieldValidate: model.ValDNSName},
-			{Name: "ContentDirty", ReadOnly: true},
-			{Name: "LastContentSync", ReadOnly: true},
-			{Name: "LastUpdateInfo", Hidden: true},
-		})),
-		t(dnsTable[model.TSIGKey](db, settings, gate, log, ag, "TSIG keys", []crud.MetaField{
-			{Name: "Name", FieldValidate: crud.NotEmpty, FormHelp: "key name, e.g. slave1."},
-			{Name: "Secret", DisplayValue: crud.Redact, GenFormElement: crud.PasswordInput,
-				BindStrings: keepSecretOnBlank, NoExport: true, FormHelp: "base64 HMAC secret"},
-		})),
-		t(dnsTable[model.ZoneSlave](db, settings, gate, log, ag, "Slave ACLs", []crud.MetaField{
-			{Name: "Address", FieldValidate: crud.NotEmpty, FormHelp: "slave IP or CIDR"},
 		})),
 
-		crud.Separator(), crud.Header("Records"),
+		crud.SidebarSeparator(), crud.SidebarHeader("Records"),
 		t(dnsTable[model.RRA](db, settings, gate, log, ag, "A",
 			rrFields(crud.MetaField{Name: "Value", FieldValidate: crud.All(crud.NotEmpty, crud.IPv4Addr), FormHelp: "IPv4 address"}))),
 		t(dnsTable[model.RRAAAA](db, settings, gate, log, ag, "AAAA",
@@ -102,7 +88,7 @@ func dnsTables(db *gorm.DB, settings site.Settings, gate auth.Authz, log *slog.L
 				crud.MetaField{Name: "Preference", FieldValidate: crud.IntRange(0, 65535)},
 				crud.MetaField{Name: "Replacement", FieldValidate: model.ValDNSName}))),
 
-		crud.Separator(), crud.Header("Access"),
+		crud.SidebarSeparator(), crud.SidebarHeader("Access"),
 		t(dnsTable[model.GroupZoneRole](db, settings, gate, log, ag, "Zone roles (L2)", nil)),
 		t(dnsTable[model.GroupRRRole](db, settings, gate, log, ag, "RR roles (L1)", []crud.MetaField{
 			{Name: "Label", FieldValidate: model.ValLabel},
@@ -117,9 +103,7 @@ func rrFields(extra ...crud.MetaField) []crud.MetaField {
 		{Name: "Label", FieldValidate: crud.All(crud.NotEmpty, model.ValLabel), FormHelp: "@ for apex, or a hostname label"},
 		{Name: "TTL", FormHelp: "seconds"},
 	}
-	out = append(out, extra...)
-	out = append(out, crud.MetaField{Name: "LastUpdateInfo", Hidden: true})
-	return out
+	return append(out, extra...)
 }
 
 // dnsTable builds one observe-wrapped admin CRUDTable[T]. The URL slug is
@@ -145,28 +129,4 @@ func auditObserver[T any](log *slog.Logger, ag *auth.AuthGORM, typeName string) 
 			"actor", ag.CurrentUsername(ctx),
 		)
 	}
-}
-
-// keepSecretOnBlank is a BindStrings hook for plaintext secrets (e.g. a TSIG
-// key secret): a blank submission leaves the stored value unchanged, a
-// non-blank one overwrites it. Mirrors gone's HashWith keep-on-blank
-// behaviour without hashing.
-func keepSecretOnBlank(mf crud.MetaField, strs []string, instance any) error {
-	var v string
-	if len(strs) > 0 {
-		v = strings.TrimSpace(strs[0])
-	}
-	if v == "" {
-		return nil // leave unchanged
-	}
-	rv := reflect.ValueOf(instance)
-	for rv.Kind() == reflect.Pointer {
-		rv = rv.Elem()
-	}
-	f := rv.FieldByName(mf.Name)
-	if !f.IsValid() || !f.CanSet() || f.Kind() != reflect.String {
-		return fmt.Errorf("cannot set field %s", mf.Name)
-	}
-	f.SetString(strs[0])
-	return nil
 }

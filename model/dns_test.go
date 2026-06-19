@@ -48,9 +48,6 @@ func TestZoneCreateAutoSOAandNS(t *testing.T) {
 	if got.SOASerial == 0 || got.SOARefresh == 0 || got.SOAMinimum == 0 {
 		t.Errorf("SOA defaults not filled: %+v", got)
 	}
-	if !got.ContentDirty {
-		t.Error("zone should be content-dirty after auto-NS creation")
-	}
 
 	var ns []RRNS
 	if err := db.Where("zone_id = ?", z.ID).Find(&ns).Error; err != nil {

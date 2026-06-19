@@ -47,7 +47,7 @@ func RegisterAdmin(mux chi.Router, ag *auth.AuthGORM, db *gorm.DB, settings site
 
 	// One ordered sidebar (gone 0.1.1): tables interleaved with group headers.
 	elements := []crud.SidebarElementInterface{
-		crud.Header("Accounts"), &userTable, &groupTable,
+		crud.SidebarHeader("Accounts"), &userTable, &groupTable,
 	}
 	elements = append(elements, dnsTables(db, settings, gate, log, ag)...)
 	admin := crud.DeriveAdmin(elements, nil)
