@@ -12,44 +12,35 @@ import (
 // delete must not orphan a zone's SOA or all its NS records).
 var ErrLastNSRecord = errors.New("cannot delete the last NS record of a zone")
 
-// This file defines the DNS data model (PRD §10.3 + Part A §4):
+// This file defines the DNS data model (PRD §10.3 + Part A §4), scoped to the
+// co-located, master-only, Knot-only design (see PLAN.md):
 //
-//   - Server  — a backend Knot/Bind host.
-//   - Zone    — an origin with inline SOA fields + sync tracking.
-//   - RR*      — one GORM table per RR type (PRD §4.2). Structs are flat (no
+//   - Zone      — a master origin with inline SOA fields + sync tracking.
+//   - RR*        — one GORM table per RR type (PRD §4.2). Structs are flat (no
 //     embedding) because gone's CRUD reflection only walks top-level fields.
+//   - TSIGKey    — a shared secret for authenticating zone transfers.
+//   - ZoneSlave  — a per-zone transfer ACL: an allowed slave address + key.
 //   - GroupZoneRole / GroupRRRole — L2 / L1 grants (PRD §9.3).
+//
+// There is no Server table: the backend is the local Knot daemon (configured
+// from app Config). Slaves are not managed here — they auto-provision from the
+// catalog zone the backend generates (RFC 9432) and pull data via AXFR/TSIG.
 //
 // Invariants enforced by GORM hooks (so they hold on every write path —
 // admin, API, DDNS): a new Zone gets SOA defaults + a default apex NS, and any
 // RR mutation bumps the owning zone's SOA serial and marks it dirty for the
 // backend push.
 
-// Server is a backend DNS host (Knot via TeleAPI, or Bind).
-type Server struct {
-	ID             uint   `gorm:"primaryKey"`
-	Name           string `gorm:"uniqueIndex;size:64;not null"`
-	APIURL         string `gorm:"size:255"`
-	APIKey         string `gorm:"size:255"` // backend bearer token (secret)
-	MasterTemplate string `gorm:"size:64"`
-	SlaveTemplate  string `gorm:"size:64"`
-	IsActive       bool   `gorm:"not null;default:true"`
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-}
-
-func (Server) TableName() string { return "servers" }
-
-// Zone is a DNS zone: an origin (FQDN with trailing dot), its owner, the
-// inline SOA fields (PRD §4.1; NAME=@ and CLASS=IN are implicit), the backend
-// master server, and content-sync tracking.
+// Zone is a master DNS zone: an origin (FQDN with trailing dot), its owner,
+// the inline SOA fields (PRD §4.1; NAME=@ and CLASS=IN are implicit), and
+// content-sync tracking. It is always served by the local Knot as master.
 type Zone struct {
 	ID      uint          `gorm:"primaryKey"`
 	Origin  string        `gorm:"uniqueIndex;size:255;not null"`
 	OwnerID uint          `gorm:"index"`
 	Owner   auth.UserGORM `gorm:"foreignKey:OwnerID"`
 
-	SOATTL     uint32 `gorm:"not null;default:3600" json:"soa_ttl"`
+	SOATTL     uint32 `gorm:"not null;default:3600"`
 	SOAMName   string `gorm:"size:255"` // primary nameserver (SOA MNAME)
 	SOARName   string `gorm:"size:255"` // responsible party (SOA RNAME)
 	SOASerial  uint32 `gorm:"not null"`
@@ -57,9 +48,6 @@ type Zone struct {
 	SOARetry   uint32 `gorm:"not null;default:3600"`
 	SOAExpire  uint32 `gorm:"not null;default:1209600"`
 	SOAMinimum uint32 `gorm:"not null;default:3600"`
-
-	MasterServerID uint   `gorm:"index"`
-	MasterServer   Server `gorm:"foreignKey:MasterServerID"`
 
 	ContentDirty    bool `gorm:"not null;default:false"`
 	LastContentSync *time.Time
@@ -381,6 +369,39 @@ func (r *RRDS) AfterDelete(tx *gorm.DB) error     { return bumpZoneOnChange(tx, 
 func (r *RRNAPTR) AfterSave(tx *gorm.DB) error    { return bumpZoneOnChange(tx, r.ZoneID) }
 func (r *RRNAPTR) AfterDelete(tx *gorm.DB) error  { return bumpZoneOnChange(tx, r.ZoneID) }
 
+// ── Zone transfer (AXFR/TSIG) — master side. ──
+
+// TSIGKey is a shared secret authenticating zone transfers (RFC 8945).
+// Referenced by ZoneSlave ACL rows and emitted into the Knot config.
+type TSIGKey struct {
+	ID        uint   `gorm:"primaryKey"`
+	Name      string `gorm:"uniqueIndex;size:255;not null"` // key name, e.g. "slave1."
+	Algorithm string `gorm:"size:32;not null;default:hmac-sha256"`
+	Secret    string `gorm:"size:255;not null"` // base64 HMAC secret
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func (TSIGKey) TableName() string { return "tsig_keys" }
+
+// ZoneSlave is one entry in a zone's transfer ACL: a slave permitted to AXFR
+// the zone (and receive NOTIFY), optionally authenticated with a TSIGKey. The
+// backend turns these into Knot ACL rules + the catalog membership, so the
+// listed slaves auto-provision and transfer the zone.
+type ZoneSlave struct {
+	ID        uint     `gorm:"primaryKey"`
+	ZoneID    uint     `gorm:"index;not null"`
+	Zone      Zone     `gorm:"foreignKey:ZoneID"`
+	Address   string   `gorm:"size:64;not null"` // slave IP or CIDR
+	TSIGKeyID *uint    `gorm:"index"`            // nil = IP-only ACL
+	TSIGKey   *TSIGKey `gorm:"foreignKey:TSIGKeyID"`
+	Notify    bool     `gorm:"not null;default:true"` // send NOTIFY to this slave
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func (ZoneSlave) TableName() string { return "zone_slaves" }
+
 // ── Authorization grants (PRD §9.3). ──
 
 // GroupZoneRole grants L2 (full zone CRUD) to a group on a whole zone.
@@ -416,7 +437,7 @@ func (GroupRRRole) TableName() string { return "group_rr_roles" }
 // (NewAuthGORM) since Zone/roles carry FKs into auth_users / auth_groups.
 func MigrateDNS(db *gorm.DB) error {
 	return db.AutoMigrate(
-		&Server{}, &Zone{},
+		&Zone{}, &TSIGKey{}, &ZoneSlave{},
 		&RRA{}, &RRAAAA{}, &RRNS{}, &RRPTR{}, &RRCNAME{}, &RRTXT{},
 		&RRMX{}, &RRSRV{}, &RRCAA{}, &RRSSHFP{}, &RRTLSA{}, &RRDNSKEY{}, &RRDS{}, &RRNAPTR{},
 		&GroupZoneRole{}, &GroupRRRole{},

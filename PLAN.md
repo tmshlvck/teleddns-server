@@ -25,32 +25,45 @@ disk for reference only).
 | Migrations | **GORM `AutoMigrate`** for v1 | revisit a versioned tool (e.g. `goose`/`atlas`) before first real deployment; legacy used Alembic. |
 | Config | hand-rolled `Config` struct | see §3. Loaded from file + env + flags. |
 
-### gone integration notes (current `main`)
+### gone integration notes (current `main`, ≥ 0.1.1)
 - gone uses a single shared **`site.Shell`** page-chrome type everywhere
   (`auth.PageShellFunc` was removed) — auth + admin `RegisterRoutes` both take
   `site.Shell`.
+- **Admin sidebar is one ordered `[]crud.SidebarElementInterface`** (0.1.1):
+  interleave `*CRUDTable`s with `crud.Header` / `crud.Separator` / `crud.Link`.
+  `CRUDTable.Segment` is **gone** — a table's URL slug is derived from the Go
+  type name (`lowercase(name)+"s"`, e.g. `UserGORM`→`usergorms`, `RRA`→`rras`,
+  `Zone`→`zones`). The sidebar *label* is the `DisplayName`. So slugs are ugly
+  but stable; the password-modal target id is `admin-usergorms-modal-l1-body`.
 - The app owns all CSS. Our `web` shell adopts gone's `admin_gorm` example
   polish: the focus-outline/font-smoothing `<style>` block and
-  `site.ThemeToggle("light","dark")` in the header. `site.TimezonePicker` can
-  be added to the navbar later (UTC-stored, per-session display zone).
+  `site.ThemeToggle("light","dark")` in the header.
 - `crud.ObserveAccessor` is the hook for scheduling backend pushes, not just
   audit — see M2.
 
 ### Decisions locked in
-- **Secondary (slave) servers: global config.** Slaves are defined once in
-  `Config`; every zone replicates to all of them. (Not per-zone — simplifies
-  the uniform fleet we run. Revisit if mixed topologies appear.)
-- **RR storage: one GORM table per RR type** (`A`, `AAAA`, `NS`, … like the
-  legacy schema). Maps 1:1 to `gone`'s `crud.CRUDTable[T]` reflection so each
-  type gets a clean admin form with typed, per-type-validated fields.
+- **Deployment: co-located, master-only, Knot-only.** teleddns-server runs on
+  the DNS host and manages the **local Knot** as **master**. There is no
+  remote-backend `Server` table; the local Knot connection is app `Config`.
+- **Replication: native DNS, not app-to-app.** Master→slave is **AXFR/IXFR +
+  NOTIFY**, authenticated with **TSIG** (RFC 8945). The backend generates a
+  **catalog zone (RFC 9432)** so slaves **auto-provision** member zones — no
+  teleddns↔teleddns API, no slave-zone table here. Slaves are plain Knot
+  instances consuming the catalog.
+- **Transfer ACL: per-zone.** `TSIGKey` (shared secret) + `ZoneSlave` (per-zone
+  allowed slave address + key + NOTIFY flag) tables feed the generated Knot
+  ACLs and catalog membership.
+- **RR storage: one GORM table per RR type** — maps 1:1 to `crud.CRUDTable[T]`
+  reflection; flat structs (gone reflection ignores embedded fields).
+- **CLI: `spf13/pflag`** — GNU `-c, --config` / `-d, --debug` (combined help,
+  `--config=x`); single-dash long names are intentionally not accepted.
 
 ### Decision still to confirm
-- **Management/record API blueprint.** Recommended: **split plane** — native
-  REST (PRD §11) for the *management* surface (zones, users, groups, tokens,
-  servers, roles), plus a **Cloudflare-compatible record-CRUD facade**
-  (`…/zones/{id}/dns_records`, per-record id CRUD, `Authorization: Bearer`)
-  over the same model for third-party tooling (external-dns, cert-manager,
-  acme.sh/lego, libdns, OctoDNS). See PLAN review notes; not yet final.
+- **Record/management API blueprint.** Recommended split plane — native REST
+  (PRD §11) for management (zones, users, groups, tokens, roles) + a
+  **Cloudflare-compatible record-CRUD facade** (`cfapi/`) for third-party
+  tooling (external-dns, cert-manager, acme.sh/lego, libdns, OctoDNS). This API
+  is for *clients/tooling only* — no peer replication. Not yet final.
 
 ---
 
@@ -65,7 +78,7 @@ teleddns-server/
   cmd/teleddns-server/  entrypoint, CLI subcommands, slog/httplog setup, server wiring
   model/                everything data-shaped:
                           • DB models — User ext/APIKey, Zone + SOA fields,
-                            one table per RR type, Server,
+                            one table per RR type, TSIGKey, ZoneSlave (ACL),
                             GroupZoneRole/GroupRRRole, PendingPush
                           • config model — Config struct + loader (satisfies
                             gone's site.Settings)
@@ -75,14 +88,15 @@ teleddns-server/
   web/                  page shell + gone CRUD admin wiring + auth (AuthGORM,
                         sessions, CSRF, login, preferences + API-key management)
   ddns/                 DDNS update endpoint (Huma): auth, zone/label resolve, semantics
-  knot/                 Knot / TeleAPI backend (push zone+config, reload)
-  bind/                 Bind backend
+  knot/                 Knot backend: render zone files + knot.conf (zones,
+                        templates, ACLs, TSIG, catalog zone), reload via knotc
   api/                  native management JSON API (Huma, bearer)
-  cfapi/                Cloudflare-compatible record facade
+  cfapi/                Cloudflare-compatible record facade (for client tooling)
 ```
 
-**Build order:** start with `model/`, `web/`, `ddns/`, `knot/`; add `bind/`,
-`api/`, `cfapi/` (and split anything out of `model/`) as we reach them.
+**Build order:** start with `model/`, `web/`, `ddns/`, `knot/`; add `api/`,
+`cfapi/` (and split anything out of `model/`) as we reach them. No `bind/` and
+no peer/secondary package — Knot-only, and slaves replicate via DNS, not us.
 
 Local sibling references (not vendored): `../gone` (library), `../teleddns`
 (existing Rust DDNS client — compatibility target), `obsolete/` (old Python).
@@ -100,7 +114,8 @@ type Config struct {
     ListenAddr   string   // e.g. ":8080"
     AllowedIPs   []string // CIDRs allowed to reach the server; empty = all
     TrustProxy   bool     // honor X-Forwarded-For / X-Real-IP / X-Forwarded-Proto (PRD §3.10)
-    SlaveServers []SlaveServer // global secondary teleddns-servers (peers)
+    // (M5) local Knot backend connection: knotc path / control socket, catalog
+    // zone name, etc. No slave/peer list — slaves replicate via DNS.
     DefaultTTL   uint32   // 3600 (PRD §5)
     DDNSRRTTL    uint32   // 60   (PRD §5)
     BackendSyncDelay   time.Duration // 10s  (debounce)
@@ -117,7 +132,6 @@ type Config struct {
 - Loader precedence: defaults → config file (YAML) → env → flags.
 - `AllowedIPs` enforced by a chi middleware mounted before everything else
   (using the real client IP per `TrustProxy`).
-- `SlaveServers` carries peer base URL + bearer token (see §10).
 
 ---
 
@@ -171,10 +185,12 @@ Ordered to match the build sequence. Each milestone is independently runnable.
 
   M2 status: audit logging is wired (`source=ui`); the **push-scheduling**
   half of the callback is a TODO until `PendingPush` lands in M5.
-- **Done in M2:** all 14 RR tables + Server/Zone/roles with validators, wired
-  into one admin; SOA defaults + auto apex-NS on zone create (GORM hooks);
-  serial bump + `content_dirty` on every RR change (path-independent hooks);
-  last-NS delete guard; audit observer. Unit + HTTP e2e tested.
+- **Done in M2:** all 14 RR tables + Zone/roles + `TSIGKey`/`ZoneSlave`
+  (per-zone transfer ACL) with validators, wired into one grouped admin
+  sidebar (Accounts / DNS / Records / Access); SOA defaults + auto apex-NS on
+  zone create (GORM hooks); serial bump + `content_dirty` on every RR change
+  (path-independent hooks); last-NS delete guard; audit observer. The remote
+  `Server` table was removed (co-located/Knot-only). Unit + HTTP e2e tested.
 - **Deferred:** zone-delete cascade (deleting a Zone currently orphans its RR
   rows — add FK `OnDelete` or a `BeforeDelete` sweep); per-zone RR editor UX
   (the 14 per-type admin tables are functional but clunky — a nicer per-zone
@@ -200,49 +216,47 @@ Ordered to match the build sequence. Each milestone is independently runnable.
 - Rate limiting (PRD §8.8): 60/h per record, 600/h per token → `429 abuse`.
 - Port `tests/test_ddns_http_integration.py`.
 
-### M5 — Backend sync (PRD §12)
-- `zonefile/`: BIND zone serialization **byte-faithful to PRD §4.2** (must pass
-  Knot `kzonecheck`) + Knot template config (per legacy SPECS).
-- `Backend` interface with two impls:
-  - **Knot/TeleAPI**: `/zonewrite`, `/zonecheck`, `/zonereload`, `/configwrite`,
-    `/configreload` (existing contract, unchanged for v1).
-  - **Bind**: write zone file + reload (`rndc reload` / equivalent). Details
-    TBD; same interface.
-- `PendingPush` journal (PRD §10.4) appended **in the same transaction** as the
-  mutation. In-process worker goroutine (single-instance deploy for v1):
-  claim under row lock (`FOR UPDATE SKIP LOCKED` on PG; single-worker serialize
-  on SQLite), full-zone idempotent regen, exponential backoff+jitter (cap 1h),
-  dead-letter after 20 attempts, debounce `BackendSyncDelay`, safety sweep
-  `BackendSyncPeriod`. Sync-inline mode for dev/tests only.
+### M5 — Local Knot backend (PRD §12, Knot-only)
+- `knot/`: render, from current DB state —
+  - **zone files** in BIND format **byte-faithful to PRD §4.2** (must pass
+    `kzonecheck`);
+  - **`knot.conf`** fragments: zone blocks, templates, **ACLs + TSIG keys**
+    (from `TSIGKey`/`ZoneSlave`), NOTIFY targets, and a **catalog zone**
+    (RFC 9432) advertising the master zones so slaves auto-provision.
+  - apply + reload via `knotc` (or the existing TeleAPI on localhost if kept).
+- `PendingPush` journal appended **in the same transaction** as the mutation.
+  In-process worker goroutine (single instance): claim under row lock
+  (`FOR UPDATE SKIP LOCKED` on PG; serialize on SQLite), full-zone idempotent
+  regen, exponential backoff+jitter (cap 1h), dead-letter after 20 attempts,
+  debounce `BackendSyncDelay`, safety sweep `BackendSyncPeriod`. Inline mode
+  for dev/tests only. No remote push, no Bind.
 
-### M6 — Management + record API (PRD §11)
+### M6 — Management + record API (PRD §11, clients only)
 - Huma JSON API, **Bearer only** (Basic rejected), token level scopes access.
 - Native management resources (PRD §11.2): zones, RR-in-zone, users, groups,
-  group-zone-roles, group-rr-roles, self tokens, user tokens, servers.
-  Pagination (default 50, max 500), filtering, `{detail,code}` errors,
+  group-zone-roles, group-rr-roles, self tokens, user tokens, TSIG keys, slave
+  ACLs. Pagination (default 50, max 500), filtering, `{detail,code}` errors,
   `Idempotency-Key` on POST.
-- **Cloudflare-compatible record facade** (pending §1 confirmation): per-record
-  id CRUD over the same models for third-party tooling.
+- **`cfapi/` — Cloudflare-compatible record facade** (pending §1 confirmation):
+  per-record id CRUD over the same models for third-party tooling. This is the
+  only "external API" surface — there is **no teleddns↔teleddns** peer API
+  (slaves replicate via DNS).
 - `/healthcheck` (always public, OK/WARN per PRD §11.5) + `/metrics`
   (Prometheus series in §11.5; auth configurable).
 
-### M7 — Secondary replication (global slaves)
-- `secondary/` client pushes zone state to each peer teleddns-server defined in
-  `Config.SlaveServers`, authenticating with the peer's bearer token over the
-  **same management/record API** (server-to-server). Triggered off the same
-  `PendingPush`/update loop as backend sync (a slave is just another push
-  target kind).
-- Resolves PRD §13.2; keep the Knot/Bind backend push and the peer replication
-  as two `Backend`-like target kinds behind one worker.
+*(Former M7 "secondary replication" is removed — replaced by the catalog zone
++ AXFR/TSIG handled in M5.)*
 
 ---
 
 ## 5. Open questions carried from PRD §13
-1. Whole-zone push vs JSON sidecar on Knot hosts — keep whole-zone for v1.
-2. Slave config sync representation — **resolved: global config** (§1).
+1. Whole-zone push vs JSON sidecar on Knot hosts — moot; we configure the
+   **local** Knot directly (co-located).
+2. Slave config sync — **resolved: native DNS** (catalog zone + AXFR/TSIG); no
+   app-to-app sync.
 3. TeleDDNS client `User-Agent` opt-in — not required for v1.
 4. L1 client provisioning UX (pre-create row + mint L1 token) — operator-UI task.
-5. Legacy SQLite import — `admin import-legacy` once schema is final (M1/M8).
+5. Legacy SQLite import — `admin import-legacy` once schema is final.
 
 ## 6. Testing strategy
 - Port legacy `test_ddns_auth.py` + `test_ddns_http_integration.py` as the

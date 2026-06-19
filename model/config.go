@@ -9,15 +9,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// SlaveServer is a peer teleddns-server we replicate every zone to. Slaves
-// are configured globally (not per-zone) — see PLAN.md §1. The peer is driven
-// through its own management/record API with a bearer token.
-type SlaveServer struct {
-	Name    string `yaml:"name"`
-	BaseURL string `yaml:"base_url"`
-	Token   string `yaml:"token"`
-}
-
 // Config is the app-global configuration. It also satisfies gone's
 // site.Settings interface (TimeFormatter + PaginationSettings) by embedding
 // site.DefaultSettings and overriding the page-size default, so the same
@@ -34,8 +25,6 @@ type Config struct {
 	ListenAddr string   `yaml:"listen_addr"` // e.g. ":8080"
 	AllowedIPs []string `yaml:"allowed_ips"` // CIDRs allowed to connect; empty = all
 	TrustProxy bool     `yaml:"trust_proxy"` // honor X-Forwarded-For / X-Real-IP / X-Forwarded-Proto
-
-	SlaveServers []SlaveServer `yaml:"slave_servers"`
 
 	DefaultTTL uint32 `yaml:"default_ttl"` // TTL for $TTL + API-created RRs (PRD §5)
 	DDNSRRTTL  uint32 `yaml:"ddns_rr_ttl"` // TTL for A/AAAA touched via DDNS (PRD §5)

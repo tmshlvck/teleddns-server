@@ -14,7 +14,8 @@ import (
 // into the users table's L1 modal body. Mirrors gone's auth_gorm example
 // (the library mounts the GET/POST /account/{ref} handlers that serve the
 // password form). modalBodyID is the table's L1 body element id, derived from
-// the component path "/admin/users" → "admin-users-modal-l1-body".
+// the component path "/admin/usergorms" → "admin-usergorms-modal-l1-body"
+// (gone derives the slug as lowercase(typeName)+"s"; UserGORM → usergorms).
 func userIDLink(id, modalBodyID string) templ.Component {
 	return templ.ComponentFunc(func(_ context.Context, w io.Writer) error {
 		_, err := fmt.Fprintf(w,

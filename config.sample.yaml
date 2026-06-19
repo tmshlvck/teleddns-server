@@ -42,9 +42,7 @@ backend_sync_period: "300s"   # safety-net full sweep                  ["300s"]
 warn_on_noupdate: "7200s"     # WARN if no update for this long        ["7200s"]
 warn_on_nopush:   "3600s"     # WARN if no successful push this long   ["3600s"]
 
-# Global secondary (slave) teleddns-servers — every zone replicates to all of
-# them via their management/record API with the given bearer token.   [none]
-# slave_servers:
-#   - name: "ns2"
-#     base_url: "https://ns2.example.com"
-#     token: "gone_xxxxxxxx_..."
+# Slaves are NOT configured here: teleddns-server manages master zones on the
+# local Knot, generates a catalog zone (RFC 9432) + per-zone transfer ACLs
+# (TSIG), and slaves auto-provision and pull zones via AXFR. The local Knot
+# backend connection settings will be added here when M5 lands.

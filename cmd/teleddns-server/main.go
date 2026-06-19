@@ -11,7 +11,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,6 +18,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
@@ -34,10 +35,8 @@ import (
 func main() {
 	var cfgPath string
 	var debug bool
-	flag.StringVar(&cfgPath, "config", "", "path to YAML config file")
-	flag.StringVar(&cfgPath, "c", "", "path to YAML config file (shorthand)")
-	flag.BoolVar(&debug, "debug", false, "enable debug logging")
-	flag.BoolVar(&debug, "d", false, "enable debug logging (shorthand)")
+	flag.StringVarP(&cfgPath, "config", "c", "", "path to YAML config file")
+	flag.BoolVarP(&debug, "debug", "d", false, "enable debug logging")
 	flag.Parse()
 
 	path := resolveConfigPath(cfgPath)

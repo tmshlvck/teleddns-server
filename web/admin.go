@@ -26,7 +26,7 @@ func RegisterAdmin(mux chi.Router, ag *auth.AuthGORM, db *gorm.DB, settings site
 			// Clickable ID cell → opens the password-change modal for that
 			// user (HTMX GET /account/{id} into the table's L1 modal body).
 			{Name: "ID", DisplayValue: func(_ crud.MetaField, value any) templ.Component {
-				return userIDLink(fmt.Sprintf("%v", value), "admin-users-modal-l1-body")
+				return userIDLink(fmt.Sprintf("%v", value), "admin-usergorms-modal-l1-body")
 			}},
 			// Write-only password box: a non-blank entry is re-hashed, a blank
 			// one keeps the current hash. Never display the hash.
@@ -41,15 +41,16 @@ func RegisterAdmin(mux chi.Router, ag *auth.AuthGORM, db *gorm.DB, settings site
 		},
 	})
 	userTable := crud.NewTable(userMM, crud.GORMAccessor(userMM, db), settings, gate)
-	userTable.Segment = "users" // irregular plural of "UserGORM"
 
 	groupMM := crud.DeriveMetaModel[auth.GroupGORM](crud.MetaModel[auth.GroupGORM]{DisplayName: "Groups"})
 	groupTable := crud.NewTable(groupMM, crud.GORMAccessor(groupMM, db), settings, gate)
-	groupTable.Segment = "groups"
 
-	tables := []crud.CRUDTableInterface{&userTable, &groupTable}
-	tables = append(tables, dnsTables(db, settings, gate, log, ag)...)
-	admin := crud.DeriveAdmin(tables, nil)
+	// One ordered sidebar (gone 0.1.1): tables interleaved with group headers.
+	elements := []crud.SidebarElementInterface{
+		crud.Header("Accounts"), &userTable, &groupTable,
+	}
+	elements = append(elements, dnsTables(db, settings, gate, log, ag)...)
+	admin := crud.DeriveAdmin(elements, nil)
 
 	if err := ag.RegisterRoutes(mux, "", shell); err != nil {
 		return fmt.Errorf("auth routes: %w", err)
