@@ -138,7 +138,10 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	if err != nil {
 		return fmt.Errorf("api keys init: %w", err)
 	}
-	if err := web.RegisterAdmin(mux, ag, db, cfg, shell); err != nil {
+	if err := model.MigrateDNS(db); err != nil {
+		return fmt.Errorf("dns migrate: %w", err)
+	}
+	if err := web.RegisterAdmin(mux, ag, db, cfg, log, shell); err != nil {
 		return err
 	}
 	web.RegisterPreferences(mux, ag, ks, shell)

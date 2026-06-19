@@ -169,6 +169,17 @@ Ordered to match the build sequence. Each milestone is independently runnable.
   go through the CRUD accessor, so it enqueues explicitly. Callback must not
   block: send to a buffered channel with a `default` drop.
 
+  M2 status: audit logging is wired (`source=ui`); the **push-scheduling**
+  half of the callback is a TODO until `PendingPush` lands in M5.
+- **Done in M2:** all 14 RR tables + Server/Zone/roles with validators, wired
+  into one admin; SOA defaults + auto apex-NS on zone create (GORM hooks);
+  serial bump + `content_dirty` on every RR change (path-independent hooks);
+  last-NS delete guard; audit observer. Unit + HTTP e2e tested.
+- **Deferred:** zone-delete cascade (deleting a Zone currently orphans its RR
+  rows — add FK `OnDelete` or a `BeforeDelete` sweep); per-zone RR editor UX
+  (the 14 per-type admin tables are functional but clunky — a nicer per-zone
+  view is operator-UI scope).
+
 ### M3 — Authorization model (PRD §9)
 - `required_level(action, target)` + `user_effective_level(user, target)` +
   `authorized = min(token.level, user_level) >= need`.

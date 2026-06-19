@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/a-h/templ"
 	"github.com/go-chi/chi/v5"
@@ -12,12 +13,11 @@ import (
 )
 
 // RegisterAdmin mounts gone's auth routes (login/logout/account) and a CRUD
-// Admin over the User and Group tables under /admin. Any logged-in user may
-// read; only the "admin" group may write (AuthzLoggedInReadAdminWrite).
-//
-// Mirrors gone's auth_gorm example. Zone/RR tables get added here as the data
-// model lands (M2).
-func RegisterAdmin(mux chi.Router, ag *auth.AuthGORM, db *gorm.DB, settings site.Settings, shell site.Shell) error {
+// Admin under /admin over the User and Group tables plus the DNS data model
+// (Server, Zone, the per-type RR tables, and the role grants). Any logged-in
+// user may read; only the "admin" group may write
+// (AuthzLoggedInReadAdminWrite).
+func RegisterAdmin(mux chi.Router, ag *auth.AuthGORM, db *gorm.DB, settings site.Settings, log *slog.Logger, shell site.Shell) error {
 	gate := auth.AuthzLoggedInReadAdminWrite{Auth: ag}
 
 	userMM := crud.DeriveMetaModel[auth.UserGORM](crud.MetaModel[auth.UserGORM]{
@@ -47,7 +47,9 @@ func RegisterAdmin(mux chi.Router, ag *auth.AuthGORM, db *gorm.DB, settings site
 	groupTable := crud.NewTable(groupMM, crud.GORMAccessor(groupMM, db), settings, gate)
 	groupTable.Segment = "groups"
 
-	admin := crud.DeriveAdmin([]crud.CRUDTableInterface{&userTable, &groupTable}, nil)
+	tables := []crud.CRUDTableInterface{&userTable, &groupTable}
+	tables = append(tables, dnsTables(db, settings, gate, log, ag)...)
+	admin := crud.DeriveAdmin(tables, nil)
 
 	if err := ag.RegisterRoutes(mux, "", shell); err != nil {
 		return fmt.Errorf("auth routes: %w", err)
