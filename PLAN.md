@@ -137,10 +137,15 @@ Ordered to match the build sequence. Each milestone is independently runnable.
 - App page shell (`site.Shell`): head/theme/nav (DaisyUI), HTMX, theme +
   timezone pickers from `gone/site`.
 - Mount `gone` CRUD **Admin** over users/groups (L3 only).
-- **API keys** extending the user model: app-side `APIKey` table + `KeyStore`
-  (SHA-256 hash, prefix, expiry, disabled) + `BearerAuth` middleware +
-  `apiAuth` wrapper — straight from `gone/docs/HOWTO-BEARER-TOKENS.md`.
-  Manage on the preferences page (issue/revoke, raw key shown once).
+- **API keys** extending the user model (done): `model.APIKey` table +
+  `KeyStore` (SHA-256 hash, prefix, `Level`, expiry, disabled; `Issue` /
+  `Validate` / `List` / `Revoke`) — per `gone/docs/HOWTO-BEARER-TOKENS.md`.
+  Managed on the `/preferences` page (app-owned card below gone's
+  `AccountSection` cards): list, issue with one-time raw-key banner, revoke,
+  all CSRF-protected. New keys are L1 until the authz model (M3) adds the
+  user-max cap + level picker. The `BearerAuth` middleware + `apiAuth` wrapper
+  from the HOWTO are deferred to their consumers — DDNS (M4) and the JSON API
+  (M6) — as thin callers of `KeyStore.Validate`.
 - **CLI subcommands** (`cmd/teleddns-server`):
   - `serve` (default) — run the server.
   - `admin reset-password <username>` — reset/seed the admin password.

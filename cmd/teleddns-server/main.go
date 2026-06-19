@@ -25,7 +25,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httplog/v3"
 	"github.com/tmshlvck/gone/auth"
-	"github.com/tmshlvck/gone/site"
 	"gorm.io/gorm"
 
 	"github.com/tmshlvck/teleddns-server/model"
@@ -135,10 +134,14 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 
 	mux.Get("/healthcheck", healthcheck(cfg, startedAt))
 
+	ks, err := model.NewKeyStore(db)
+	if err != nil {
+		return fmt.Errorf("api keys init: %w", err)
+	}
 	if err := web.RegisterAdmin(mux, ag, db, cfg, shell); err != nil {
 		return err
 	}
-	registerPreferences(mux, ag, shell)
+	web.RegisterPreferences(mux, ag, ks, shell)
 	mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusSeeOther)
 	})
@@ -147,26 +150,6 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: handler}
 
 	return listenAndServe(srv, log)
-}
-
-// registerPreferences mounts the self-service account page composing gone's
-// account-security cards. The API-keys card is added in a later milestone.
-func registerPreferences(mux chi.Router, ag *auth.AuthGORM, shell site.Shell) {
-	mux.Get("/preferences", func(w http.ResponseWriter, r *http.Request) {
-		cards, target, res := ag.AccountSection(r)
-		switch res {
-		case auth.AccountAnonymous:
-			http.Redirect(w, r, ag.LoginURL(r.URL.Path), http.StatusSeeOther)
-			return
-		case auth.AccountForbidden:
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		case auth.AccountNotFound:
-			http.NotFound(w, r)
-			return
-		}
-		shell(w, r, "Preferences — "+target.Username, cards)
-	})
 }
 
 var startedAt = time.Now()
