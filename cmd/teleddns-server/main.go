@@ -28,6 +28,7 @@ import (
 	"github.com/tmshlvck/gone/auth"
 	"gorm.io/gorm"
 
+	"github.com/tmshlvck/teleddns-server/ddns"
 	"github.com/tmshlvck/teleddns-server/model"
 	"github.com/tmshlvck/teleddns-server/web"
 )
@@ -119,20 +120,6 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 
 	shell := web.Shell{Auth: ag, Log: log}.Func()
 
-	mux := chi.NewRouter()
-	mux.Use(httplog.RequestLogger(log, &httplog.Options{
-		Level:         slog.LevelInfo,
-		Schema:        httplog.SchemaECS.Concise(true), // trim the ECS field wall
-		RecoverPanics: true,
-		Skip:          func(_ *http.Request, status int) bool { return status == http.StatusNotFound },
-	}))
-	if cfg.TrustProxy {
-		mux.Use(middleware.RealIP)
-	}
-	mux.Use(web.IPAllowlist(cfg.AllowedIPs))
-
-	mux.Get("/healthcheck", healthcheck(cfg, startedAt))
-
 	ks, err := model.NewKeyStore(db)
 	if err != nil {
 		return fmt.Errorf("api keys init: %w", err)
@@ -140,17 +127,41 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	if err := model.MigrateDNS(db); err != nil {
 		return fmt.Errorf("dns migrate: %w", err)
 	}
-	if err := web.RegisterAdmin(mux, ag, db, cfg, log, shell); err != nil {
-		return err
+
+	root := chi.NewRouter()
+	root.Use(httplog.RequestLogger(log, &httplog.Options{
+		Level:         slog.LevelInfo,
+		Schema:        httplog.SchemaECS.Concise(true), // trim the ECS field wall
+		RecoverPanics: true,
+		Skip:          func(_ *http.Request, status int) bool { return status == http.StatusNotFound },
+	}))
+	if cfg.TrustProxy {
+		root.Use(middleware.RealIP)
 	}
-	web.RegisterPreferences(mux, ag, ks, shell)
-	mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+	root.Use(web.IPAllowlist(cfg.AllowedIPs))
+
+	// Token/credential surfaces — no cookie session, so no CSRF. The DDNS
+	// endpoints carry their own Basic/Bearer auth; healthcheck is public.
+	root.Get("/healthcheck", healthcheck(cfg, startedAt))
+	ddns.New(db, ag, ks, log, cfg).RegisterRoutes(root)
+
+	// Browser surfaces — cookie sessions + CSRF on mutating requests.
+	var regErr error
+	root.Group(func(r chi.Router) {
+		r.Use(auth.CSRFWrap(sm))
+		if regErr = web.RegisterAdmin(r, ag, db, cfg, log, shell); regErr != nil {
+			return
+		}
+		web.RegisterPreferences(r, ag, ks, shell)
+		r.Get("/", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/admin", http.StatusSeeOther)
+		})
 	})
+	if regErr != nil {
+		return regErr
+	}
 
-	handler := sm.LoadAndSave(auth.CSRFWrap(sm)(mux))
-	srv := &http.Server{Addr: cfg.ListenAddr, Handler: handler}
-
+	srv := &http.Server{Addr: cfg.ListenAddr, Handler: sm.LoadAndSave(root)}
 	return listenAndServe(srv, log)
 }
 

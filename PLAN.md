@@ -210,7 +210,10 @@ Ordered to match the build sequence. Each milestone is independently runnable.
 - Port legacy `tests/test_ddns_auth.py` as the conformance harness.
 
 ### M4 — DDNS endpoint (PRD §8, legacy Part A)
-- Huma operations on `GET /nic/update`, `/ddns/update`, `/update` (POST→405).
+- Plain chi handlers (not Huma) on `GET /nic/update`, `/ddns/update`,
+  `/update` (POST→405) — dyndns2 is a plain-text, status-code protocol where
+  Huma's JSON-schema/OpenAPI value doesn't apply; Huma is reserved for the
+  JSON management/record API (M6).
 - Basic **or** Bearer auth (Bearer wins); Basic rejected for TOTP/SSO/passkey
   users → `badauth`. Reuse `KeyStore.Validate` for bearer.
 - Longest-suffix zone match → `(zone,label)`; `myip`/`myipv6` family detect;
@@ -220,6 +223,18 @@ Ordered to match the build sequence. Each milestone is independently runnable.
   `notfqdn`/`abuse`/`911`); transitional JSON `{detail}` mode behind a flag.
 - Rate limiting (PRD §8.8): 60/h per record, 600/h per token → `429 abuse`.
 - Port `tests/test_ddns_http_integration.py`.
+- **Done in M4** (`ddns/`): the three GET endpoints (POST→405), Bearer-wins
+  auth with Basic rejected for 2FA/SSO/passkey users, longest-suffix zone
+  resolution, A/AAAA converge-to-one semantics with **no auto-create**
+  (`nohost`), `myip`+`myipv6` combined (worst status), dyndns2 text responses,
+  per-token + per-(user,hostname) rate limiting, and authorization via
+  `model.EffectiveLevel` (`min(token.level, effective) ≥ 1`; L3 = admin-group
+  membership since gone's `UserGORM` has no `is_superuser`). Mounted **outside
+  CSRF**; the browser routes moved under a CSRF-wrapped chi group. Go unit
+  tests + live e2e. The SOA serial bump rides the existing RR hooks.
+  - **Deferred:** transitional JSON `{detail}` response mode; wiring
+    `last_update` into `/healthcheck`; the SyncTask enqueue (M5). The
+    `EffectiveLevel` helper is the seed for M3's full model.
 
 ### M5 — Local Knot backend (PRD §12, Knot-only)
 - `knot/`: render, from current DB state —

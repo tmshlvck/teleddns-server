@@ -50,6 +50,9 @@ type Config struct {
 	DefaultTTL uint32 `yaml:"default_ttl"` // TTL for $TTL + API-created RRs (PRD §5)
 	DDNSRRTTL  uint32 `yaml:"ddns_rr_ttl"` // TTL for A/AAAA touched via DDNS (PRD §5)
 
+	DDNSRatePerRecord uint `yaml:"ddns_rate_per_record"` // updates/hour per (user,hostname) (PRD §8.8)
+	DDNSRatePerToken  uint `yaml:"ddns_rate_per_token"`  // updates/hour per token (PRD §8.8)
+
 	BackendSyncDelay  time.Duration `yaml:"backend_sync_delay"`  // debounce window
 	BackendSyncPeriod time.Duration `yaml:"backend_sync_period"` // safety-net sweep
 	WarnOnNoUpdate    time.Duration `yaml:"warn_on_noupdate"`    // healthcheck WARN threshold
@@ -74,6 +77,8 @@ func Defaults() Config {
 		TrustProxy:        false,
 		DefaultTTL:        3600,
 		DDNSRRTTL:         60,
+		DDNSRatePerRecord: 60,
+		DDNSRatePerToken:  600,
 		BackendSyncDelay:  10 * time.Second,
 		BackendSyncPeriod: 300 * time.Second,
 		WarnOnNoUpdate:    7200 * time.Second,
