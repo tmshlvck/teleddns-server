@@ -21,6 +21,9 @@ import (
 
 	flag "github.com/spf13/pflag"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
+
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -144,6 +147,17 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	// endpoints carry their own Basic/Bearer auth; healthcheck is public.
 	root.Get("/healthcheck", healthcheck(cfg, startedAt))
 	ddns.New(db, ag, ks, log, cfg).RegisterRoutes(root)
+
+	// Huma API: serves /openapi.json + /docs. The JSON management/record API
+	// (M6) registers its operations here; for now we document the
+	// chi-served DDNS endpoints in the generated spec.
+	hcfg := huma.DefaultConfig("teleddns-server", "0.1.0")
+	hcfg.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
+		"basic":  {Type: "http", Scheme: "basic"},
+		"bearer": {Type: "http", Scheme: "bearer"},
+	}
+	ddns.DocumentOpenAPI(humachi.New(root, hcfg))
+	root.Get("/swagger", web.SwaggerHandler("/openapi.json")) // public, like the spec
 
 	// Browser surfaces — cookie sessions + CSRF on mutating requests.
 	var regErr error

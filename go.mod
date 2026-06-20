@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/a-h/templ v0.3.1020
 	github.com/alexedwards/scs/v2 v2.9.0
+	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-chi/httplog/v3 v3.4.0
@@ -36,7 +37,7 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pquerna/otp v1.5.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

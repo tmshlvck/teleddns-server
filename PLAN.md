@@ -232,6 +232,11 @@ Ordered to match the build sequence. Each milestone is independently runnable.
   membership since gone's `UserGORM` has no `is_superuser`). Mounted **outside
   CSRF**; the browser routes moved under a CSRF-wrapped chi group. Go unit
   tests + live e2e. The SOA serial bump rides the existing RR hooks.
+  - **OpenAPI:** a Huma API is bootstrapped now (serves `/openapi.json`,
+    `/openapi.yaml`, `/docs`, and an app-owned `/swagger` Swagger-UI page — all
+    public). The chi-served DDNS endpoints are documented in the spec via
+    `ddns.DocumentOpenAPI` (path-item injection, not Huma-handled). M6 registers
+    the real JSON operations on the same API.
   - **Deferred:** transitional JSON `{detail}` response mode; wiring
     `last_update` into `/healthcheck`; the SyncTask enqueue (M5). The
     `EffectiveLevel` helper is the seed for M3's full model.
