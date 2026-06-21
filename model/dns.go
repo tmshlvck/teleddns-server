@@ -113,6 +113,23 @@ func bumpZoneOnChange(tx *gorm.DB, zoneID uint) error {
 // edit). The serial-bump path uses UpdateColumn, which skips this hook.
 func (z *Zone) AfterUpdate(tx *gorm.DB) error { return EnqueueZoneSync(tx, z.ID) }
 
+// AfterDelete enqueues a zone-remove task so the backend undeclares the zone
+// from Knot. z.Origin is populated because the accessor loads the row before
+// deleting it.
+func (z *Zone) AfterDelete(tx *gorm.DB) error {
+	if z.Origin == "" {
+		return nil
+	}
+	now := time.Now()
+	return tx.Session(&gorm.Session{NewDB: true}).Create(&SyncTask{
+		Kind:        SyncKindZoneRemove,
+		Origin:      z.Origin,
+		State:       SyncPending,
+		EnqueuedAt:  now,
+		AvailableAt: now,
+	}).Error
+}
+
 // ── RR tables (one per type, PRD §4.2). Common columns are repeated on each
 // struct because gone's reflection does not descend into embedded structs. ──
 

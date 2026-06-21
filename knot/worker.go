@@ -81,14 +81,23 @@ func (w *Worker) tick(ctx context.Context) {
 func (w *Worker) process(ctx context.Context, origin string, grp []model.SyncTask) {
 	grpIDs := make([]uint, len(grp))
 	maxAtt := 0
+	remove := false
 	for i, t := range grp {
 		grpIDs[i] = t.ID
 		if t.Attempts > maxAtt {
 			maxAtt = t.Attempts
 		}
+		if t.Kind == model.SyncKindZoneRemove {
+			remove = true // a removal in the group wins over content pushes
+		}
 	}
 
-	err := w.pushZone(ctx, origin)
+	var err error
+	if remove {
+		err = w.Backend.RemoveZone(ctx, origin)
+	} else {
+		err = w.pushZone(ctx, origin)
+	}
 	if err == nil {
 		w.DB.Model(&model.SyncTask{}).Where("id IN ?", grpIDs).
 			Updates(map[string]any{"state": model.SyncDone, "last_error": ""})

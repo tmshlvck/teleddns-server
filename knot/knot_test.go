@@ -3,8 +3,11 @@ package knot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -77,11 +80,13 @@ func TestRenderZone(t *testing.T) {
 	}
 }
 
-// captureBackend records pushes and can be told to fail the first failN calls.
+// captureBackend records pushes/removes and can be told to fail the first
+// failN push calls.
 type captureBackend struct {
-	mu     sync.Mutex
-	pushes map[string]string
-	failN  int
+	mu      sync.Mutex
+	pushes  map[string]string
+	removed map[string]bool
+	failN   int
 }
 
 func (b *captureBackend) PushZone(_ context.Context, origin, content string) error {
@@ -95,6 +100,16 @@ func (b *captureBackend) PushZone(_ context.Context, origin, content string) err
 		b.pushes = map[string]string{}
 	}
 	b.pushes[origin] = content
+	return nil
+}
+
+func (b *captureBackend) RemoveZone(_ context.Context, origin string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.removed == nil {
+		b.removed = map[string]bool{}
+	}
+	b.removed[origin] = true
 	return nil
 }
 
@@ -128,6 +143,75 @@ func TestWorkerSyncsAndCoalesces(t *testing.T) {
 	content := be.pushes["example.com."]
 	if !strings.Contains(content, "host 3600 IN A 1.2.3.4") || !strings.Contains(content, "host 3600 IN AAAA 2001:db8::1") {
 		t.Fatalf("pushed zone missing records:\n%s", content)
+	}
+}
+
+func TestWorkerRemovesZone(t *testing.T) {
+	db := testDB(t)
+	now := time.Now()
+	db.Create(&model.SyncTask{
+		Kind: model.SyncKindZoneRemove, Origin: "gone.example.",
+		State: model.SyncPending, EnqueuedAt: now, AvailableAt: now,
+	})
+	be := &captureBackend{}
+	w := &Worker{DB: db, Backend: be, Log: discardLog(), Interval: time.Hour, DefaultTTL: 3600}
+	w.tick(context.Background())
+
+	if !be.removed["gone.example."] {
+		t.Fatal("RemoveZone was not called")
+	}
+	if got := countTasks(db, model.SyncDone); got != 1 {
+		t.Fatalf("want 1 done task, got %d", got)
+	}
+}
+
+// TestKnotBackendCommands drives KnotBackend against a fake knotc that records
+// its arguments, verifying the declare-once + reload + remove command sequence.
+func TestKnotBackendCommands(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls.log")
+	knotc := filepath.Join(dir, "knotc")
+	script := fmt.Sprintf("#!/bin/sh\necho \"$@\" >> %q\nexit 0\n", logPath)
+	if err := os.WriteFile(knotc, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	be := &KnotBackend{ZoneDir: dir, Knotc: knotc, Template: "master", Log: discardLog(), declared: map[string]bool{}}
+	ctx := context.Background()
+	if err := be.PushZone(ctx, "example.com.", "content1\n"); err != nil {
+		t.Fatal(err)
+	}
+	// zone file written under the no-dot name.
+	if _, err := os.Stat(filepath.Join(dir, "example.com.zone")); err != nil {
+		t.Fatalf("zone file not written: %v", err)
+	}
+	if err := be.PushZone(ctx, "example.com.", "content2\n"); err != nil { // declare cached
+		t.Fatal(err)
+	}
+	if err := be.RemoveZone(ctx, "example.com."); err != nil {
+		t.Fatal(err)
+	}
+
+	b, _ := os.ReadFile(logPath)
+	calls := string(b)
+	for _, want := range []string{
+		"conf-set zone[example.com]",
+		"conf-set zone[example.com].template master",
+		"conf-commit",
+		"zone-reload example.com.",
+		"conf-unset zone[example.com]",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("missing knotc call %q\n--- calls ---\n%s", want, calls)
+		}
+	}
+	// declare runs once (1 conf-begin), remove runs once (1 conf-begin) → 2.
+	if n := strings.Count(calls, "conf-begin"); n != 2 {
+		t.Errorf("want 2 conf-begin (declare once + remove), got %d:\n%s", n, calls)
+	}
+	// zone-reload on both pushes.
+	if n := strings.Count(calls, "zone-reload example.com."); n != 2 {
+		t.Errorf("want 2 zone-reload, got %d:\n%s", n, calls)
 	}
 }
 

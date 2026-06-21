@@ -281,17 +281,21 @@ Ordered to match the build sequence. Each milestone is independently runnable.
     diffs old vs new and propagates an **incremental IXFR** to slaves — so
     full-file regen on the master still yields incremental replication. Our
     per-change SOA serial bump is what makes the IXFR valid.
-  - **teleddns config plane** (follow-up): on a zone's first push, declare it
-    via `knotc conf-begin; conf-set 'zone[X]'; conf-set 'zone[X].template'
-    <KnotTemplate>; conf-commit` (idempotent; the template does the rest, incl.
-    catalog membership → Knot auto-generates the catalog). On zone delete:
-    `conf-unset 'zone[X]'` + remove the file (new `SyncTask` kind +
-    `Backend.RemoveZone`). Catalog content is entirely Knot's job.
-- **Deferred:** the config-plane `knotc conf-*` step above (extend
-  `KnotBackend` + add a zone-remove task); optionally switch the content plane
-  to `knotc zone-set` transactions later (avoids file regen on the master — not
-  needed given `difference`). Also: `last_push` from the journal into
-  `/healthcheck`.
+  - **teleddns config plane** (done): on a zone's first push this process,
+    `KnotBackend` declares it via `conf-begin; conf-set 'zone[X]'; conf-set
+    'zone[X].template' <KnotTemplate>; conf-commit` (cached per origin;
+    idempotent — on a no-op commit it confirms via `conf-read`). The template
+    does the rest (ACL/TSIG/catalog membership → Knot auto-generates the
+    catalog). `RemoveZone` does `conf-unset 'zone[X]'` + removes the file,
+    driven by a `zone-remove` `SyncTask` enqueued from `Zone.AfterDelete`.
+    Catalog content is entirely Knot's job. Fake-knotc + worker tests cover the
+    command sequence.
+- **Deferred:** end-to-end zone *deletion* (the `RemoveZone` path + AfterDelete
+  hook exist, but deleting a Zone is still blocked by the RR foreign keys + the
+  last-NS guard — needs the zone-delete cascade). Optionally switch the content
+  plane to `knotc zone-set` transactions later (avoids file regen on the
+  master — not needed given `difference`). Also: `last_push` from the journal
+  into `/healthcheck`.
 
 ### M6 — Management + record API (PRD §11, clients only)
 - Huma JSON API, **Bearer only** (Basic rejected), token level scopes access.

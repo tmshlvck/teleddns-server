@@ -120,6 +120,28 @@ func TestLastNSGuard(t *testing.T) {
 	}
 }
 
+func TestZoneDeleteEnqueuesRemove(t *testing.T) {
+	db := testDB(t)
+	z := Zone{Origin: "del.example."}
+	if err := db.Create(&z).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Drop the auto-NS via raw SQL to sidestep the last-NS guard + FK (full
+	// zone-delete cascade is still deferred), then delete the zone so its
+	// AfterDelete hook runs.
+	db.Exec("DELETE FROM rr_ns WHERE zone_id = ?", z.ID)
+	if err := db.Delete(&z).Error; err != nil {
+		t.Fatal(err)
+	}
+	var n int64
+	db.Model(&SyncTask{}).
+		Where("kind = ? AND origin = ? AND state = ?", SyncKindZoneRemove, "del.example.", SyncPending).
+		Count(&n)
+	if n != 1 {
+		t.Fatalf("want 1 pending zone-remove task, got %d", n)
+	}
+}
+
 func TestValidators(t *testing.T) {
 	ok := func(err error) bool { return err == nil }
 	cases := []struct {

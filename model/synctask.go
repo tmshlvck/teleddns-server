@@ -31,7 +31,8 @@ const (
 	SyncDone     = "done"
 	SyncFailed   = "failed"
 
-	SyncKindZone = "zone"
+	SyncKindZone       = "zone"        // regenerate + reload the zone content
+	SyncKindZoneRemove = "zone-remove" // undeclare the zone from Knot
 )
 
 // EnqueueZoneSync appends a pending "zone" task for the zone identified by
