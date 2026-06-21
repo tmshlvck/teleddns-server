@@ -9,21 +9,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TSIGKey is a shared transfer secret (RFC 8945) referenced by a Slave. Lives
-// in Config (not the DB) because the catalog zone applies keys uniformly.
-type TSIGKey struct {
-	Name      string `yaml:"name"`
-	Algorithm string `yaml:"algorithm"` // default hmac-sha256
-	Secret    string `yaml:"secret"`    // base64 HMAC secret
-}
-
-// Slave is a secondary DNS server allowed to AXFR/receive NOTIFY for all zones
-// (applied uniformly via the catalog zone). TSIGKey names a Config TSIGKey.
-type Slave struct {
-	Address string `yaml:"address"`  // IP or CIDR
-	TSIGKey string `yaml:"tsig_key"` // name of a configured TSIG key (optional)
-}
-
 // Config is the app-global configuration. It also satisfies gone's
 // site.Settings interface (TimeFormatter + PaginationSettings) by embedding
 // site.DefaultSettings and overriding the page-size default, so the same
@@ -41,14 +26,15 @@ type Config struct {
 	AllowedIPs []string `yaml:"allowed_ips"` // CIDRs allowed to connect; empty = all
 	TrustProxy bool     `yaml:"trust_proxy"` // honor X-Forwarded-For / X-Real-IP / X-Forwarded-Proto
 
-	// Backend / replication. The local Knot serves master zones; slaves AXFR a
-	// catalog zone (RFC 9432) authenticated with TSIG.
-	Backend     string    `yaml:"backend"`       // "log" (default, no-op) | "knot"
-	KnotZoneDir string    `yaml:"knot_zone_dir"` // dir for generated .zone files (knot backend)
-	KnotcPath   string    `yaml:"knotc_path"`    // knotc binary (default "knotc")
-	CatalogZone string    `yaml:"catalog_zone"`  // catalog zone origin (empty = none); generation TBD
-	Slaves      []Slave   `yaml:"slaves"`
-	TSIGKeys    []TSIGKey `yaml:"tsig_keys"`
+	// Backend. The local Knot serves master zones; slaves AXFR a Knot-generated
+	// catalog zone (RFC 9432) authenticated with TSIG. The catalog, the
+	// transfer ACL and the TSIG keys live in the operator's base knot.conf (in
+	// a template); teleddns only declares zones as members of that template via
+	// `knotc conf-set` and pushes zone content. So no slave/TSIG config here.
+	Backend      string `yaml:"backend"`       // "log" (default, no-op) | "knot"
+	KnotZoneDir  string `yaml:"knot_zone_dir"` // dir for generated .zone files (knot backend)
+	KnotcPath    string `yaml:"knotc_path"`    // knotc binary (default "knotc")
+	KnotTemplate string `yaml:"knot_template"` // knot.conf template assigned to managed zones (default "master")
 
 	DefaultTTL uint32 `yaml:"default_ttl"` // TTL for $TTL + API-created RRs (PRD §5)
 	DDNSRRTTL  uint32 `yaml:"ddns_rr_ttl"` // TTL for A/AAAA touched via DDNS (PRD §5)
@@ -80,6 +66,7 @@ func Defaults() Config {
 		TrustProxy:        false,
 		Backend:           "log",
 		KnotcPath:         "knotc",
+		KnotTemplate:      "master",
 		DefaultTTL:        3600,
 		DDNSRRTTL:         60,
 		DDNSRatePerRecord: 60,
