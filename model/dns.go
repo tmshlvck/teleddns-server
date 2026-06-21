@@ -92,21 +92,26 @@ func todaySerial() uint32 {
 	return uint32(t.Year()*1000000 + int(t.Month())*10000 + t.Day()*100)
 }
 
-// bumpZoneOnChange increments the owning zone's SOA serial. Called from every
-// RR type's AfterSave/AfterDelete so the invariant holds regardless of write
-// path. UpdateColumn skips hooks and auto-timestamps, so there's no recursion.
-//
-// TODO(M5): also enqueue a SyncTask{kind: zone, origin} in this same tx so the
-// executor regenerates the zone + reloads Knot. The journal of pending tasks
-// replaces a per-zone dirty flag.
+// bumpZoneOnChange increments the owning zone's SOA serial and enqueues a
+// backend-sync task — in the change's transaction. Called from every RR type's
+// AfterSave/AfterDelete so the invariant holds regardless of write path.
+// UpdateColumn skips hooks and auto-timestamps, so the serial bump does not
+// re-trigger Zone.AfterUpdate (no recursion).
 func bumpZoneOnChange(tx *gorm.DB, zoneID uint) error {
 	if zoneID == 0 {
 		return nil
 	}
-	return tx.Session(&gorm.Session{NewDB: true}).
+	if err := tx.Session(&gorm.Session{NewDB: true}).
 		Model(&Zone{}).Where("id = ?", zoneID).
-		UpdateColumn("soa_serial", gorm.Expr("soa_serial + 1")).Error
+		UpdateColumn("soa_serial", gorm.Expr("soa_serial + 1")).Error; err != nil {
+		return err
+	}
+	return EnqueueZoneSync(tx, zoneID)
 }
+
+// AfterUpdate enqueues a sync when a zone row itself changes (e.g. an admin SOA
+// edit). The serial-bump path uses UpdateColumn, which skips this hook.
+func (z *Zone) AfterUpdate(tx *gorm.DB) error { return EnqueueZoneSync(tx, z.ID) }
 
 // ── RR tables (one per type, PRD §4.2). Common columns are repeated on each
 // struct because gone's reflection does not descend into embedded structs. ──
@@ -382,7 +387,7 @@ func (GroupRRRole) TableName() string { return "group_rr_roles" }
 // (NewAuthGORM) since the role grants carry FKs into auth_groups.
 func MigrateDNS(db *gorm.DB) error {
 	return db.AutoMigrate(
-		&Zone{},
+		&Zone{}, &SyncTask{},
 		&RRA{}, &RRAAAA{}, &RRNS{}, &RRPTR{}, &RRCNAME{}, &RRTXT{},
 		&RRMX{}, &RRSRV{}, &RRCAA{}, &RRSSHFP{}, &RRTLSA{}, &RRDNSKEY{}, &RRDS{}, &RRNAPTR{},
 		&GroupZoneRole{}, &GroupRRRole{},

@@ -32,6 +32,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/tmshlvck/teleddns-server/ddns"
+	"github.com/tmshlvck/teleddns-server/knot"
 	"github.com/tmshlvck/teleddns-server/model"
 	"github.com/tmshlvck/teleddns-server/web"
 )
@@ -175,8 +176,21 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 		return regErr
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Backend-sync worker: drains the SyncTask journal → renders + pushes zones.
+	worker := &knot.Worker{
+		DB:         db,
+		Backend:    knot.NewBackend(cfg, log),
+		Log:        log,
+		Interval:   cfg.BackendSyncDelay,
+		DefaultTTL: cfg.DefaultTTL,
+	}
+	go worker.Run(ctx)
+
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: sm.LoadAndSave(root)}
-	return listenAndServe(srv, log)
+	return listenAndServe(ctx, srv, log)
 }
 
 var startedAt = time.Now()
@@ -239,10 +253,7 @@ func ensureAdmin(ag *auth.AuthGORM, log *slog.Logger) error {
 	return nil
 }
 
-func listenAndServe(srv *http.Server, log *slog.Logger) error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
+func listenAndServe(ctx context.Context, srv *http.Server, log *slog.Logger) error {
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", srv.Addr)

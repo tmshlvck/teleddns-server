@@ -42,10 +42,19 @@ backend_sync_period: "300s"   # safety-net full sweep                  ["300s"]
 warn_on_noupdate: "7200s"     # WARN if no update for this long        ["7200s"]
 warn_on_nopush:   "3600s"     # WARN if no successful push this long   ["3600s"]
 
-# Backend / replication (consumed in M5). teleddns-server configures the local
-# Knot to serve master zones and advertises them in a catalog zone (RFC 9432);
-# slaves auto-provision and pull zones via AXFR authenticated with TSIG. The
-# keys + slave list are uniform (applied to all zones), so they live here.
+# Backend. "log" (default) just logs what it would push — safe for first boot
+# and dev. "knot" writes <knot_zone_dir>/<zone>.zone and runs `knotc
+# zone-reload`. The backend-sync worker drains a journal of changes and
+# regenerates the full zone on each push.
+backend: "log"
+# backend: "knot"
+# knot_zone_dir: "/var/lib/knot/zones"
+# knotc_path: "knotc"
+
+# Replication. teleddns-server advertises its master zones in a catalog zone
+# (RFC 9432); slaves auto-provision and pull zones via AXFR authenticated with
+# TSIG. Keys + slave list are uniform (applied to all zones). Catalog/ACL
+# generation is a follow-up; these keys are parsed today.
 # catalog_zone: "catalog.example."          # catalog zone origin advertised to slaves
 # slaves:
 #   - address: "192.0.2.2"

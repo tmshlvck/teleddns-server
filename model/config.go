@@ -41,9 +41,12 @@ type Config struct {
 	AllowedIPs []string `yaml:"allowed_ips"` // CIDRs allowed to connect; empty = all
 	TrustProxy bool     `yaml:"trust_proxy"` // honor X-Forwarded-For / X-Real-IP / X-Forwarded-Proto
 
-	// Backend / replication (consumed in M5). The local Knot serves master
-	// zones; slaves AXFR a catalog zone (RFC 9432) authenticated with TSIG.
-	CatalogZone string    `yaml:"catalog_zone"` // catalog zone origin (empty = none)
+	// Backend / replication. The local Knot serves master zones; slaves AXFR a
+	// catalog zone (RFC 9432) authenticated with TSIG.
+	Backend     string    `yaml:"backend"`       // "log" (default, no-op) | "knot"
+	KnotZoneDir string    `yaml:"knot_zone_dir"` // dir for generated .zone files (knot backend)
+	KnotcPath   string    `yaml:"knotc_path"`    // knotc binary (default "knotc")
+	CatalogZone string    `yaml:"catalog_zone"`  // catalog zone origin (empty = none); generation TBD
 	Slaves      []Slave   `yaml:"slaves"`
 	TSIGKeys    []TSIGKey `yaml:"tsig_keys"`
 
@@ -75,6 +78,8 @@ func Defaults() Config {
 		DBDSN:             "sqlite://teleddns.sqlite",
 		ListenAddr:        ":8080",
 		TrustProxy:        false,
+		Backend:           "log",
+		KnotcPath:         "knotc",
 		DefaultTTL:        3600,
 		DDNSRRTTL:         60,
 		DDNSRatePerRecord: 60,

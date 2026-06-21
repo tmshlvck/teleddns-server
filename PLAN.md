@@ -249,12 +249,24 @@ Ordered to match the build sequence. Each milestone is independently runnable.
     (from `TSIGKey`/`ZoneSlave`), NOTIFY targets, and a **catalog zone**
     (RFC 9432) advertising the master zones so slaves auto-provision.
   - apply + reload via `knotc` (or the existing TeleAPI on localhost if kept).
-- `PendingPush` journal appended **in the same transaction** as the mutation.
-  In-process worker goroutine (single instance): claim under row lock
-  (`FOR UPDATE SKIP LOCKED` on PG; serialize on SQLite), full-zone idempotent
-  regen, exponential backoff+jitter (cap 1h), dead-letter after 20 attempts,
-  debounce `BackendSyncDelay`, safety sweep `BackendSyncPeriod`. Inline mode
-  for dev/tests only. No remote push, no Bind.
+- `SyncTask` journal appended **in the same transaction** as the mutation
+  (via the RR `bumpZoneOnChange` hook + `Zone.AfterUpdate`); coalesced to one
+  pending row per origin. In-process worker goroutine (single instance): ticks
+  every `BackendSyncDelay`, claims due pending tasks, groups by origin,
+  full-zone idempotent regen → `Backend.PushZone`, exponential backoff+jitter
+  (cap 1h), dead-letter after 20 attempts; resets `in_flight` on startup.
+- **Done in M5** (`knot/`): byte-faithful BIND zone rendering for SOA + all 14
+  RR types (`RenderZone`); the `Backend` interface with a `log` default and a
+  `knotc` impl (`<dir>/<zone>.zone` + `knotc zone-reload`); the `SyncTask`
+  model + enqueue (coalescing) + `Worker` executor, wired into `serve` and
+  stopped with the server. Config gains `backend`/`knot_zone_dir`/`knotc_path`.
+  Unit tests (render, sync+coalesce, retry/backoff) + live e2e (admin edit →
+  worker drains the task). Single-instance only — multi-process would need
+  `SELECT … FOR UPDATE SKIP LOCKED`.
+- **Deferred:** `knot.conf` / template / ACL / TSIG generation and the
+  **catalog zone** (RFC 9432) — the *content* push works; the *config* push
+  (declaring zones + transfer ACLs to Knot, catalog membership) is the
+  follow-up. Also: `last_push` from the journal into `/healthcheck`.
 
 ### M6 — Management + record API (PRD §11, clients only)
 - Huma JSON API, **Bearer only** (Basic rejected), token level scopes access.
