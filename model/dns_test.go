@@ -172,6 +172,31 @@ func TestZoneDeleteCascades(t *testing.T) {
 	}
 }
 
+// TestRRCreateDoesNotUpsertZone guards against GORM auto-saving the zero-value
+// Zone association when an RR is created with only its ZoneID set (as the admin
+// form posts): that previously fired the Zone hooks and inserted a phantom NS.
+// The `->` (read-only) tag on the association prevents it.
+func TestRRCreateDoesNotUpsertZone(t *testing.T) {
+	db := testDB(t)
+	z := Zone{Origin: "example.com."}
+	if err := db.Create(&z).Error; err != nil { // 1 apex NS
+		t.Fatal(err)
+	}
+	// Mimic the bound form value: ZoneID set, Zone left as a zero struct.
+	if err := db.Create(&RRA{ZoneID: z.ID, Zone: Zone{}, Label: "host", TTL: 60, Value: "1.2.3.4"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var zones, ns int64
+	db.Model(&Zone{}).Count(&zones)
+	db.Model(&RRNS{}).Count(&ns)
+	if zones != 1 {
+		t.Errorf("phantom zone created: want 1 zone, got %d", zones)
+	}
+	if ns != 1 {
+		t.Errorf("phantom NS created: want 1 NS, got %d", ns)
+	}
+}
+
 func TestValidators(t *testing.T) {
 	ok := func(err error) bool { return err == nil }
 	cases := []struct {

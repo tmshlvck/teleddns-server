@@ -157,7 +157,7 @@ func (z *Zone) AfterDelete(tx *gorm.DB) error {
 type RRA struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Value     string `gorm:"size:45;not null"` // IPv4 literal
@@ -168,7 +168,7 @@ type RRA struct {
 type RRAAAA struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Value     string `gorm:"size:45;not null"` // IPv6 literal
@@ -179,7 +179,7 @@ type RRAAAA struct {
 type RRNS struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Value     string `gorm:"size:255;not null"` // DNS name
@@ -190,7 +190,7 @@ type RRNS struct {
 type RRPTR struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Value     string `gorm:"size:255;not null"` // DNS name
@@ -201,7 +201,7 @@ type RRPTR struct {
 type RRCNAME struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Value     string `gorm:"size:255;not null"` // DNS name
@@ -212,7 +212,7 @@ type RRCNAME struct {
 type RRTXT struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Value     string `gorm:"size:65535;not null"`
@@ -223,7 +223,7 @@ type RRTXT struct {
 type RRMX struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Priority  uint16 `gorm:"not null"`
@@ -235,7 +235,7 @@ type RRMX struct {
 type RRSRV struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Priority  uint16 `gorm:"not null"`
@@ -249,7 +249,7 @@ type RRSRV struct {
 type RRCAA struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Flag      uint8  `gorm:"not null"`
@@ -262,7 +262,7 @@ type RRCAA struct {
 type RRSSHFP struct {
 	ID          uint   `gorm:"primaryKey"`
 	ZoneID      uint   `gorm:"index;not null"`
-	Zone        Zone   `gorm:"foreignKey:ZoneID"`
+	Zone        Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label       string `gorm:"size:63;not null"`
 	TTL         uint32 `gorm:"not null;default:3600"`
 	Algorithm   uint8  `gorm:"not null"` // 1..4
@@ -275,7 +275,7 @@ type RRSSHFP struct {
 type RRTLSA struct {
 	ID           uint   `gorm:"primaryKey"`
 	ZoneID       uint   `gorm:"index;not null"`
-	Zone         Zone   `gorm:"foreignKey:ZoneID"`
+	Zone         Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label        string `gorm:"size:63;not null"`
 	TTL          uint32 `gorm:"not null;default:3600"`
 	CertUsage    uint8  `gorm:"not null"` // 0..3
@@ -289,7 +289,7 @@ type RRTLSA struct {
 type RRDNSKEY struct {
 	ID        uint   `gorm:"primaryKey"`
 	ZoneID    uint   `gorm:"index;not null"`
-	Zone      Zone   `gorm:"foreignKey:ZoneID"`
+	Zone      Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label     string `gorm:"size:63;not null"`
 	TTL       uint32 `gorm:"not null;default:3600"`
 	Flags     uint16 `gorm:"not null"`
@@ -303,7 +303,7 @@ type RRDNSKEY struct {
 type RRDS struct {
 	ID         uint   `gorm:"primaryKey"`
 	ZoneID     uint   `gorm:"index;not null"`
-	Zone       Zone   `gorm:"foreignKey:ZoneID"`
+	Zone       Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label      string `gorm:"size:63;not null"`
 	TTL        uint32 `gorm:"not null;default:3600"`
 	KeyTag     uint16 `gorm:"not null"`
@@ -317,7 +317,7 @@ type RRDS struct {
 type RRNAPTR struct {
 	ID          uint   `gorm:"primaryKey"`
 	ZoneID      uint   `gorm:"index;not null"`
-	Zone        Zone   `gorm:"foreignKey:ZoneID"`
+	Zone        Zone   `gorm:"foreignKey:ZoneID;->"`
 	Label       string `gorm:"size:63;not null"`
 	TTL         uint32 `gorm:"not null;default:3600"`
 	Order       uint16 `gorm:"not null"`
@@ -396,9 +396,9 @@ func (r *RRNS) BeforeDelete(tx *gorm.DB) error {
 type GroupZoneRole struct {
 	ID        uint           `gorm:"primaryKey"`
 	GroupID   uint           `gorm:"not null;uniqueIndex:idx_gzr_group_zone"`
-	Group     auth.GroupGORM `gorm:"foreignKey:GroupID"`
+	Group     auth.GroupGORM `gorm:"foreignKey:GroupID;->"`
 	ZoneID    uint           `gorm:"not null;uniqueIndex:idx_gzr_group_zone"`
-	Zone      Zone           `gorm:"foreignKey:ZoneID"`
+	Zone      Zone           `gorm:"foreignKey:ZoneID;->"`
 	Level     int            `gorm:"not null;default:2"` // 2 in v1
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -411,9 +411,9 @@ func (GroupZoneRole) TableName() string { return "group_zone_roles" }
 type GroupRRRole struct {
 	ID        uint           `gorm:"primaryKey"`
 	GroupID   uint           `gorm:"not null;uniqueIndex:idx_grr_group_zone_label"`
-	Group     auth.GroupGORM `gorm:"foreignKey:GroupID"`
+	Group     auth.GroupGORM `gorm:"foreignKey:GroupID;->"`
 	ZoneID    uint           `gorm:"not null;uniqueIndex:idx_grr_group_zone_label"`
-	Zone      Zone           `gorm:"foreignKey:ZoneID"`
+	Zone      Zone           `gorm:"foreignKey:ZoneID;->"`
 	Label     string         `gorm:"size:63;uniqueIndex:idx_grr_group_zone_label"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
