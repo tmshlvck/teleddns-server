@@ -86,6 +86,27 @@ func (z *Zone) AfterCreate(tx *gorm.DB) error {
 	return tx.Session(&gorm.Session{NewDB: true}).Create(&ns).Error
 }
 
+// zoneChildren are the tables that reference a Zone and must be removed with it.
+var zoneChildren = []any{
+	&RRA{}, &RRAAAA{}, &RRNS{}, &RRPTR{}, &RRCNAME{}, &RRTXT{},
+	&RRMX{}, &RRSRV{}, &RRCAA{}, &RRSSHFP{}, &RRTLSA{}, &RRDNSKEY{}, &RRDS{}, &RRNAPTR{},
+	&GroupZoneRole{}, &GroupRRRole{},
+}
+
+// BeforeDelete cascade-deletes a zone's records and role grants in the same
+// transaction, so the FK references are satisfied before the zone row is
+// removed. Hooks are skipped, which is what lets the last-NS guard and the
+// per-RR serial-bump not fire during a whole-zone delete.
+func (z *Zone) BeforeDelete(tx *gorm.DB) error {
+	db := tx.Session(&gorm.Session{NewDB: true, SkipHooks: true})
+	for _, child := range zoneChildren {
+		if err := db.Where("zone_id = ?", z.ID).Delete(child).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // todaySerial returns a YYYYMMDD00 SOA serial seed.
 func todaySerial() uint32 {
 	t := time.Now().UTC()

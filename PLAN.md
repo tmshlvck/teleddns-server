@@ -202,10 +202,12 @@ Ordered to match the build sequence. Each milestone is independently runnable.
   trimmed to essentials — no Server table, no owner / dirty / sync / per-row
   audit columns; slaves + TSIG moved to `Config`; sync state will live in the
   `SyncTask` journal (M5). Unit + HTTP e2e tested.
-- **Deferred:** zone-delete cascade (deleting a Zone currently orphans its RR
-  rows — add FK `OnDelete` or a `BeforeDelete` sweep); per-zone RR editor UX
-  (the 14 per-type admin tables are functional but clunky — a nicer per-zone
-  view is operator-UI scope).
+- **Zone-delete cascade (done):** `Zone.BeforeDelete` removes all RR rows and
+  role grants for the zone in the same transaction with hooks skipped (so the
+  last-NS guard and serial-bump don't fire), and `AfterDelete` enqueues the
+  backend `zone-remove`. Verified by unit test + live admin-delete e2e.
+- **Deferred:** per-zone RR editor UX (the 14 per-type admin tables are
+  functional but clunky — a nicer per-zone view is operator-UI scope).
 
 ### M3 — Authorization model (PRD §9)
 - `required_level(action, target)` + `user_effective_level(user, target)` +
@@ -290,9 +292,7 @@ Ordered to match the build sequence. Each milestone is independently runnable.
     driven by a `zone-remove` `SyncTask` enqueued from `Zone.AfterDelete`.
     Catalog content is entirely Knot's job. Fake-knotc + worker tests cover the
     command sequence.
-- **Deferred:** end-to-end zone *deletion* (the `RemoveZone` path + AfterDelete
-  hook exist, but deleting a Zone is still blocked by the RR foreign keys + the
-  last-NS guard — needs the zone-delete cascade). Optionally switch the content
+- **Deferred:** optionally switch the content
   plane to `knotc zone-set` transactions later (avoids file regen on the
   master — not needed given `difference`). Also: `last_push` from the journal
   into `/healthcheck`.

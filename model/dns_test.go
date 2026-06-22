@@ -120,25 +120,55 @@ func TestLastNSGuard(t *testing.T) {
 	}
 }
 
-func TestZoneDeleteEnqueuesRemove(t *testing.T) {
+func TestZoneDeleteCascades(t *testing.T) {
 	db := testDB(t)
 	z := Zone{Origin: "del.example."}
-	if err := db.Create(&z).Error; err != nil {
+	if err := db.Create(&z).Error; err != nil { // auto-NS
 		t.Fatal(err)
 	}
-	// Drop the auto-NS via raw SQL to sidestep the last-NS guard + FK (full
-	// zone-delete cascade is still deferred), then delete the zone so its
-	// AfterDelete hook runs.
-	db.Exec("DELETE FROM rr_ns WHERE zone_id = ?", z.ID)
+	if err := db.Create(&RRA{ZoneID: z.ID, Label: "www", TTL: 60, Value: "1.2.3.4"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	g := auth.GroupGORM{Name: "g1"}
+	if err := db.Create(&g).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&GroupZoneRole{GroupID: g.ID, ZoneID: z.ID, Level: 2}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Deleting a zone that has records (incl. the apex NS) + a role must
+	// succeed — the guard and FKs don't block a whole-zone delete.
 	if err := db.Delete(&z).Error; err != nil {
-		t.Fatal(err)
+		t.Fatalf("delete zone: %v", err)
 	}
-	var n int64
+
+	count := func(m any) int64 {
+		var n int64
+		db.Model(m).Where("zone_id = ?", z.ID).Count(&n)
+		return n
+	}
+	if c := count(&RRA{}); c != 0 {
+		t.Errorf("A records not cascaded: %d", c)
+	}
+	if c := count(&RRNS{}); c != 0 {
+		t.Errorf("NS records not cascaded: %d", c)
+	}
+	if c := count(&GroupZoneRole{}); c != 0 {
+		t.Errorf("role grants not cascaded: %d", c)
+	}
+	var zc int64
+	db.Model(&Zone{}).Where("id = ?", z.ID).Count(&zc)
+	if zc != 0 {
+		t.Errorf("zone not deleted: %d", zc)
+	}
+	// AfterDelete enqueued the backend removal.
+	var tc int64
 	db.Model(&SyncTask{}).
 		Where("kind = ? AND origin = ? AND state = ?", SyncKindZoneRemove, "del.example.", SyncPending).
-		Count(&n)
-	if n != 1 {
-		t.Fatalf("want 1 pending zone-remove task, got %d", n)
+		Count(&tc)
+	if tc != 1 {
+		t.Errorf("want 1 pending zone-remove task, got %d", tc)
 	}
 }
 
