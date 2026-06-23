@@ -209,13 +209,23 @@ Ordered to match the build sequence. Each milestone is independently runnable.
 - **Deferred:** per-zone RR editor UX (the 14 per-type admin tables are
   functional but clunky — a nicer per-zone view is operator-UI scope).
 
-### M3 — Authorization model (PRD §9)
-- `required_level(action, target)` + `user_effective_level(user, target)` +
-  `authorized = min(token.level, user_level) >= need`.
-- Token carries its own `level` (cap = user max). Effective scopes from
-  `GroupZoneRole`/`GroupRRRole` unions; L3 = `is_superuser`.
-- Expose as an `auth.Authz` impl so both the CRUD UI and the APIs reuse it.
-- Port legacy `tests/test_ddns_auth.py` as the conformance harness.
+### M3 — Authorization model (PRD §9) — done
+- `model/authz.go` formalizes the PRD §9.6 algorithm: `RequiredLevel(action,
+  targetKind)`, `EffectiveLevel(db, user, zone, label)` (L3 = AdminGroup; L2 =
+  GroupZoneRole; L1 = GroupRRRole), `Authorized(tokenLevel, userEff, required)`
+  = `min(tokenLevel, userEff) ≥ required`, and `UserMaxLevel` for the token cap.
+- **Token-level cap (PRD §9.2):** the `/preferences` API-key form offers a
+  level selector capped at `UserMaxLevel`; the issue handler re-caps server-side
+  (floored at L1). So an L2 user can mint an L1 key for a router, and a leaked
+  low-level key can't escalate (the `min` rule).
+- DDNS now goes through the same `RequiredLevel`/`EffectiveLevel`/`Authorized`
+  helpers (single authz path). Conformance test covers the level matrix +
+  the cap rule (the Go analogue of the legacy `test_ddns_auth.py`).
+- **Scope note:** the operator CRUD admin stays **L3-gated** (admin-group
+  write) — gone's `auth.Authz` is table-level and can't express per-zone row
+  scoping, and PRD §9.1 makes the operator UI an L3 surface anyway. L1/L2 act
+  through DDNS (done) and the JSON API (M6), which are per-resource and use
+  these helpers directly.
 
 ### M4 — DDNS endpoint (PRD §8, legacy Part A)
 - Plain chi handlers (not Huma) on `GET /nic/update`, `/ddns/update`,

@@ -100,9 +100,11 @@ func (h *Handler) one(c caller, hostname, addrStr, src string) line {
 		return line{code: "nohost", status: 404}
 	}
 
-	// Authorization (PRD §9.6): DDNS update needs L1; the token caps the level.
-	have := min(c.tokenLevel, model.EffectiveLevel(h.DB, c.user, zone.ID, label))
-	if have < 1 {
+	// Authorization (PRD §9.6): a DDNS update is read/update of an A/AAAA set
+	// → needs L1; the token caps the user's effective level.
+	need := model.RequiredLevel(model.Update, model.TargetAddrRecord)
+	eff := model.EffectiveLevel(h.DB, c.user, zone.ID, label)
+	if !model.Authorized(c.tokenLevel, eff, need) {
 		return line{code: "!yours", ip: ip, status: 403}
 	}
 

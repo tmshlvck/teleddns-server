@@ -39,7 +39,19 @@ func RegisterPreferences(mux chi.Router, ag *auth.AuthGORM, ks *model.KeyStore, 
 			t := time.Now().Add(time.Duration(d) * 24 * time.Hour)
 			expires = &t
 		}
-		raw, err := ks.Issue(uid, name, 1, expires) // level fixed at L1 until M3
+		// Level: requested, capped at the user's maximum (PRD §9.2) and floored
+		// at L1 so every key is at least usable for DDNS.
+		level := model.L1
+		if v, err := strconv.Atoi(r.PostFormValue("level")); err == nil {
+			level = v
+		}
+		if maxLvl := model.UserMaxLevel(ks.DB, ag.CurrentUser(r.Context())); level > maxLvl {
+			level = maxLvl
+		}
+		if level < model.L1 {
+			level = model.L1
+		}
+		raw, err := ks.Issue(uid, name, level, expires)
 		if err != nil {
 			http.Error(w, "could not create key", http.StatusInternalServerError)
 			return
@@ -77,7 +89,8 @@ func renderPreferences(w http.ResponseWriter, r *http.Request, ag *auth.AuthGORM
 		return
 	}
 	keys, _ := ks.List(target.ID)
-	page := preferencesPage(target.Username, cards, keys, newRawKey, auth.CSRFToken(r.Context()))
+	maxLvl := model.UserMaxLevel(ks.DB, ag.CurrentUser(r.Context()))
+	page := preferencesPage(target.Username, cards, keys, newRawKey, auth.CSRFToken(r.Context()), maxLvl)
 	shell(w, r, "Preferences — "+target.Username, page)
 }
 
@@ -92,7 +105,7 @@ func currentUserID(ag *auth.AuthGORM, ctx context.Context) (uint, bool) {
 
 // preferencesPage composes the library's account-security cards above an
 // app-owned API-keys card (the "bundled auth block + app block" pattern).
-func preferencesPage(username string, accountCards templ.Component, keys []model.APIKey, newRawKey, csrf string) templ.Component {
+func preferencesPage(username string, accountCards templ.Component, keys []model.APIKey, newRawKey, csrf string, maxLevel int) templ.Component {
 	return templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
 		fmt.Fprintf(w, `<div class="max-w-6xl mx-auto flex flex-col gap-8">`)
 		fmt.Fprintf(w, `<h1 class="text-2xl font-semibold">Preferences — %s</h1>`, html.EscapeString(username))
@@ -106,13 +119,13 @@ func preferencesPage(username string, accountCards templ.Component, keys []model
 		fmt.Fprint(w, `</section>`)
 
 		fmt.Fprint(w, `<section class="flex flex-col gap-3"><h2 class="text-lg font-medium opacity-80">API keys</h2>`)
-		writeAPIKeysCard(w, keys, newRawKey, csrf)
+		writeAPIKeysCard(w, keys, newRawKey, csrf, maxLevel)
 		fmt.Fprint(w, `</section></div>`)
 		return nil
 	})
 }
 
-func writeAPIKeysCard(w io.Writer, keys []model.APIKey, newRawKey, csrf string) {
+func writeAPIKeysCard(w io.Writer, keys []model.APIKey, newRawKey, csrf string, maxLevel int) {
 	fmt.Fprint(w, `<div class="card w-full bg-base-100 shadow-xl"><div class="card-body gap-4">`)
 
 	if newRawKey != "" {
@@ -146,15 +159,25 @@ func writeAPIKeysCard(w io.Writer, keys []model.APIKey, newRawKey, csrf string) 
 		fmt.Fprint(w, `</tbody></table></div>`)
 	}
 
-	// New-key form.
+	// New-key form. The level selector is capped at the user's maximum (PRD
+	// §9.2); a leaked low-level key can't escalate (min rule in Authorized).
+	if maxLevel < model.L1 {
+		maxLevel = model.L1
+	}
 	fmt.Fprintf(w, `<form method="post" action="/preferences/apikey" class="flex flex-wrap items-end gap-3 pt-2 border-t border-base-300">
 <input type="hidden" name="csrf_token" value="%s"/>
 <label class="form-control"><span class="label-text text-xs opacity-70">Name</span>
 <input name="name" required class="input input-bordered input-sm" placeholder="my-router"/></label>
+<label class="form-control"><span class="label-text text-xs opacity-70">Level</span>
+<select name="level" class="select select-bordered select-sm">`, html.EscapeString(csrf))
+	for lvl := model.L1; lvl <= maxLevel; lvl++ {
+		fmt.Fprintf(w, `<option value="%d">L%d</option>`, lvl, lvl)
+	}
+	fmt.Fprint(w, `</select></label>
 <label class="form-control"><span class="label-text text-xs opacity-70">Expires in days (blank = never)</span>
 <input name="expires_days" type="number" min="1" class="input input-bordered input-sm" placeholder="—"/></label>
 <button type="submit" class="btn btn-primary btn-sm">Create key</button>
-</form>`, html.EscapeString(csrf))
+</form>`)
 
 	fmt.Fprint(w, `</div></div>`)
 }
