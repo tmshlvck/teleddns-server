@@ -8,7 +8,9 @@ auto-provision from a **catalog zone (RFC 9432)** — teleddns never talks to
 other teleddns instances.
 
 Design/roadmap live in [`PLAN.md`](PLAN.md); the wire contract for DDNS clients
-is in [`PRD.md`](PRD.md).
+is in [`PRD.md`](PRD.md). For a full production runbook — systemd service,
+Caddy/TLS with correct client-IP forwarding, and secondary **Knot or BIND9**
+via the catalog zone — see [`DEPLOY.md`](DEPLOY.md).
 
 ## Build
 
