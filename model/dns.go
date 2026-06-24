@@ -42,7 +42,7 @@ type Zone struct {
 	SOASerial  uint32 `gorm:"not null"`
 	SOARefresh uint32 `gorm:"not null;default:10800"`
 	SOARetry   uint32 `gorm:"not null;default:3600"`
-	SOAExpire  uint32 `gorm:"not null;default:1209600"`
+	SOAExpire  uint32 `gorm:"not null;default:604800"`
 	SOAMinimum uint32 `gorm:"not null;default:3600"`
 
 	CreatedAt time.Time
@@ -63,7 +63,7 @@ func (z *Zone) BeforeCreate(*gorm.DB) error {
 		z.SOARName = "hostmaster." + z.Origin
 	}
 	if z.SOASerial == 0 {
-		z.SOASerial = todaySerial()
+		z.SOASerial = TodaySerial()
 	}
 	if z.SOARefresh == 0 {
 		z.SOARefresh = 10800
@@ -72,7 +72,7 @@ func (z *Zone) BeforeCreate(*gorm.DB) error {
 		z.SOARetry = 3600
 	}
 	if z.SOAExpire == 0 {
-		z.SOAExpire = 1209600
+		z.SOAExpire = 604800
 	}
 	if z.SOAMinimum == 0 {
 		z.SOAMinimum = 3600
@@ -107,8 +107,9 @@ func (z *Zone) BeforeDelete(tx *gorm.DB) error {
 	return nil
 }
 
-// todaySerial returns a YYYYMMDD00 SOA serial seed.
-func todaySerial() uint32 {
+// TodaySerial returns a YYYYMMDD00 SOA serial seed. Exported so the admin form
+// can pre-fill the same value BeforeCreate would assign to a blank serial.
+func TodaySerial() uint32 {
 	t := time.Now().UTC()
 	return uint32(t.Year()*1000000 + int(t.Month())*10000 + t.Day()*100)
 }

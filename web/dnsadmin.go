@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"log/slog"
+	"reflect"
 
+	"github.com/a-h/templ"
 	"github.com/tmshlvck/gone/auth"
 	"github.com/tmshlvck/gone/crud"
 	"github.com/tmshlvck/gone/site"
@@ -26,9 +28,18 @@ func dnsTables(db *gorm.DB, settings site.Settings, gate auth.Authz, log *slog.L
 		t(dnsTable[model.Zone](db, settings, gate, log, ag, "Zones", []crud.MetaField{
 			{Name: "Origin", FieldValidate: crud.All(crud.NotEmpty, model.ValFQDN),
 				FormHelp: "FQDN with trailing dot, e.g. example.com."},
-			{Name: "SOAMName", DisplayName: "SOA MNAME", FieldValidate: model.ValDNSName},
-			{Name: "SOARName", DisplayName: "SOA RNAME", FieldValidate: model.ValDNSName},
-		})),
+			{Name: "SOAMName", DisplayName: "SOA MNAME", FieldValidate: model.ValDNSName,
+				FormHelp: "primary nameserver, e.g. ns1.example.com. — blank → ns1.<origin>"},
+			{Name: "SOARName", DisplayName: "SOA RNAME", FieldValidate: model.ValDNSName,
+				FormHelp: "responsible party, e.g. hostmaster.example.com. — blank → hostmaster.<origin>"},
+			{Name: "SOATTL", DisplayName: "SOA TTL", GenFormElement: formDefault(uint32(3600))},
+			{Name: "SOASerial", GenFormElement: formDefault(model.TodaySerial()),
+				FormHelp: "blank → today's date (YYYYMMDDnn); auto-bumped on every change"},
+			{Name: "SOARefresh", GenFormElement: formDefault(uint32(10800))},
+			{Name: "SOARetry", GenFormElement: formDefault(uint32(3600))},
+			{Name: "SOAExpire", GenFormElement: formDefault(uint32(604800))},
+			{Name: "SOAMinimum", GenFormElement: formDefault(uint32(3600))},
+		}, withShortLabel(func(z model.Zone) string { return z.Origin }))),
 
 		crud.SidebarSeparator(), crud.SidebarHeader("Records"),
 		t(dnsTable[model.RRA](db, settings, gate, log, ag, "A",
@@ -101,18 +112,42 @@ func dnsTables(db *gorm.DB, settings site.Settings, gate auth.Authz, log *slog.L
 func rrFields(extra ...crud.MetaField) []crud.MetaField {
 	out := []crud.MetaField{
 		{Name: "Label", FieldValidate: crud.All(crud.NotEmpty, model.ValLabel), FormHelp: "@ for apex, or a hostname label"},
-		{Name: "TTL", FormHelp: "seconds"},
+		{Name: "TTL", FormHelp: "seconds", GenFormElement: formDefault(uint32(3600))},
 	}
 	return append(out, extra...)
 }
 
+// formDefault wraps crud's default form-element renderer so an empty (zero)
+// value — i.e. a fresh "create" form — is pre-filled with def instead of blank,
+// giving the operator sensible SOA/TTL starting points. A real edit (non-zero
+// value) renders the stored value unchanged.
+func formDefault(def any) func(crud.MetaField, any) templ.Component {
+	return func(mf crud.MetaField, value any) templ.Component {
+		if value == nil || reflect.ValueOf(value).IsZero() {
+			value = def
+		}
+		return crud.DefaultGenFormElement(mf, value)
+	}
+}
+
+// withShortLabel sets a table's ShortLabel override (the text shown for one of
+// its rows in relation pickers/cells), bypassing crud's name-based heuristic —
+// which would otherwise pick a Zone's SOAMName over its Origin.
+func withShortLabel[T any](fn func(T) string) func(*crud.CRUDTable[T]) {
+	return func(c *crud.CRUDTable[T]) { c.ShortLabel = fn }
+}
+
 // dnsTable builds one observe-wrapped admin CRUDTable[T]. The URL slug is
 // derived by gone from the Go type name (lowercase+"s"); the sidebar label is
-// the DisplayName passed here.
-func dnsTable[T any](db *gorm.DB, settings site.Settings, gate auth.Authz, log *slog.Logger, ag *auth.AuthGORM, display string, fields []crud.MetaField) crud.CRUDTableInterface {
+// the DisplayName passed here. Optional opts tweak the table after construction
+// (e.g. a ShortLabel override) before it is mounted.
+func dnsTable[T any](db *gorm.DB, settings site.Settings, gate auth.Authz, log *slog.Logger, ag *auth.AuthGORM, display string, fields []crud.MetaField, opts ...func(*crud.CRUDTable[T])) crud.CRUDTableInterface {
 	mm := crud.DeriveMetaModel[T](crud.MetaModel[T]{DisplayName: display, Fields: fields})
 	data := crud.ObserveAccessor(crud.GORMAccessor(mm, db), auditObserver[T](log, ag, mm.Name))
 	tbl := crud.NewTable(mm, data, settings, gate)
+	for _, opt := range opts {
+		opt(&tbl)
+	}
 	return &tbl
 }
 

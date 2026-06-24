@@ -168,8 +168,9 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 			return
 		}
 		web.RegisterPreferences(r, ag, ks, shell)
+		web.RegisterDashboard(r, ag, db, shell, startedAt)
 		r.Get("/", func(w http.ResponseWriter, req *http.Request) {
-			http.Redirect(w, req, "/admin", http.StatusSeeOther)
+			http.Redirect(w, req, "/dashboard", http.StatusSeeOther)
 		})
 	})
 	if regErr != nil {

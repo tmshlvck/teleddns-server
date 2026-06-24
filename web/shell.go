@@ -8,6 +8,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/a-h/templ"
 	"github.com/tmshlvck/gone/auth"
@@ -42,7 +43,7 @@ func (s Shell) Func() site.Shell {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		s.writeHead(w, title, csrf, theme)
-		s.writeHeader(r.Context(), w, title, username, csrf)
+		s.writeHeader(r.Context(), w, title, username, csrf, r.URL.Path)
 		if err := content.Render(r.Context(), w); err != nil {
 			s.Log.Error("shell render", "err", err)
 		}
@@ -88,12 +89,18 @@ document.addEventListener('htmx:configRequest', (event) => {
 	s.write(w, headFmt, html.EscapeString(theme), html.EscapeString(csrf), html.EscapeString(title))
 }
 
-// writeHeader renders the top bar: a title on the left, and on the right the
-// theme toggle plus (when signed in) the user link + logout form.
-func (s Shell) writeHeader(ctx context.Context, w http.ResponseWriter, title, username, csrf string) {
-	s.write(w, `<header class="p-4 flex items-center justify-between gap-3">
-<h1 class="text-xl font-bold">%s</h1>
-<div class="flex items-center gap-3">`, html.EscapeString(title))
+// writeHeader renders the top bar: a title plus (when signed in) the primary
+// nav on the left, and on the right the theme toggle plus the user link +
+// logout form.
+func (s Shell) writeHeader(ctx context.Context, w http.ResponseWriter, title, username, csrf, path string) {
+	s.write(w, `<header class="p-4 flex flex-wrap items-center justify-between gap-3">
+<div class="flex items-center gap-4">
+<h1 class="text-xl font-bold">%s</h1>`, html.EscapeString(title))
+
+	if username != "" {
+		s.writeNav(w, path)
+	}
+	s.write(w, `</div><div class="flex items-center gap-3">`)
 
 	if username != "" {
 		const userFmt = `<a href="/preferences" class="text-sm opacity-80 link link-hover">Signed in as <b>%s</b></a>
@@ -111,6 +118,28 @@ func (s Shell) writeHeader(ctx context.Context, w http.ResponseWriter, title, us
 		s.Log.Error("theme toggle render", "err", err)
 	}
 	s.write(w, `</div></header><main class="p-4">`)
+}
+
+// navLinks is the primary navigation, in display order.
+var navLinks = []struct{ href, label string }{
+	{"/dashboard", "Dashboard"},
+	{"/admin", "Admin"},
+	{"/preferences", "Preferences"},
+}
+
+// writeNav renders the horizontal DaisyUI menu, marking the link whose href
+// prefixes the current path as active.
+func (s Shell) writeNav(w http.ResponseWriter, path string) {
+	s.write(w, `<nav><ul class="menu menu-horizontal gap-1 p-0">`)
+	for _, l := range navLinks {
+		active := ""
+		if path == l.href || strings.HasPrefix(path, l.href+"/") {
+			active = " menu-active"
+		}
+		s.write(w, `<li><a href="%s" class="font-medium%s">%s</a></li>`,
+			html.EscapeString(l.href), active, html.EscapeString(l.label))
+	}
+	s.write(w, `</ul></nav>`)
 }
 
 func (s Shell) write(w http.ResponseWriter, format string, args ...any) {
