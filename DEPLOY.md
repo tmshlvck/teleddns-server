@@ -75,8 +75,41 @@ zone:
 ```
 
 ```sh
-knotc conf-check && systemctl restart knot
+knotc conf-check       # validate the file
 ```
+
+**Run Knot from its configuration database, not the file.** teleddns declares
+each managed zone at runtime with `knotc conf-set` (assigning the `master`
+template). Knot keeps those dynamic changes in its *configuration database*
+(confdb). In plain file mode (`knotd -c knot.conf`, the default) the file is
+re-read on **every restart**, silently discarding all dynamically-declared
+zones — and with them their catalog membership; only zones written into
+`knot.conf` itself (here, just `catalog.`) survive. Seed the confdb from the
+file once, then point knotd at the confdb:
+
+```sh
+# import the base config into the confdb (default dir: /var/lib/knot/confdb)
+knotc conf-import /etc/knot/knot.conf
+
+# conf-import as root creates a root-owned confdb that knotd (user "knot")
+# can't open ("failed to open configuration database … operation not
+# permitted"); hand it to the knot user.
+chown -R knot:knot /var/lib/knot/confdb
+
+# tell knotd to use the confdb instead of the file:
+#   Fedora/RHEL: /etc/sysconfig/knot     Debian/Ubuntu: /etc/default/knot
+echo 'KNOTD_ARGS="-C /var/lib/knot/confdb"' >> /etc/default/knot
+
+systemctl restart knot
+```
+
+After this, `knotc conf-*` changes — including teleddns's zone declarations —
+persist across restarts. The text `knot.conf` is now just a one-time seed: to
+change the static parts later (keys, remotes, template, the catalog zone),
+prefer a live `knotc conf-set`. A fresh `knotc conf-import` is also fine but
+**replaces** the whole confdb, dropping the managed zones until teleddns
+re-declares each one on its next push (so re-save the affected zones in the UI,
+or expect them to reappear as records change).
 
 `automatic-acl: on` already lets the `notify` remotes transfer, so `xfr_acl`
 is belt-and-braces; keep it if you also serve other clients.

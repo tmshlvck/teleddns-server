@@ -85,7 +85,21 @@ func (b *KnotBackend) PushZone(ctx context.Context, origin, content string) erro
 		return err
 	}
 	if err := b.knotc(ctx, "zone-reload", origin); err != nil {
-		return err
+		// The zone may have vanished from Knot's config since we cached it as
+		// declared — most often because knotd was restarted in file-config
+		// mode (knotd -c knot.conf), which re-reads the file and discards every
+		// dynamically-declared (conf-set) zone. Forget the cached declaration,
+		// re-declare, and retry the reload once so a restart self-heals on the
+		// next push instead of dead-lettering. (Run Knot from its confdb —
+		// knotd -C — to make declarations persistent in the first place.)
+		b.Log.Warn("backend(knot) zone-reload failed; re-declaring and retrying", "origin", origin, "err", err)
+		b.setDeclared(origin, false)
+		if derr := b.ensureDeclared(ctx, origin); derr != nil {
+			return derr
+		}
+		if err := b.knotc(ctx, "zone-reload", origin); err != nil {
+			return err
+		}
 	}
 	b.Log.Info("backend(knot) reloaded zone", "origin", origin, "path", path)
 	return nil
