@@ -62,9 +62,11 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request) {
 	myipv6 := strings.TrimSpace(q.Get("myipv6"))
 	src := clientIP(r)
 
-	c, ok, www := h.resolveCaller(r)
+	c, ok, fail := h.resolveCaller(r)
 	if !ok {
-		h.write(w, http.StatusUnauthorized, []line{{code: "badauth", status: 401}}, www)
+		h.Log.Warn("ddns auth rejected", "reason", fail.reason, "user", fail.user,
+			"src", src, "hostname", hostname)
+		h.write(w, http.StatusUnauthorized, []line{{code: "badauth", status: 401}}, fail.www)
 		return
 	}
 	if hostname == "" || (myip == "" && myipv6 == "") {
@@ -101,10 +103,16 @@ func (h *Handler) one(c caller, hostname, addrStr, src string) line {
 	}
 
 	// Authorization (PRD §9.6): a DDNS update is read/update of an A/AAAA set
-	// → needs L1; the token caps the user's effective level.
+	// → needs L1; the token caps the user's effective level. Auto-create of the
+	// set at the (already authorized) label is permitted on this path — an L1
+	// grant is scoped to the exact (zone, label), so creating the record there
+	// is within the caller's explicit designation.
 	need := model.RequiredLevel(model.Update, model.TargetAddrRecord)
 	eff := model.EffectiveLevel(h.DB, c.user, zone.ID, label)
 	if !model.Authorized(c.tokenLevel, eff, need) {
+		h.Log.Warn("ddns authz denied", "user", c.user.Username(), "src", src,
+			"zone", zone.Origin, "label", label, "tokenLevel", c.tokenLevel,
+			"effective", eff, "need", need)
 		return line{code: "!yours", ip: ip, status: 403}
 	}
 
@@ -140,13 +148,18 @@ func (h *Handler) resolveZoneLabel(hostname string) (model.Zone, string, bool) {
 	return model.Zone{}, "", false
 }
 
-// convergeA brings the A set at (zone, label) to the single value ip. No
-// auto-create on the DDNS path (PRD §8.5): an empty set yields nohost.
+// convergeA brings the A set at (zone, label) to the single value ip. An empty
+// set is auto-created (the caller is already authorized for this exact label).
 func (h *Handler) convergeA(zoneID uint, label, ip string) (string, int) {
 	var rrs []model.RRA
 	h.DB.Where("zone_id = ? AND label = ?", zoneID, label).Find(&rrs)
 	if len(rrs) == 0 {
-		return "nohost", 404
+		rr := model.RRA{ZoneID: zoneID, Label: label, TTL: h.ttl, Value: ip}
+		if err := h.DB.Create(&rr).Error; err != nil {
+			h.Log.Error("ddns create A", "zone_id", zoneID, "label", label, "err", err)
+			return "911", 500
+		}
+		return "good", 200
 	}
 	deletedExtras := false
 	for i := 1; i < len(rrs); i++ {
@@ -170,7 +183,12 @@ func (h *Handler) convergeAAAA(zoneID uint, label, ip string) (string, int) {
 	var rrs []model.RRAAAA
 	h.DB.Where("zone_id = ? AND label = ?", zoneID, label).Find(&rrs)
 	if len(rrs) == 0 {
-		return "nohost", 404
+		rr := model.RRAAAA{ZoneID: zoneID, Label: label, TTL: h.ttl, Value: ip}
+		if err := h.DB.Create(&rr).Error; err != nil {
+			h.Log.Error("ddns create AAAA", "zone_id", zoneID, "label", label, "err", err)
+			return "911", 500
+		}
+		return "good", 200
 	}
 	deletedExtras := false
 	for i := 1; i < len(rrs); i++ {

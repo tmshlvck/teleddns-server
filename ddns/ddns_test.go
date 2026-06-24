@@ -129,12 +129,16 @@ func TestDDNS_NoCreds(t *testing.T) {
 	}
 }
 
-func TestDDNS_NoHostAndNoZone(t *testing.T) {
+func TestDDNS_AutoCreateAndNoZone(t *testing.T) {
 	h := setup(t)
 	key := h.issueKey(t, "admin", 3)
-	// resolved zone but no record at label → nohost (no auto-create).
-	if st, b := h.get(t, "/update?hostname=missing.example.com&myip=1.1.1.1", bearer(key)); st != 404 || b != "nohost" {
-		t.Fatalf("missing record: %d %q", st, b)
+	// resolved zone but no record at label → auto-created → good.
+	if st, b := h.get(t, "/update?hostname=missing.example.com&myip=1.1.1.1", bearer(key)); st != 200 || b != "good 1.1.1.1" {
+		t.Fatalf("auto-create: %d %q", st, b)
+	}
+	// a second update of the now-existing record converges → nochg.
+	if st, b := h.get(t, "/update?hostname=missing.example.com&myip=1.1.1.1", bearer(key)); st != 200 || b != "nochg 1.1.1.1" {
+		t.Fatalf("converge created: %d %q", st, b)
 	}
 	// no zone matches → nohost.
 	if st, b := h.get(t, "/update?hostname=host.other.tld&myip=1.1.1.1", bearer(key)); st != 404 || b != "nohost" {

@@ -160,10 +160,14 @@ func (b *KnotBackend) confTxn(ctx context.Context, cmds [][]string) error {
 }
 
 func (b *KnotBackend) knotc(ctx context.Context, args ...string) error {
+	cmd := strings.Join(args, " ")
 	out, err := exec.CommandContext(ctx, b.Knotc, args...).CombinedOutput()
+	trimmed := strings.TrimSpace(string(out))
 	if err != nil {
-		return fmt.Errorf("knotc %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		b.Log.Warn("knotc", "cmd", cmd, "out", trimmed, "err", err)
+		return fmt.Errorf("knotc %s: %w: %s", cmd, err, trimmed)
 	}
+	b.Log.Info("knotc", "cmd", cmd, "out", trimmed)
 	return nil
 }
 

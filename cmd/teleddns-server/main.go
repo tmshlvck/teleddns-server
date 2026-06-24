@@ -133,16 +133,22 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	}
 
 	root := chi.NewRouter()
+	// Log every request (success at INFO, 4xx/5xx at WARN). ECS-concise trims
+	// the field wall but also drops the client IP — re-add it under "src" so
+	// auth failures and DDNS calls are always traceable to a source. Only the
+	// healthcheck poll is skipped, to keep monitoring from flooding the log.
+	reqSchema := httplog.SchemaECS.Concise(true)
+	reqSchema.RequestRemoteIP = "src"
 	root.Use(httplog.RequestLogger(log, &httplog.Options{
 		Level:         slog.LevelInfo,
-		Schema:        httplog.SchemaECS.Concise(true), // trim the ECS field wall
+		Schema:        reqSchema,
 		RecoverPanics: true,
-		Skip:          func(_ *http.Request, status int) bool { return status == http.StatusNotFound },
+		Skip:          func(r *http.Request, _ int) bool { return r.URL.Path == "/healthcheck" },
 	}))
 	if cfg.TrustProxy {
 		root.Use(middleware.RealIP)
 	}
-	root.Use(web.IPAllowlist(cfg.AllowedIPs))
+	root.Use(web.IPAllowlist(cfg.AllowedIPs, log))
 
 	// Token/credential surfaces — no cookie session, so no CSRF. The DDNS
 	// endpoints carry their own Basic/Bearer auth; healthcheck is public.

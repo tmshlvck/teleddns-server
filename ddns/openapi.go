@@ -50,7 +50,7 @@ func ddnsOperation(id string) *huma.Operation {
 			"400": textResp("notfqdn — hostname invalid or myip/myipv6 not a valid address."),
 			"401": textResp("badauth — missing/bad credentials, or Basic used by a 2FA/SSO/passkey user."),
 			"403": textResp("!yours — authenticated but not authorized for the resolved record."),
-			"404": textResp("nohost — no matching zone, or no pre-existing record at the label."),
+			"404": textResp("nohost — no matching zone for the hostname."),
 			"429": textResp("abuse — rate limit exceeded."),
 			"500": textResp("911 — internal error."),
 		},

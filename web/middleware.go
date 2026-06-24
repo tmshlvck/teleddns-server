@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 )
@@ -11,7 +12,7 @@ import (
 // The client IP is taken from r.RemoteAddr; mount chi's middleware.RealIP
 // (gated on TrustProxy) ahead of this when behind a reverse proxy so the
 // proxy's X-Forwarded-For / X-Real-IP is honored.
-func IPAllowlist(allowed []string) func(http.Handler) http.Handler {
+func IPAllowlist(allowed []string, log *slog.Logger) func(http.Handler) http.Handler {
 	nets := make([]*net.IPNet, 0, len(allowed))
 	for _, c := range allowed {
 		if _, n, err := net.ParseCIDR(c); err == nil {
@@ -35,6 +36,7 @@ func IPAllowlist(allowed []string) func(http.Handler) http.Handler {
 					return
 				}
 			}
+			log.Warn("ip allowlist rejected request", "src", host, "path", r.URL.Path)
 			http.Error(w, "forbidden", http.StatusForbidden)
 		})
 	}

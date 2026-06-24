@@ -382,14 +382,18 @@ For each `(family, address)` derived from `myip` / `myipv6`:
 
 1. Resolve `(zone, label)` per §8.4.
 2. Resolve the matching record set (A for v4, AAAA for v6).
-3. Apply authorization (§9.6). If the user lacks the required role on the
-   *existing* record, reject — **no auto-create on the DDNS path** (see §8.7).
-4. If exactly one record exists with the same value → no-op (`nochg`).
-5. If exactly one record exists with a different value → update in place
+3. Apply authorization (§9.6). If the caller lacks the required role for the
+   resolved `(zone, label)`, reject (`!yours`).
+4. If the set is empty → **create** the record with the requested value
+   (`good`). Auto-create is permitted for any authorized caller: an L1
+   `GroupRRRole` is scoped to the exact `(zone, label)`, so creating the record
+   there is within the caller's explicit designation.
+5. If exactly one record exists with the same value → no-op (`nochg`).
+6. If exactly one record exists with a different value → update in place
    (`good`).
-6. If multiple records exist → keep the first, delete the rest, update value
+7. If multiple records exist → keep the first, delete the rest, update value
    if needed (`good`).
-7. On any data change: bump zone SOA SERIAL and enqueue a backend push (§12).
+8. On any data change: bump zone SOA SERIAL and enqueue a backend push (§12).
 
 TTL on records touched via DDNS = `DDNS_RR_TTL` (default 60 s); TTL on records
 created by the management API = `DEFAULT_TTL` (default 3600 s).
@@ -406,7 +410,7 @@ code is the authoritative success/failure signal; the body is the dyndns2 code.
 | 400  | `notfqdn`     | `hostname` invalid or `myip`/`myipv6` cannot be parsed as an address. |
 | 401  | `badauth`     | Missing credentials, wrong credentials, or Basic auth attempted by a 2FA/SSO/PassKey user. |
 | 403  | `!yours`      | Authenticated, but caller's roles do not grant access to the resolved record. |
-| 404  | `nohost`      | No configured zone matches `hostname`; *or* (for L1 callers) no pre-existing A/AAAA record at the resolved label. |
+| 404  | `nohost`      | No configured zone matches `hostname`. |
 | 429  | `abuse`       | Rate limit tripped (see §8.8). |
 | 500  | `911`         | Internal error. |
 
@@ -795,7 +799,8 @@ don't get lost:
    its HTTP library's default UA.
 4. **L1 client provisioning UX** — given §9.5, a brand-new dyndns client
    needs *someone* (L2/L3 operator, or self-service onboarding tooling)
-   to pre-create the `(zone, label)` A/AAAA row and mint an L1 token.
-   Worth a dedicated onboarding flow in the operator UI.
+   to grant the `(zone, label)` L1 role and mint an L1 token; the A/AAAA
+   row itself is auto-created on first update (§8.5). Worth a dedicated
+   onboarding flow in the operator UI.
 5. **Migration from the legacy SQLite** — likely a one-shot import
    command; details once the new schema is final.

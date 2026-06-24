@@ -42,5 +42,8 @@ func OpenDB(cfg Config, log *slog.Logger) (*gorm.DB, error) {
 	if err := site.ForceUTC(db); err != nil {
 		return nil, fmt.Errorf("force utc: %w", err)
 	}
+	if err := registerMutationLog(db, log); err != nil {
+		return nil, fmt.Errorf("mutation log: %w", err)
+	}
 	return db, nil
 }

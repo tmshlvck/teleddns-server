@@ -16,37 +16,46 @@ type caller struct {
 	tokenLevel int  // bearer: APIKey.Level; basic: 3 (no token cap)
 }
 
+// authFail describes why authentication was rejected, for the 401 response and
+// the audit log. www is the WWW-Authenticate header value; reason is a short
+// human cause; user is the attempted username when one was supplied.
+type authFail struct {
+	www    string
+	reason string
+	user   string
+}
+
 // resolveCaller authenticates the request. Bearer wins over Basic. On success
-// returns (caller, true, ""); on any failure returns (zero, false, www) where
-// www is the WWW-Authenticate value to send with the 401 badauth.
-func (h *Handler) resolveCaller(r *http.Request) (caller, bool, string) {
+// returns (caller, true, zero); on any failure returns (zero, false, fail) with
+// the WWW-Authenticate value plus a reason/username for logging.
+func (h *Handler) resolveCaller(r *http.Request) (caller, bool, authFail) {
 	hdr := r.Header.Get("Authorization")
 
 	if raw, ok := strings.CutPrefix(hdr, "Bearer "); ok {
 		u, k, err := h.Keys.Validate(strings.TrimSpace(raw))
 		if err != nil {
-			return caller{}, false, "Bearer"
+			return caller{}, false, authFail{www: "Bearer", reason: "invalid bearer token"}
 		}
-		return caller{user: u, userID: userID(u), tokenID: k.ID, tokenLevel: k.Level}, true, ""
+		return caller{user: u, userID: userID(u), tokenID: k.ID, tokenLevel: k.Level}, true, authFail{}
 	}
 
 	if enc, ok := strings.CutPrefix(hdr, "Basic "); ok {
 		username, password, ok := decodeBasic(enc)
 		if !ok {
-			return caller{}, false, "Basic, Bearer"
+			return caller{}, false, authFail{www: "Basic, Bearer", reason: "malformed Basic credentials"}
 		}
 		u, err := h.Auth.Authenticate(username, password)
 		if err != nil || u == nil {
-			return caller{}, false, "Basic, Bearer"
+			return caller{}, false, authFail{www: "Basic, Bearer", reason: "bad username or password", user: username}
 		}
 		// 2FA / SSO / passkey users must use a bearer token (PRD §3.6/§8.7).
 		if h.twoFactorUser(u) {
-			return caller{}, false, "Bearer"
+			return caller{}, false, authFail{www: "Bearer", reason: "2FA/SSO user must use a bearer token", user: username}
 		}
-		return caller{user: u, userID: userID(u), tokenLevel: 3}, true, ""
+		return caller{user: u, userID: userID(u), tokenLevel: 3}, true, authFail{}
 	}
 
-	return caller{}, false, "Basic, Bearer"
+	return caller{}, false, authFail{www: "Basic, Bearer", reason: "no Authorization header"}
 }
 
 // twoFactorUser reports whether the user has TOTP, SSO, or a passkey enrolled
