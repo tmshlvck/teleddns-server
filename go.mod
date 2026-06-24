@@ -10,7 +10,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-chi/httplog/v3 v3.4.0
 	github.com/spf13/pflag v1.0.10
-	github.com/tmshlvck/gone v0.0.0
+	github.com/tmshlvck/gone v0.1.1
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1
@@ -54,5 +54,3 @@ require (
 	modernc.org/memory v1.5.0 // indirect
 	modernc.org/sqlite v1.23.1 // indirect
 )
-
-replace github.com/tmshlvck/gone => ../gone
