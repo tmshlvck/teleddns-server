@@ -5,10 +5,12 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
 
+	"github.com/tmshlvck/teleddns-server/metrics"
 	"github.com/tmshlvck/teleddns-server/model"
 )
 
@@ -28,7 +30,23 @@ type Worker struct {
 	Log        *slog.Logger
 	Interval   time.Duration // tick / debounce (BackendSyncDelay)
 	DefaultTTL uint32
+
+	lastTick atomic.Int64 // unix nanos of the last tick; 0 until first tick
+	knotUp   atomic.Bool  // result of the last Backend.Status probe
 }
+
+// LastTick is the time of the most recent worker tick (zero before the first).
+// The healthcheck uses it to detect a stalled/dead worker.
+func (w *Worker) LastTick() time.Time {
+	ns := w.lastTick.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// KnotUp reports whether the last Backend.Status probe succeeded.
+func (w *Worker) KnotUp() bool { return w.knotUp.Load() }
 
 // Run drains the journal until ctx is cancelled. It first re-queues any tasks
 // left in_flight by a previous crash.
@@ -53,6 +71,18 @@ func (w *Worker) Run(ctx context.Context) {
 
 func (w *Worker) tick(ctx context.Context) {
 	now := time.Now()
+	// Liveness + backend reachability, recorded every tick (independent of
+	// whether there is work to do) so the healthcheck/metric stay fresh.
+	w.lastTick.Store(now.UnixNano())
+	metrics.WorkerLastTick.Set(float64(now.Unix()))
+	up := w.Backend.Status(ctx) == nil
+	w.knotUp.Store(up)
+	if up {
+		metrics.KnotUp.Set(1)
+	} else {
+		metrics.KnotUp.Set(0)
+	}
+
 	var tasks []model.SyncTask
 	if err := w.DB.Where("state = ? AND available_at <= ?", model.SyncPending, now).
 		Order("id").Find(&tasks).Error; err != nil {
@@ -92,12 +122,23 @@ func (w *Worker) process(ctx context.Context, origin string, grp []model.SyncTas
 		}
 	}
 
+	kind := model.SyncKindZone
+	if remove {
+		kind = model.SyncKindZoneRemove
+	}
+	start := time.Now()
 	var err error
 	if remove {
 		err = w.Backend.RemoveZone(ctx, origin)
 	} else {
 		err = w.pushZone(ctx, origin)
 	}
+	metrics.BackendPushSeconds.WithLabelValues(kind).Observe(time.Since(start).Seconds())
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	metrics.BackendPushTotal.WithLabelValues(kind, result).Inc()
 	if err == nil {
 		w.DB.Model(&model.SyncTask{}).Where("id IN ?", grpIDs).
 			Updates(map[string]any{"state": model.SyncDone, "last_error": ""})

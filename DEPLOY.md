@@ -322,6 +322,14 @@ dig @127.0.0.1 host.example.com A
 - **TLS / client IP:** terminate HTTPS at Caddy (§3) and set `trust_proxy:
   true` so source IPs come from `X-Real-IP` — used for DDNS audit, rate limits,
   `allowed_ips`, and the request log.
+- **Monitoring:** `/healthcheck` (always 200; `OK`/`WARN` in the body — `WARN`
+  on a stalled worker, dead-lettered push, stuck backlog, or an unreachable
+  Knot) and `/metrics` (Prometheus). Lock both down with `ops_allowed_ips`, a
+  CIDR allow-list applied on top of `allowed_ips`; it honours the proxy real-IP,
+  so list the monitoring host's actual address even when scraping through Caddy.
+  Because regular DDNS updates aren't expected, alert on the *rate* of
+  `teleddns_ddns_updates_total` / `teleddns_auth_failures_total` to catch a
+  stolen or brute-forced credential.
 - **Backup:** the teleddns SQLite/Postgres DB is the source of truth; Knot
   state (zone files, journal) is regenerated from it on the next push.
 

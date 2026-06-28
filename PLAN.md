@@ -1,8 +1,11 @@
 # TeleDDNS Server — Go Rewrite Implementation Plan
 
-Status: **draft / prototype phase**. Source of truth for *behavior* is
-[`PRD.md`](PRD.md). This document is the source of truth for *how we build it*
-in Go: tech stack, module layout, and a phased milestone plan.
+Status: **M0–M5.5 complete** (build clean, `go test ./...` green, verified live
+against Knot 3.4.6). **M6 (management/record API) is the next milestone.**
+Source of truth for *behavior* is
+[`PRD.md`](PRD.md); operator usage is in [`README.md`](README.md) and
+[`DEPLOY.md`](DEPLOY.md). This document is the source of truth for *how we build
+it* in Go: tech stack, module layout, and a phased milestone ledger.
 
 The legacy Python implementation lives in `obsolete/` (gitignored, kept on
 disk for reference only).
@@ -14,7 +17,7 @@ disk for reference only).
 | Concern | Choice | Notes |
 |---|---|---|
 | Language / toolchain | Go 1.26 | matches `gone` (`go 1.26.3`). |
-| Building blocks | **`github.com/tmshlvck/gone@v0.1.0`** | chi + GORM + HTMX CRUD admin + auth stack. Local checkout at `../gone`. |
+| Building blocks | **`github.com/tmshlvck/gone@v0.1.1`** | chi + GORM + HTMX CRUD admin + auth stack. Local checkout at `../gone`. |
 | HTTP router | **chi v5** | what `gone` registers routes onto; everything mounts here. |
 | ORM | **GORM v2** | `gone` derives its CRUD admin from GORM models via reflection. |
 | DB engines | **SQLite + Postgres** | SQLite via pure-Go `glebarez/sqlite` (already a `gone` dep); Postgres via `gorm.io/driver/postgres`. Engine chosen from the configured DB DSN. |
@@ -88,12 +91,12 @@ teleddns-server/
   cmd/teleddns-server/  entrypoint, CLI subcommands, slog/httplog setup, server wiring
   model/                everything data-shaped:
                           • DB models — User ext/APIKey, Zone + SOA fields,
-                            one table per RR type, TSIGKey, ZoneSlave (ACL),
-                            GroupZoneRole/GroupRRRole, PendingPush
+                            one table per RR type, GroupZoneRole/GroupRRRole,
+                            SyncTask journal (no Server/TSIG/ZoneSlave tables —
+                            catalog/TSIG live in the operator's knot.conf)
                           • config model — Config struct + loader (satisfies
                             gone's site.Settings)
-                          • temporal model — the scheduler / update loop +
-                            PendingPush worker
+                          • temporal model — the SyncTask scheduler / worker
                           • authz level logic (PRD §9.6) + BIND zonefile render
   web/                  page shell + gone CRUD admin wiring + auth (AuthGORM,
                         sessions, CSRF, login, preferences + API-key management)
@@ -147,181 +150,119 @@ type Config struct {
 
 ## 4. Milestones
 
-Ordered to match the build sequence. Each milestone is independently runnable.
+M0–M5 are ✅ complete (build clean, `go test ./...` green, verified live
+against Knot 3.4.6). The durable specs now live in PRD.md (behavior/data
+shapes), README.md (operator usage) and DEPLOY.md (production runbook); the
+entries below are a status ledger, not the spec.
 
-### M0 — Scaffolding
-- `go mod init`, wire `../gone` (replace directive to local checkout during
-  dev), chi router, `slog` + `httplog/v3`, graceful shutdown.
-- `Config` (§3) load + validate; `AllowedIPs` middleware; `TrustProxy` real-IP.
-- Boot an empty server with `/healthcheck` returning `OK uptime=…`.
+### M0 — Scaffolding ✅
+chi router, `slog`+`httplog/v3`, graceful shutdown; `Config` (§3) load/validate
+(YAML→env→flags); `AllowedIPs` + `TrustProxy` real-IP middleware; boot with
+`/healthcheck`. → README "Configure"/"Run".
 
-### M1 — Auth + admin shell
-- Wire `AuthGORM`: `UserGORM`/`GroupGORM`, sessions, CSRF, login (password +
-  TOTP + passkey + SSO already in `gone`).
-- App page shell (`site.Shell`): head/theme/nav (DaisyUI), HTMX, theme +
-  timezone pickers from `gone/site`.
-- Mount `gone` CRUD **Admin** over users/groups (L3 only).
-- **API keys** extending the user model (done): `model.APIKey` table +
-  `KeyStore` (SHA-256 hash, prefix, `Level`, expiry, disabled; `Issue` /
-  `Validate` / `List` / `Revoke`) — per `gone/docs/HOWTO-BEARER-TOKENS.md`.
-  Managed on the `/preferences` page (app-owned card below gone's
-  `AccountSection` cards): list, issue with one-time raw-key banner, revoke,
-  all CSRF-protected. New keys are L1 until the authz model (M3) adds the
-  user-max cap + level picker. The `BearerAuth` middleware + `apiAuth` wrapper
-  from the HOWTO are deferred to their consumers — DDNS (M4) and the JSON API
-  (M6) — as thin callers of `KeyStore.Validate`.
-- **CLI subcommands** (`cmd/teleddns-server`):
-  - `serve` (default) — run the server.
-  - `admin reset-password <username>` — reset/seed the admin password.
-  - `--debug` global flag → slog level Debug + httplog verbose.
-  - (later) `import-legacy` one-shot from old SQLite (PRD §13.5).
+### M1 — Auth + admin shell ✅
+AuthGORM (`UserGORM`/`GroupGORM`, sessions, CSRF, password+TOTP+passkey+SSO);
+app `site.Shell` (head/theme/nav/HTMX, theme+timezone pickers); CRUD **Admin**
+over users/groups (L3); `model.APIKey` + `KeyStore` (SHA-256, prefix, level,
+expiry; Issue/Validate/List/Revoke) managed on `/preferences`; CLI `serve` +
+`admin reset-password`, global `--debug`. → README "Run".
+Deferred: `admin import-legacy` one-shot from old SQLite (PRD §13.5, once
+schema is final).
 
-### M2 — DNS data model + admin
-- GORM models: `Zone` (origin + 10 SOA fields + `master`/sync-tracking
-  columns), one table **per RR type** (PRD §4.2 fields + validators), `Server`
-  (backend host). Roles: `GroupZoneRole` (L2), `GroupRRRole` (L1).
-- Per-type field validation (PRD §4.2) as `gone/crud` validators.
-- Zone creation auto-generates SOA + default NS (PRD §4.1/§11.3); SOA serial
-  auto-increment on mutation; reject deletes orphaning SOA/all-NS.
-- Wire each model into the `gone` Admin as a `CRUDTable`.
-- **Audit + push scheduling via one chokepoint.** Wrap the Zone/RR accessors
-  with `crud.ObserveAccessor` (covers the admin UI, the management API, *and*
-  CSV import — every mutation funnels through `Accessor.Data`). The callback
-  emits the structured slog audit record (actor, source IP, verb, target,
-  before/after; tagged `source=ui`/`api`/`ddns`) **and** schedules the backend
-  push (bump SOA + enqueue `PendingPush`) — see M5. The DDNS handler doesn't
-  go through the CRUD accessor, so it enqueues explicitly. Callback must not
-  block: send to a buffered channel with a `default` drop.
+### M2 — DNS data model + admin ✅
+`Zone` (origin + 10 SOA fields) + 14 RR tables with per-type validators (PRD
+§4.2), wired into one grouped admin sidebar (Accounts/DNS/Records/Access); SOA
+defaults + auto apex-NS on create; SOA-serial bump hook on every RR change
+(path-independent); last-NS delete guard; zone-delete cascade (`BeforeDelete`
+clears RRs+roles hooks-skipped, `AfterDelete` enqueues `zone-remove`); audit
+observer via `crud.ObserveAccessor` (`source=ui`). Model trimmed to essentials —
+no Server table, no owner/dirty/sync columns; sync state lives in the
+`SyncTask` journal (M5). → PRD §4, §10.3–§10.4.
+Deferred: nicer per-zone RR editor UX (the 14 per-type tables work but are
+clunky — operator-UI polish).
 
-  M2 status: audit logging is wired (`source=ui`); the **push-scheduling**
-  half of the callback is a TODO until `PendingPush` lands in M5.
-- **Done in M2:** all 14 RR tables + Zone + role grants with validators, wired
-  into one grouped admin sidebar (Accounts / DNS / Records / Access); SOA
-  defaults + auto apex-NS on zone create; SOA-serial bump on every RR change
-  (path-independent GORM hooks); last-NS delete guard; audit observer. Model
-  trimmed to essentials — no Server table, no owner / dirty / sync / per-row
-  audit columns; slaves + TSIG moved to `Config`; sync state will live in the
-  `SyncTask` journal (M5). Unit + HTTP e2e tested.
-- **Zone-delete cascade (done):** `Zone.BeforeDelete` removes all RR rows and
-  role grants for the zone in the same transaction with hooks skipped (so the
-  last-NS guard and serial-bump don't fire), and `AfterDelete` enqueues the
-  backend `zone-remove`. Verified by unit test + live admin-delete e2e.
-- **Deferred:** per-zone RR editor UX (the 14 per-type admin tables are
-  functional but clunky — a nicer per-zone view is operator-UI scope).
+### M3 — Authorization model ✅
+`model/authz.go`: `RequiredLevel(action,targetKind)`, `EffectiveLevel(db,user,
+zone,label)` (L3=admin-group; L2=`GroupZoneRole`; L1=`GroupRRRole`),
+`Authorized` = `min(tokenLevel,userEff) ≥ required`, `UserMaxLevel` token cap.
+The `/preferences` key form caps the level picker at `UserMaxLevel` and re-caps
+server-side. DDNS shares this single authz path; conformance test covers the
+level matrix + cap rule. Operator CRUD admin stays L3-gated (gone's `auth.Authz`
+is table-level). → PRD §9.
 
-### M3 — Authorization model (PRD §9) — done
-- `model/authz.go` formalizes the PRD §9.6 algorithm: `RequiredLevel(action,
-  targetKind)`, `EffectiveLevel(db, user, zone, label)` (L3 = AdminGroup; L2 =
-  GroupZoneRole; L1 = GroupRRRole), `Authorized(tokenLevel, userEff, required)`
-  = `min(tokenLevel, userEff) ≥ required`, and `UserMaxLevel` for the token cap.
-- **Token-level cap (PRD §9.2):** the `/preferences` API-key form offers a
-  level selector capped at `UserMaxLevel`; the issue handler re-caps server-side
-  (floored at L1). So an L2 user can mint an L1 key for a router, and a leaked
-  low-level key can't escalate (the `min` rule).
-- DDNS now goes through the same `RequiredLevel`/`EffectiveLevel`/`Authorized`
-  helpers (single authz path). Conformance test covers the level matrix +
-  the cap rule (the Go analogue of the legacy `test_ddns_auth.py`).
-- **Scope note:** the operator CRUD admin stays **L3-gated** (admin-group
-  write) — gone's `auth.Authz` is table-level and can't express per-zone row
-  scoping, and PRD §9.1 makes the operator UI an L3 surface anyway. L1/L2 act
-  through DDNS (done) and the JSON API (M6), which are per-resource and use
-  these helpers directly.
+### M4 — DDNS endpoint ✅
+`ddns/`: plain chi `GET /nic/update|/ddns/update|/update` (POST→405);
+Bearer-wins auth, Basic rejected for 2FA/SSO/passkey (`badauth`); longest-suffix
+zone match; A/AAAA converge-to-one with **no auto-create** (`nohost`);
+`myip`+`myipv6` combined (worst status); dyndns2 text bodies; per-token +
+per-(user,hostname) rate limits (`abuse`); authz via `EffectiveLevel`. Mounted
+outside CSRF (browser routes moved under a CSRF group). Huma API bootstrapped
+(`/openapi.json|yaml`, `/docs`, `/swagger` — public); DDNS documented via
+`ddns.DocumentOpenAPI`. SOA bump rides the RR hooks; SyncTask enqueue landed in
+M5. → PRD §8, README "Run".
+Deferred: transitional JSON `{detail}` response mode (flag).
 
-### M4 — DDNS endpoint (PRD §8, legacy Part A)
-- Plain chi handlers (not Huma) on `GET /nic/update`, `/ddns/update`,
-  `/update` (POST→405) — dyndns2 is a plain-text, status-code protocol where
-  Huma's JSON-schema/OpenAPI value doesn't apply; Huma is reserved for the
-  JSON management/record API (M6).
-- Basic **or** Bearer auth (Bearer wins); Basic rejected for TOTP/SSO/passkey
-  users → `badauth`. Reuse `KeyStore.Validate` for bearer.
-- Longest-suffix zone match → `(zone,label)`; `myip`/`myipv6` family detect;
-  update semantics (no-op/update/converge-to-one); **no auto-create on DDNS**
-  for L1 (`nohost`). SOA bump + enqueue push on change.
-- dyndns2 `text/plain` body (`good`/`nochg`/`nohost`/`badauth`/`!yours`/
-  `notfqdn`/`abuse`/`911`); transitional JSON `{detail}` mode behind a flag.
-- Rate limiting (PRD §8.8): 60/h per record, 600/h per token → `429 abuse`.
-- Port `tests/test_ddns_http_integration.py`.
-- **Done in M4** (`ddns/`): the three GET endpoints (POST→405), Bearer-wins
-  auth with Basic rejected for 2FA/SSO/passkey users, longest-suffix zone
-  resolution, A/AAAA converge-to-one semantics with **no auto-create**
-  (`nohost`), `myip`+`myipv6` combined (worst status), dyndns2 text responses,
-  per-token + per-(user,hostname) rate limiting, and authorization via
-  `model.EffectiveLevel` (`min(token.level, effective) ≥ 1`; L3 = admin-group
-  membership since gone's `UserGORM` has no `is_superuser`). Mounted **outside
-  CSRF**; the browser routes moved under a CSRF-wrapped chi group. Go unit
-  tests + live e2e. The SOA serial bump rides the existing RR hooks.
-  - **OpenAPI:** a Huma API is bootstrapped now (serves `/openapi.json`,
-    `/openapi.yaml`, `/docs`, and an app-owned `/swagger` Swagger-UI page — all
-    public). The chi-served DDNS endpoints are documented in the spec via
-    `ddns.DocumentOpenAPI` (path-item injection, not Huma-handled). M6 registers
-    the real JSON operations on the same API.
-  - **Deferred:** transitional JSON `{detail}` response mode; wiring
-    `last_update` into `/healthcheck`; the SyncTask enqueue (M5). The
-    `EffectiveLevel` helper is the seed for M3's full model.
+### M5 — Local Knot backend ✅
+`knot/`: byte-faithful BIND render of SOA + all 14 RR types (`RenderZone`,
+`kzonecheck`-clean); `Backend` interface (`log` default + `knotc` impl); the
+`SyncTask` journal (enqueued in the mutation's txn, coalesced per origin) +
+`Worker` executor (claims due tasks, full-zone idempotent regen → push, exp
+backoff+jitter cap 1h, dead-letter after 20, resets `in_flight` on startup),
+wired into `serve` and stopped with the server. **Config plane:** first push
+declares the zone via `knotc conf-begin/conf-set/conf-commit` (assign
+`knot_template`, cached, idempotent); `zone-remove` does `conf-unset` + deletes
+the file. **Content plane:** full-file regen + `knotc zone-reload` — with
+`zonefile-load: difference` Knot emits an incremental IXFR; secondaries
+auto-provision from a Knot-generated catalog zone (RFC 9432) over AXFR/TSIG.
+Catalog/ACL/TSIG live in the operator's base knot.conf, not teleddns. Config
+gains `backend`/`knot_zone_dir`/`knotc_path`/`knot_template`. Single-instance
+only (multi-process would need `SELECT … FOR UPDATE SKIP LOCKED`). → PRD §12,
+README "How teleddns drives Knot", DEPLOY §1–§5.
+Deferred: optional `knotc zone-set` content plane (not needed given
+`difference`).
 
-### M5 — Local Knot backend (PRD §12, Knot-only)
-- `knot/`: render, from current DB state —
-  - **zone files** in BIND format **byte-faithful to PRD §4.2** (must pass
-    `kzonecheck`);
-  - **`knot.conf`** fragments: zone blocks, templates, **ACLs + TSIG keys**
-    (from `TSIGKey`/`ZoneSlave`), NOTIFY targets, and a **catalog zone**
-    (RFC 9432) advertising the master zones so slaves auto-provision.
-  - apply + reload via `knotc` (or the existing TeleAPI on localhost if kept).
-- `SyncTask` journal appended **in the same transaction** as the mutation
-  (via the RR `bumpZoneOnChange` hook + `Zone.AfterUpdate`); coalesced to one
-  pending row per origin. In-process worker goroutine (single instance): ticks
-  every `BackendSyncDelay`, claims due pending tasks, groups by origin,
-  full-zone idempotent regen → `Backend.PushZone`, exponential backoff+jitter
-  (cap 1h), dead-letter after 20 attempts; resets `in_flight` on startup.
-- **Done in M5** (`knot/`): byte-faithful BIND zone rendering for SOA + all 14
-  RR types (`RenderZone`); the `Backend` interface with a `log` default and a
-  `knotc` impl (`<dir>/<zone>.zone` + `knotc zone-reload`); the `SyncTask`
-  model + enqueue (coalescing) + `Worker` executor, wired into `serve` and
-  stopped with the server. Config gains `backend`/`knot_zone_dir`/`knotc_path`.
-  Unit tests (render, sync+coalesce, retry/backoff) + live e2e (admin edit →
-  worker drains the task). Single-instance only — multi-process would need
-  `SELECT … FOR UPDATE SKIP LOCKED`.
-- **Knot integration design (from the docs — re-evaluated).** We do **not**
-  generate `knot.conf` or do full reloads. Division of labor:
-  - **Operator base knot.conf** (static): control socket; a `key` (TSIG); an
-    `acl` (`action: transfer/notify`); a **`template` "master"** carrying
-    `storage`, `zonefile-load: difference`, `catalog-role: member`,
-    `catalog-zone: <catz.>`, `acl`, `notify`; and the catalog zone
-    (`catalog-role: generate`). Slaves are configured once to interpret it.
-  - **teleddns content plane** (already built): regenerate the full zone file +
-    `knotc zone-reload`. Crucially, with **`zonefile-load: difference`** Knot
-    diffs old vs new and propagates an **incremental IXFR** to slaves — so
-    full-file regen on the master still yields incremental replication. Our
-    per-change SOA serial bump is what makes the IXFR valid.
-  - **teleddns config plane** (done): on a zone's first push this process,
-    `KnotBackend` declares it via `conf-begin; conf-set 'zone[X]'; conf-set
-    'zone[X].template' <KnotTemplate>; conf-commit` (cached per origin;
-    idempotent — on a no-op commit it confirms via `conf-read`). The template
-    does the rest (ACL/TSIG/catalog membership → Knot auto-generates the
-    catalog). `RemoveZone` does `conf-unset 'zone[X]'` + removes the file,
-    driven by a `zone-remove` `SyncTask` enqueued from `Zone.AfterDelete`.
-    Catalog content is entirely Knot's job. Fake-knotc + worker tests cover the
-    command sequence.
-- **Deferred:** optionally switch the content
-  plane to `knotc zone-set` transactions later (avoids file regen on the
-  master — not needed given `difference`). Also: `last_push` from the journal
-  into `/healthcheck`.
+### M5.5 — Instrumentation & operability ✅ (spec: PRD §11.5)
+New `metrics/` package (private Prometheus registry) + DB stat helper
+(`model.CountStats`). Health = "can we serve + replicate", **not** "did clients
+send updates": zero updates is green; update *volume* is the abuse signal.
+
+- **`ops_allowed_ips`** (`[]CIDR`): operability allow-list mounted on
+  `/healthcheck` + `/metrics` via `web.IPAllowlist`, *on top of* `allowed_ips`;
+  evaluated after `middleware.RealIP`, so it works behind Caddy. Empty = no
+  extra restriction.
+- **Healthcheck redesign** (replaces the M4 stub): always HTTP **200**,
+  `OK`/`WARN` is the body's first token. Body:
+  `OK uptime=… zones=… records=… pending=… failed=… knot=… last_push=…`. WARN on
+  worker stall (no tick within 2× `BackendSyncPeriod`), dead-lettered task
+  (`failed>0`), stuck backlog (oldest unfinished > `WarnOnNoPush`), or `knot`
+  backend unreachable (`Backend.Status` = `knotc status` probe; `log` ⇒
+  `knot=na`). `WARN_ON_NOUPDATE` / the `last_update` gate **removed**.
+- **`/metrics`** (PRD §11.5 table): all series implemented. DB gauges
+  (`teleddns_zones`/`_records`/`_records_by_type`/`_pending_pushes`) via a
+  per-scrape collector; counters (`_ddns_updates_total{result}`,
+  `_auth_failures_total{surface,reason}`, `_ratelimited_total{surface}`,
+  `_backend_push_total`/`_seconds`) incremented at the DDNS handler, auth paths
+  and worker; gauges (`_worker_last_tick_seconds`, `_knot_up`) stamped each
+  worker tick. No user/token labels (cardinality) — the audit log carries the
+  actor.
+- **Tests**: healthcheck OK + WARN (dead-letter, knot-down) paths; `/metrics`
+  exposition + counter increments + stats collector; `ops_allowed_ips` gate
+  behind a simulated `X-Real-IP` proxy. Live-smoke verified (`log` backend:
+  `knot=na`, all series at 0; gate returns 403 for an out-of-range client).
 
 ### M6 — Management + record API (PRD §11, clients only)
-- Huma JSON API, **Bearer only** (Basic rejected), token level scopes access.
-- Native management resources (PRD §11.2): zones, RR-in-zone, users, groups,
-  group-zone-roles, group-rr-roles, self tokens, user tokens, TSIG keys, slave
-  ACLs. Pagination (default 50, max 500), filtering, `{detail,code}` errors,
-  `Idempotency-Key` on POST.
+- Huma JSON API on the existing bootstrapped API (`api/`), **Bearer only**
+  (Basic rejected), token level scopes access. Native resources (PRD §11.2):
+  zones, RR-in-zone, users, groups, group-zone/rr-roles, self + user tokens.
+  Pagination (default 50, max 500), filtering, `{detail,code}` errors,
+  `Idempotency-Key` on POST. Audit/metrics tagging extends to `source=api`.
 - **`cfapi/` — Cloudflare-compatible record facade** (pending §1 confirmation):
-  per-record id CRUD over the same models for third-party tooling. This is the
-  only "external API" surface — there is **no teleddns↔teleddns** peer API
-  (slaves replicate via DNS).
-- `/healthcheck` (always public, OK/WARN per PRD §11.5) + `/metrics`
-  (Prometheus series in §11.5; auth configurable).
+  per-record id CRUD over the same models for third-party tooling. The only
+  external API surface — there is **no teleddns↔teleddns** peer API (secondaries
+  replicate via DNS).
 
-*(Former M7 "secondary replication" is removed — replaced by the catalog zone
-+ AXFR/TSIG handled in M5.)*
+*(Former M7 "secondary replication" removed — replaced by the catalog zone +
+AXFR/TSIG handled in M5.)*
 
 ---
 
@@ -339,5 +280,9 @@ Ordered to match the build sequence. Each milestone is independently runnable.
   DDNS conformance harness (PRD §6 acceptance criteria).
 - Knot `kzonecheck` golden-file tests for `zonefile/` output.
 - Worker tests for at-least-once + idempotent push + backoff.
+- Instrumentation (M5.5): healthcheck WARN-body paths (stalled worker,
+  dead-letter, stuck backlog, `knotc status` failure via fake-knotc); `/metrics`
+  exposition + counter increments; `ops_allowed_ips` gate behind a simulated
+  `X-Real-IP` proxy.
 - `httptest` + Huma's test API for management/record endpoints.
 ```

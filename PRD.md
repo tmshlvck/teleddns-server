@@ -307,8 +307,9 @@ channel:
    covering everything the Management API does plus user/group/token
    administration. Specified at the resource level only; visual design is
    out of scope for this PRD.
-4. **Backend push channel** (§12) — internal-only. Pushes generated zone
-   files and DNS-server config to one or more Knot/TeleAPI hosts.
+4. **Backend push channel** (§12) — internal-only. Regenerates zone files for
+   the co-located Knot master and reloads it via `knotc` (§12.3). Secondaries
+   replicate over native DNS (catalog + AXFR/TSIG), not through this channel.
 
 ### 7.1 Implementation freedom
 
@@ -609,12 +610,15 @@ entities carry `created_at`, `updated_at`, and an optional
 
 ### 10.3 DNS data
 
-- **Server** — backend Knot/TeleAPI host. `name`, `api_url`, `api_key`,
-  `master_template`, `slave_template`, `is_active`.
-- **Zone** — `origin` (unique; FQDN with trailing dot), `owner` → User
-  (creator; bootstrap L3 of the zone), the 10 SOA fields from Part A §4.1,
-  `master_server` → Server, `slave_servers` (N:M → Server), and
-  backend-sync tracking columns `content_dirty`, `last_content_sync`.
+- **Server** — *not implemented as a table.* The deployment is co-located and
+  master-only: the single local Knot is app `Config`
+  (`backend`/`knot_zone_dir`/`knotc_path`/`knot_template`), not a row.
+  Secondaries replicate via native DNS (catalog zone + AXFR/TSIG), so there is
+  no remote-backend `Server` entity and no `api_url`/`api_key`. See §12.3.
+- **Zone** — `origin` (unique; FQDN with trailing dot) and the 10 SOA fields
+  from Part A §4.1. *Implemented:* no `owner`, no `master_server`/`slave_servers`,
+  no `content_dirty`/`last_content_sync` — zone authority is the L2/L3 role model
+  (§9.3) and sync state lives in the `SyncTask` journal (§10.4).
 - **RR** — one record per resource record. Common fields: `zone`, `label`,
   `ttl`, `rrclass` (always `IN` in v1), `type`. Type-specific fields per
   Part A §4.2 (e.g. `value` for A/AAAA, `priority` for MX, `flag`/`tag`
@@ -627,17 +631,18 @@ entities carry `created_at`, `updated_at`, and an optional
 
 ### 10.4 Backend-push journal
 
-- **PendingPush** (or any equivalent durable queue representation)
-  - `id`, `zone` (nullable; null = server-config push), `server`, `kind`
-    ∈ {`zone`, `config`}, `state` ∈ {`pending`, `in_flight`, `done`,
-    `failed`}
+*Implemented as **`SyncTask`*** — one in-DB journal table (no separate broker,
+no `server` column since there is a single local Knot):
+  - `id`, `origin` (the zone), `kind` ∈ {`zone`, `zone-remove`}, `state` ∈
+    {`pending`, `in_flight`, `done`, `failed`}
   - `enqueued_at`, `last_attempt_at`, `attempts`, `last_error`,
     `available_at` (for backoff)
-  - Indexed by `(state, available_at)` for the worker scan.
+  - Coalesced to one outstanding row per `origin`; appended **inside the
+    mutation's transaction** (via the RR/zone hooks). Indexed by
+    `(state, available_at)` for the worker scan.
 
-Whether this lives in the primary datastore or in a separate broker is a
-deployment choice; the **contract** between the producer (web tier) and
-the consumer (worker, §12) is the row shape above.
+The **contract** between the producer (web/DDNS/API tier) and the consumer
+(worker, §12) is this row shape.
 
 ### 10.5 Audit
 
@@ -682,8 +687,8 @@ information set is normative.
 | Token (self)     | `/api/me/tokens/`       | self CRD           | self CRD                 | self CRD |
 | Token (any user) | `/api/users/{id}/tokens/`| —                 | —                        | CRUD |
 | Server           | `/api/servers/`         | —                  | —                        | CRUD |
-| Healthcheck      | `/healthcheck`          | public             | public                   | public |
-| Metrics          | `/metrics`              | restricted (token) | —                        | configured |
+| Healthcheck      | `/healthcheck`          | IP-gated by `ops_allowed_ips` (§11.5; not token-scoped) |||
+| Metrics          | `/metrics`              | IP-gated by `ops_allowed_ips` (§11.5; not token-scoped) |||
 
 Legend: C=create, R=read, U=update, D=delete.
 
@@ -705,48 +710,95 @@ produce an audit record per §10.5. Records from DDNS are tagged
 
 ### 11.5 Operability endpoints
 
-- `GET /healthcheck` → `text/plain`:
-  `OK uptime=<seconds> last_update=<ts> last_push=<ts>`. Returns `WARN`
-  instead of `OK` when `last_update` exceeds `WARN_ON_NOUPDATE`
-  (default 7200 s) or `last_push` exceeds `WARN_ON_NOPUSH` (default
-  3600 s), provided `uptime` is also past the same threshold (so a
-  freshly-started instance is not flagged).
-- `GET /metrics` → Prometheus exposition. Minimum required series:
-  - `teleddns_zones` (gauge)
-  - `teleddns_records{zone,type}` (gauge)
-  - `teleddns_ddns_updates_total{result}` (counter)
-  - `teleddns_backend_push_seconds{server,kind}` (histogram)
-  - `teleddns_pending_pushes{state}` (gauge)
+Both endpoints serve `text/plain` and are subject to an **operability IP
+allow-list**, `ops_allowed_ips` (a CIDR list, same shape as the global
+`allowed_ips` in §3): empty = reachable by anyone the global `allowed_ips`
+already admits; non-empty = *additionally* restricted to those CIDRs. The check
+runs **after** the reverse-proxy real-IP rewrite (`trust_proxy`), so a single
+monitoring host can be whitelisted even behind Caddy. This is in addition to —
+not a replacement for — the global `allowed_ips`.
 
-Authentication on `/metrics` is configurable (public on a private network,
-or Bearer-restricted on a public deployment); `/healthcheck` is always
-unauthenticated.
+#### `GET /healthcheck`
+
+Reports whether the server can actually **serve and replicate DNS** — *not*
+whether clients have recently sent traffic. A correctly-running server with
+zero DDNS / API / UI updates is healthy and green; update recency never lowers
+health. Body is a single line:
+
+```
+OK uptime=<s> zones=<n> records=<n> pending=<n> failed=<n> knot=<up|down|na> last_push=<unixts|0>
+```
+
+The endpoint **always returns HTTP 200**; `OK` vs `WARN` is conveyed in the body
+only (the first token), so a monitor scrapes the line rather than relying on the
+status code. Status is `WARN` instead of `OK` when — once `uptime` is past a
+short startup grace — **any** of the following hold:
+
+- the **sync worker has stalled**: no worker tick within `2 ×
+  BACKEND_SYNC_PERIOD` (the worker goroutine died or is wedged);
+- one or more `SyncTask`s are **dead-lettered** (`state=failed`);
+- the **oldest unfinished `SyncTask`** is older than `WARN_ON_NOPUSH`
+  (default 3600 s) — pushes are backed up / not draining;
+- `backend=knot` and a **`knotc status` probe fails** (Knot down/unreachable);
+  for `backend=log` this check is skipped and `knot=na`.
+
+The body's first token (`OK`/`WARN`) is the authoritative signal; the HTTP
+status is always 200. The legacy `last_update` recency gate and its
+`WARN_ON_NOUPDATE` setting are **removed** — absence of updates is not a fault.
+
+#### `GET /metrics`
+
+Prometheus exposition, access-controlled by `ops_allowed_ips` (IP allow-listing
+behind the proxy is the mechanism; no Bearer requirement). Required series:
+
+| Series | Type | Labels | Meaning |
+|---|---|---|---|
+| `teleddns_zones` | gauge | — | number of zones |
+| `teleddns_records` | gauge | — | total RR count across all zones |
+| `teleddns_records_by_type` | gauge | `type` | RR count per type (≤14 series) |
+| `teleddns_ddns_updates_total` | counter | `result` | every DDNS outcome: `good`,`nochg`,`nohost`,`notyours`,`badauth`,`notfqdn`,`abuse`,`error` |
+| `teleddns_auth_failures_total` | counter | `surface`,`reason` | failed auths across `ddns`/`api`/`web`/`cfapi` |
+| `teleddns_ratelimited_total` | counter | `surface` | requests rejected with 429 |
+| `teleddns_backend_push_seconds` | histogram | `kind` | push duration; `kind` ∈ `zone`,`zone-remove` |
+| `teleddns_backend_push_total` | counter | `kind`,`result` | push attempts by outcome |
+| `teleddns_pending_pushes` | gauge | `state` | `SyncTask`s by state (`pending`,`in_flight`,`failed`) |
+| `teleddns_worker_last_tick_seconds` | gauge | — | unix ts of the last worker tick (liveness) |
+| `teleddns_knot_up` | gauge | — | `1` if the last `knotc status` probe succeeded, else `0` (`backend=log` ⇒ `1`) |
+
+**Abuse instrumentation.** Regular updates are *not* expected, so update volume
+is itself the abuse signal: alert on `rate(teleddns_ddns_updates_total[5m])` (a
+stolen credential driving excessive *successful* updates) and on
+`rate(teleddns_auth_failures_total{reason="badauth"}[5m])` /
+`teleddns_ratelimited_total` (brute force, or a revoked-but-retried
+credential). The per-token and per-`(user,hostname)` rate limits (§8.8) cap the
+blast radius and surface as `result="abuse"`. Metrics are deliberately **not**
+labelled by user/token (cardinality); the structured **audit log** (§10.5)
+carries the actor + source IP to identify *who* once an alert fires.
 
 ## 12. Backend Sync
 
 ### 12.1 Trigger
 
-Any zone or server-config mutation — whether arriving via DDNS, the
-Management API, or the operator UI — MUST append a `PendingPush` row
-(§10.4) **inside the same transaction** as the mutation that caused it.
-The user-facing request returns as soon as that transaction commits. The
-upstream Knot/TeleAPI call MUST NOT block the request.
+Any zone mutation — whether arriving via DDNS, the Management API, or the
+operator UI — MUST append a `SyncTask` row (§10.4) **inside the same
+transaction** as the mutation that caused it. The user-facing request returns
+as soon as that transaction commits. The upstream `knotc` call MUST NOT block
+the request.
 
 ### 12.2 Worker requirements
 
-The implementation MUST provide a worker (separate process, OS thread,
-async loop — language-dependent) with these properties:
+The worker (implemented as an in-process goroutine; single-instance) has these
+properties:
 
-- **Decoupled lifecycle** — web tier and worker(s) can be deployed and
-  restarted independently.
-- **At-least-once delivery** — a crashed worker does not lose pending
-  pushes. Achieved by claiming `PendingPush` rows under a row-level lock
-  (`SELECT … FOR UPDATE SKIP LOCKED` or equivalent advisory-locking
-  scheme) and only marking `state=done` after the upstream call returns
-  success.
-- **Idempotent push payload** — each push regenerates the *full* zone
-  file (or *full* server config) from current DB state, never a delta.
-  Retries are therefore safe.
+- **Decoupled from the request path** — the user-facing request never waits on
+  the upstream push; the worker drains the journal asynchronously.
+- **At-least-once delivery** — a crashed worker does not lose pending pushes:
+  `in_flight` is reset on startup and a row is only marked `state=done` after
+  the `knotc` call returns success. (A multi-process deployment would instead
+  claim rows under `SELECT … FOR UPDATE SKIP LOCKED` — not needed for the
+  single co-located instance.)
+- **Idempotent push payload** — each push regenerates the *full* zone file from
+  current DB state, never a delta. Retries are therefore safe.
 - **Retry with exponential backoff and jitter** — capped at 1 hour
   between attempts. Per-row `attempts` and `last_error` columns record
   progress.
@@ -756,23 +808,33 @@ async loop — language-dependent) with these properties:
 - **Safety-net sweep** — a periodic pass (configurable, default every
   `BACKEND_SYNC_PERIOD = 300 s`) re-enqueues any row whose
   `available_at` has passed but which is not currently claimed.
-- **Batch coalescing** — before claiming, the worker MAY collapse
-  multiple consecutive `PendingPush` rows for the same `(zone, server)`
-  or `(config, server)` pair into a single upstream call. Default
-  debounce window `BACKEND_SYNC_DELAY = 10 s`.
+- **Batch coalescing** — `SyncTask` rows are coalesced to one outstanding row
+  per `origin`, so consecutive mutations to a zone collapse into a single
+  regen+reload. Default debounce window `BACKEND_SYNC_DELAY = 10 s`.
 - **Observability** — emit the metrics in §11.5 and a structured audit
-  record per push attempt (zone name, SOA serial pushed, server name,
-  outcome, duration).
+  record per push attempt (origin, SOA serial pushed, outcome, duration).
 
-### 12.3 Knot / TeleAPI contract (v1)
+### 12.3 Knot contract (v1) — implemented
 
-For v1, the worker uses the existing TeleAPI shape unchanged: it generates
-the full BIND-format zone file (per Part A §4.2) and the Knot template
-config (per legacy `SPECS.md`), then calls `/zonewrite`, `/zonecheck`,
-`/zonereload`, `/configwrite`, `/configreload` on the relevant Server.
+The worker drives the **local Knot via `knotc`**, not TeleAPI. On each push it:
 
-Whether to keep this whole-zone push model or move to a JSON-emitting
-sidecar on the Knot host is **deferred — see §13**.
+1. regenerates the **full BIND zone file** (per Part A §4.2) to
+   `knot_zone_dir/<origin>.zone`;
+2. on a zone's first push this process, **declares it** in Knot's config DB —
+   `knotc conf-begin; conf-set 'zone[<o>]'; conf-set 'zone[<o>].template'
+   <knot_template>; conf-commit` (idempotent, cached per origin);
+3. `knotc zone-reload <origin>`.
+
+With `zonefile-load: difference` in the operator's `knot_template`, Knot diffs
+the regenerated file and emits an **incremental IXFR** to secondaries, so
+full-file regen on the master still yields incremental replication (the
+per-change SOA bump makes the IXFR valid). Secondaries **auto-provision** from a
+Knot-generated **catalog zone (RFC 9432)** over AXFR/TSIG — teleddns never
+talks to them. The transfer ACL, TSIG keys and catalog membership live in the
+operator's base `knot.conf` template, not in teleddns. A `zone-remove` task runs
+`conf-unset 'zone[<o>]'` + deletes the file. See README "How teleddns drives
+Knot" and DEPLOY §1–§5. The earlier whole-zone-vs-sidecar question (§13) is
+resolved by this Knot-only design.
 
 ### 12.4 Local development
 
@@ -785,14 +847,13 @@ production default.
 These are explicitly out of scope for this PRD pass but tracked so they
 don't get lost:
 
-1. **Whole-zone push vs. JSON-emitting sidecar** — the current model
-   regenerates a full BIND zone per push. Alternative: emit JSON over an
-   API and run a small sidecar (Rust, Python, anything) on each Knot host
-   that converts JSON to a zone file locally. Tradeoff: less coupling and
-   stronger server-side validation vs. more moving parts to operate.
-2. **Slave-server config sync** — each Server currently has its own
-   master/slave templates; how do we cleanly represent secondaries
-   (NOTIFY/AXFR direction, hidden masters) in the new model?
+1. **Whole-zone push vs. JSON-emitting sidecar** — **resolved.** Co-located,
+   Knot-only: the worker regenerates the full BIND zone and drives the local
+   Knot directly via `knotc` (§12.3). No sidecar.
+2. **Slave-server config sync** — **resolved: native DNS.** Secondaries
+   auto-provision from a Knot-generated catalog zone (RFC 9432) and pull over
+   AXFR/IXFR + NOTIFY authenticated with TSIG; there is no app-to-app sync and
+   no `Server` table (§10.3, §12.3).
 3. **Identifying the TeleDDNS client** — would a stable, distinctive
    `User-Agent: teleddns/<version>` header pay off (richer responses,
    per-client diagnostics, behavioral opt-ins)? Today the binary uses

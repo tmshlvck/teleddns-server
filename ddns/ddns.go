@@ -16,6 +16,7 @@ import (
 	"github.com/tmshlvck/gone/auth"
 	"gorm.io/gorm"
 
+	"github.com/tmshlvck/teleddns-server/metrics"
 	"github.com/tmshlvck/teleddns-server/model"
 )
 
@@ -64,6 +65,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request) {
 
 	c, ok, fail := h.resolveCaller(r)
 	if !ok {
+		metrics.AuthFailures.WithLabelValues("ddns", authReason(fail)).Inc()
 		h.Log.Warn("ddns auth rejected", "reason", fail.reason, "user", fail.user,
 			"src", src, "hostname", hostname)
 		h.write(w, http.StatusUnauthorized, []line{{code: "badauth", status: 401}}, fail.www)
@@ -74,6 +76,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.lim.allow(c, hostname) {
+		metrics.RateLimited.WithLabelValues("ddns").Inc()
 		h.Log.Warn("ddns rate limited", "user", c.user.Username(), "hostname", hostname, "src", src)
 		h.write(w, http.StatusTooManyRequests, []line{{code: "abuse", status: 429}}, "")
 		return
@@ -216,6 +219,7 @@ func (h *Handler) write(w http.ResponseWriter, status int, lines []line, www str
 	w.WriteHeader(status)
 	var b strings.Builder
 	for _, l := range lines {
+		metrics.DDNSUpdates.WithLabelValues(metricResult(l.code)).Inc()
 		b.WriteString(l.code)
 		if l.ip != "" && (l.code == "good" || l.code == "nochg") {
 			b.WriteString(" ")
@@ -237,6 +241,37 @@ func worstStatus(lines []line) int {
 		}
 	}
 	return worst
+}
+
+// metricResult maps a dyndns2 body code to the bounded label set used by
+// teleddns_ddns_updates_total (PRD §11.5): "!yours"→"notyours", "911"→"error".
+func metricResult(code string) string {
+	switch code {
+	case "!yours":
+		return "notyours"
+	case "911":
+		return "error"
+	default:
+		return code // good, nochg, nohost, badauth, notfqdn, abuse
+	}
+}
+
+// authReason maps an auth rejection to a bounded reason label for
+// teleddns_auth_failures_total. Keeps cardinality fixed (the human detail stays
+// in the log).
+func authReason(f authFail) string {
+	switch f.reason {
+	case "invalid bearer token":
+		return "bad_token"
+	case "bad username or password":
+		return "bad_password"
+	case "2FA/SSO user must use a bearer token":
+		return "needs_bearer"
+	case "malformed Basic credentials":
+		return "malformed"
+	default:
+		return "no_auth"
+	}
 }
 
 func clientIP(r *http.Request) string {

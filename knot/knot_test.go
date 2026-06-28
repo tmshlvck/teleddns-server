@@ -113,6 +113,8 @@ func (b *captureBackend) RemoveZone(_ context.Context, origin string) error {
 	return nil
 }
 
+func (b *captureBackend) Status(context.Context) error { return nil }
+
 func countTasks(db *gorm.DB, state string) int64 {
 	var n int64
 	db.Model(&model.SyncTask{}).Where("state = ?", state).Count(&n)

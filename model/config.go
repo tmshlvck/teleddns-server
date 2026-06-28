@@ -24,7 +24,11 @@ type Config struct {
 
 	ListenAddr string   `yaml:"listen_addr"` // e.g. ":8080"
 	AllowedIPs []string `yaml:"allowed_ips"` // CIDRs allowed to connect; empty = all
-	TrustProxy bool     `yaml:"trust_proxy"` // honor X-Forwarded-For / X-Real-IP / X-Forwarded-Proto
+	// OpsAllowedIPs additionally restricts /healthcheck + /metrics to these
+	// CIDRs (PRD §11.5). Empty = no extra restriction beyond AllowedIPs.
+	// Evaluated after the proxy real-IP rewrite, so it works behind Caddy.
+	OpsAllowedIPs []string `yaml:"ops_allowed_ips"`
+	TrustProxy    bool     `yaml:"trust_proxy"` // honor X-Forwarded-For / X-Real-IP / X-Forwarded-Proto
 
 	// Backend. The local Knot serves master zones; slaves AXFR a Knot-generated
 	// catalog zone (RFC 9432) authenticated with TSIG. The catalog, the
@@ -42,10 +46,12 @@ type Config struct {
 	DDNSRatePerRecord uint `yaml:"ddns_rate_per_record"` // updates/hour per (user,hostname) (PRD §8.8)
 	DDNSRatePerToken  uint `yaml:"ddns_rate_per_token"`  // updates/hour per token (PRD §8.8)
 
-	BackendSyncDelay  time.Duration `yaml:"backend_sync_delay"`  // debounce window
-	BackendSyncPeriod time.Duration `yaml:"backend_sync_period"` // safety-net sweep
-	WarnOnNoUpdate    time.Duration `yaml:"warn_on_noupdate"`    // healthcheck WARN threshold
-	WarnOnNoPush      time.Duration `yaml:"warn_on_nopush"`      // healthcheck WARN threshold
+	BackendSyncDelay  time.Duration `yaml:"backend_sync_delay"`  // worker tick / debounce window
+	BackendSyncPeriod time.Duration `yaml:"backend_sync_period"` // worker-liveness reference for healthcheck
+	// WarnOnNoPush is the healthcheck WARN threshold for a stuck push backlog:
+	// WARN when the oldest unfinished sync task is older than this. Absence of
+	// updates is NOT a fault, so there is no no-update threshold (PRD §11.5).
+	WarnOnNoPush time.Duration `yaml:"warn_on_nopush"`
 
 	Debug bool `yaml:"debug"`
 
@@ -73,7 +79,6 @@ func Defaults() Config {
 		DDNSRatePerToken:  600,
 		BackendSyncDelay:  10 * time.Second,
 		BackendSyncPeriod: 300 * time.Second,
-		WarnOnNoUpdate:    7200 * time.Second,
 		WarnOnNoPush:      3600 * time.Second,
 	}
 }

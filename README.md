@@ -55,8 +55,38 @@ Then:
 
 - Web UI / admin: `http://127.0.0.1:8080/admin`
 - API docs: `/swagger` (Swagger UI) and `/docs` (built-in), spec at `/openapi.json`
-- Health: `/healthcheck`
+- Health: `/healthcheck` · Metrics: `/metrics` (see Monitoring)
 - DDNS: `GET /nic/update|/ddns/update|/update?hostname=…&myip=…` (HTTP Basic or `Authorization: Bearer <api-key>`)
+
+## Monitoring
+
+Two operability endpoints. Restrict them with `ops_allowed_ips` (a CIDR
+allow-list applied *on top of* `allowed_ips`); empty = no extra restriction. The
+check runs after the reverse-proxy real-IP rewrite, so list the monitoring
+host's real IP even behind Caddy (`trust_proxy: true`).
+
+- **`GET /healthcheck`** — always HTTP 200; the body's first token is `OK` or
+  `WARN`. Health means *can we serve and replicate DNS*, not *did clients send
+  updates* — a server with zero DDNS/API/UI traffic is healthy. It reports
+
+  ```
+  OK uptime=<s> zones=<n> records=<n> pending=<n> failed=<n> knot=<up|down|na> last_push=<unixts>
+  ```
+
+  and flips to `WARN` when the sync worker has stalled, a push is dead-lettered
+  (`failed>0`), the push backlog is stuck (oldest unfinished task older than
+  `warn_on_nopush`), or the `knot` backend is unreachable (`knot=down`).
+  `knot=na` means the no-op `log` backend.
+
+- **`GET /metrics`** — Prometheus exposition: `teleddns_zones`,
+  `teleddns_records`(+`_by_type`), `teleddns_ddns_updates_total{result}`,
+  `teleddns_auth_failures_total{surface,reason}`, `teleddns_ratelimited_total`,
+  `teleddns_backend_push_seconds`/`_total`, `teleddns_pending_pushes{state}`,
+  `teleddns_worker_last_tick_seconds`, `teleddns_knot_up`. Since regular updates
+  aren't expected, update *volume* is the abuse signal — alert on
+  `rate(teleddns_ddns_updates_total[5m])` and on the auth-failure / rate-limit
+  counters (a stolen or brute-forced credential). Metrics carry no per-user
+  labels; the structured log identifies the actor.
 
 ## How teleddns drives Knot
 

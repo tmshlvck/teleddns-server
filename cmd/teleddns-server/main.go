@@ -33,6 +33,7 @@ import (
 
 	"github.com/tmshlvck/teleddns-server/ddns"
 	"github.com/tmshlvck/teleddns-server/knot"
+	"github.com/tmshlvck/teleddns-server/metrics"
 	"github.com/tmshlvck/teleddns-server/model"
 	"github.com/tmshlvck/teleddns-server/web"
 )
@@ -132,27 +133,62 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 		return fmt.Errorf("dns migrate: %w", err)
 	}
 
+	// Backend + sync worker. Created here so /healthcheck can read worker
+	// liveness + the knot-status probe; started (go worker.Run) once the signal
+	// ctx exists below.
+	worker := &knot.Worker{
+		DB:         db,
+		Backend:    knot.NewBackend(cfg, log),
+		Log:        log,
+		Interval:   cfg.BackendSyncDelay,
+		DefaultTTL: cfg.DefaultTTL,
+	}
+	// DB-derived /metrics gauges (zones, records, pending pushes), per scrape.
+	metrics.RegisterStats(func() metrics.Snapshot {
+		s := model.CountStats(db)
+		rec := make(map[string]float64, len(s.RecordsByType))
+		for t, n := range s.RecordsByType {
+			rec[t] = float64(n)
+		}
+		pend := make(map[string]float64, len(s.PendingByState))
+		for st, n := range s.PendingByState {
+			pend[st] = float64(n)
+		}
+		return metrics.Snapshot{Zones: float64(s.Zones), RecordsByType: rec, PendingByState: pend}
+	})
+
 	root := chi.NewRouter()
 	// Log every request (success at INFO, 4xx/5xx at WARN). ECS-concise trims
 	// the field wall but also drops the client IP — re-add it under "src" so
-	// auth failures and DDNS calls are always traceable to a source. Only the
-	// healthcheck poll is skipped, to keep monitoring from flooding the log.
+	// auth failures and DDNS calls are always traceable to a source. The
+	// monitoring polls (/healthcheck, /metrics) are skipped to keep them from
+	// flooding the log.
 	reqSchema := httplog.SchemaECS.Concise(true)
 	reqSchema.RequestRemoteIP = "src"
 	root.Use(httplog.RequestLogger(log, &httplog.Options{
 		Level:         slog.LevelInfo,
 		Schema:        reqSchema,
 		RecoverPanics: true,
-		Skip:          func(r *http.Request, _ int) bool { return r.URL.Path == "/healthcheck" },
+		Skip: func(r *http.Request, _ int) bool {
+			return r.URL.Path == "/healthcheck" || r.URL.Path == "/metrics"
+		},
 	}))
 	if cfg.TrustProxy {
 		root.Use(middleware.RealIP)
 	}
 	root.Use(web.IPAllowlist(cfg.AllowedIPs, log))
 
+	// Operability endpoints — additionally gated by ops_allowed_ips (evaluated
+	// after RealIP, so it works behind Caddy). Empty list = no extra restriction
+	// beyond the global allowlist.
+	root.Group(func(r chi.Router) {
+		r.Use(web.IPAllowlist(cfg.OpsAllowedIPs, log))
+		r.Get("/healthcheck", healthcheck(cfg, db, worker, startedAt))
+		r.Handle("/metrics", metrics.Handler())
+	})
+
 	// Token/credential surfaces — no cookie session, so no CSRF. The DDNS
-	// endpoints carry their own Basic/Bearer auth; healthcheck is public.
-	root.Get("/healthcheck", healthcheck(cfg, startedAt))
+	// endpoints carry their own Basic/Bearer auth.
 	ddns.New(db, ag, ks, log, cfg).RegisterRoutes(root)
 
 	// Huma API: serves /openapi.json + /docs. The JSON management/record API
@@ -186,14 +222,8 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Backend-sync worker: drains the SyncTask journal → renders + pushes zones.
-	worker := &knot.Worker{
-		DB:         db,
-		Backend:    knot.NewBackend(cfg, log),
-		Log:        log,
-		Interval:   cfg.BackendSyncDelay,
-		DefaultTTL: cfg.DefaultTTL,
-	}
+	// Backend-sync worker: drains the SyncTask journal → renders + pushes zones,
+	// and stamps liveness + the knot-status probe each tick (for /healthcheck).
 	go worker.Run(ctx)
 
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: sm.LoadAndSave(root)}
@@ -202,15 +232,70 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 
 var startedAt = time.Now()
 
-// healthcheck implements PRD §11.5 (OK/WARN with uptime + thresholds). The
-// last_update / last_push timestamps are zero until the sync loop lands (M5).
-func healthcheck(cfg model.Config, started time.Time) http.HandlerFunc {
+// healthcheck implements PRD §11.5. It always returns HTTP 200; OK vs WARN is
+// the body's first token. Health means "can we serve + replicate", not "did
+// clients send updates" — zero updates is healthy. Past a startup grace
+// (2×BackendSyncPeriod), it WARNs when the sync worker has stalled, any sync
+// task is dead-lettered, the push backlog is stuck (oldest unfinished task
+// older than WarnOnNoPush), or the knot backend's status probe fails.
+func healthcheck(cfg model.Config, db *gorm.DB, worker *knot.Worker, started time.Time) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uptime := time.Since(started)
+		now := time.Now()
+		uptime := now.Sub(started)
+		grace := 2 * cfg.BackendSyncPeriod
+
+		s := model.CountStats(db)
+		var records int64
+		for _, n := range s.RecordsByType {
+			records += n
+		}
+		pending := s.PendingByState[model.SyncPending] + s.PendingByState[model.SyncInFlight]
+		failed := s.PendingByState[model.SyncFailed]
+
+		// Worker liveness: no tick within the grace window ⇒ stalled/dead.
+		lastTick := worker.LastTick()
+		workerStalled := uptime > grace && (lastTick.IsZero() || now.Sub(lastTick) > grace)
+
+		// Push backlog stuck: the oldest unfinished task is older than the bound.
+		backlogStuck := false
+		if cfg.WarnOnNoPush > 0 {
+			var oldest []time.Time
+			db.Model(&model.SyncTask{}).
+				Where("state IN ?", []string{model.SyncPending, model.SyncInFlight}).
+				Order("enqueued_at").Limit(1).Pluck("enqueued_at", &oldest)
+			if len(oldest) > 0 {
+				backlogStuck = now.Sub(oldest[0]) > cfg.WarnOnNoPush
+			}
+		}
+
+		// Knot reachability (only meaningful for the knot backend).
+		knot := "na"
+		knotDown := false
+		if cfg.Backend == "knot" {
+			if worker.KnotUp() {
+				knot = "up"
+			} else {
+				knot = "down"
+				knotDown = uptime > grace // give Knot time to come up after boot
+			}
+		}
+
+		// last_push: the most recent successfully-drained task.
+		var lastPush int64
+		var done []time.Time
+		db.Model(&model.SyncTask{}).Where("state = ?", model.SyncDone).
+			Order("last_attempt DESC").Limit(1).Pluck("last_attempt", &done)
+		if len(done) > 0 && !done[0].IsZero() {
+			lastPush = done[0].Unix()
+		}
+
 		status := "OK"
-		// WARN logic activates once the sync loop reports real timestamps.
+		if workerStalled || failed > 0 || backlogStuck || knotDown {
+			status = "WARN"
+		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintf(w, "%s uptime=%d last_update=0 last_push=0\n", status, int(uptime.Seconds()))
+		fmt.Fprintf(w, "%s uptime=%d zones=%d records=%d pending=%d failed=%d knot=%s last_push=%d\n",
+			status, int(uptime.Seconds()), s.Zones, records, pending, failed, knot, lastPush)
 	}
 }
 

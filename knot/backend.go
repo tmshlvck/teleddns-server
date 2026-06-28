@@ -15,10 +15,13 @@ import (
 
 // Backend applies zone changes to the DNS server. PushZone must be idempotent
 // (the worker always passes the full, current zone); RemoveZone undeclares a
-// zone. Both must tolerate being called repeatedly.
+// zone. Both must tolerate being called repeatedly. Status reports whether the
+// DNS server is reachable/healthy, for the healthcheck + the teleddns_knot_up
+// metric.
 type Backend interface {
 	PushZone(ctx context.Context, origin, content string) error
 	RemoveZone(ctx context.Context, origin string) error
+	Status(ctx context.Context) error
 }
 
 // NewBackend selects the backend from config. Default ("log") is a no-op that
@@ -55,6 +58,9 @@ func (b *LogBackend) RemoveZone(_ context.Context, origin string) error {
 	b.Log.Info("backend(log) would remove zone", "origin", origin)
 	return nil
 }
+
+// Status is always healthy for the log backend — there is no daemon to probe.
+func (b *LogBackend) Status(context.Context) error { return nil }
 
 // KnotBackend drives the local Knot daemon via knotc. Zone content is a
 // regenerated zone file + `knotc zone-reload` (Knot diffs it against the
@@ -102,6 +108,17 @@ func (b *KnotBackend) PushZone(ctx context.Context, origin, content string) erro
 		}
 	}
 	b.Log.Info("backend(knot) reloaded zone", "origin", origin, "path", path)
+	return nil
+}
+
+// Status probes the local Knot via `knotc status`. It runs on every worker
+// tick, so unlike the other commands it does not log on success (that would
+// flood the log); only the boolean result feeds the healthcheck + metric.
+func (b *KnotBackend) Status(ctx context.Context) error {
+	out, err := exec.CommandContext(ctx, b.Knotc, "status").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("knotc status: %w: %s", err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 
