@@ -250,16 +250,85 @@ send updates": zero updates is green; update *volume* is the abuse signal.
   behind a simulated `X-Real-IP` proxy. Live-smoke verified (`log` backend:
   `knot=na`, all series at 0; gate returns 403 for an out-of-range client).
 
-### M6 — Management + record API (PRD §11, clients only)
-- Huma JSON API on the existing bootstrapped API (`api/`), **Bearer only**
-  (Basic rejected), token level scopes access. Native resources (PRD §11.2):
-  zones, RR-in-zone, users, groups, group-zone/rr-roles, self + user tokens.
-  Pagination (default 50, max 500), filtering, `{detail,code}` errors,
-  `Idempotency-Key` on POST. Audit/metrics tagging extends to `source=api`.
-- **`cfapi/` — Cloudflare-compatible record facade** (pending §1 confirmation):
-  per-record id CRUD over the same models for third-party tooling. The only
-  external API surface — there is **no teleddns↔teleddns** peer API (secondaries
-  replicate via DNS).
+### M6 — Management + record API (PRD §11, clients only) — **active**
+Huma JSON API on the existing bootstrapped API (`api/`), **Bearer only** (Basic
+rejected), token level scopes access; authz reuses
+`RequiredLevel`/`EffectiveLevel`/`Authorized`. Mutations funnel through the
+model hooks (SOA bump, last-NS guard, `SyncTask` enqueue) exactly like the admin
+path; audit/metrics tagging extends to `source=api`.
+
+**First cut — zones + RR only (decided 2026-06-29):**
+- **Scope deferred:** users, groups, group-zone/rr-roles and other-user token
+  management are **out of the first cut**. Rationale: user lifecycle (2FA /
+  passkey / SSO) is hard to expose safely, and orgs provision access via their
+  IdP — group membership is expected to arrive through gone's OIDC `GroupsClaim`
+  / `GroupMapper` and drive L1/L2/L3 via the existing group→role tables, so the
+  API doesn't need to manage users/groups. The operator UI (L3) + IdP cover it.
+- **Zones:** `GET/POST /api/zones`, `GET/PUT/DELETE /api/zones/{id}`. Read/update
+  a zone needs L2 in-scope; create/delete is effectively L3 (no GroupZoneRole
+  exists yet on a new origin). Create auto-generates SOA + apex NS.
+- **RR-in-zone — unified record object (decided):** one `/api/zones/{id}/rr`
+  collection; each record is `{id, type, name, ttl, …rdata}` (flat struct, all
+  rdata fields `omitempty`, `type` discriminator + per-type server-side
+  validation) mapping to/from the 14 per-type tables. Chosen over per-type
+  subcollections for tooling ergonomics (external-dns / cert-manager / libdns).
+  `GET/POST /api/zones/{id}/rr`, `GET/PUT/DELETE /api/zones/{id}/rr/{rrid}`.
+  A/AAAA read+update → L1; other types and any create/delete → L2.
+- Pagination (default 50, max 500), `?field=` filtering, `{detail,code}` errors.
+- **Deferred within M6:** `Idempotency-Key` replay; richer filtering; the
+  `cfapi/` Cloudflare-compatible facade (pending §1 confirmation) — the only
+  external API surface, no teleddns↔teleddns peer API.
+
+### Future — SSO group provisioning (config-driven; noted, deferred — spec PRD §9.7)
+gone is **OIDC/OAuth2**, not literal SAML (enterprise IdPs expose OIDC). What
+exists **today in gone** (`auth/sso.go`): providers are configured **in Go**
+(`AddOIDCProvider(OIDCProvider{…})`), with three group knobs on the provider —
+`GroupsClaim` (IdP groups array; Okta/Keycloak/Entra emit `groups`),
+`DefaultGroups`, and a Go `GroupMapper(claims) []string` — plus `CreateGroups`
+to auto-create unknown groups. Google has **no** groups claim (only `hd`), so it
+needs `DefaultGroups` or a mapper. These names map to `GroupGORM` and feed our
+L1/L2/L3 via the group→role tables. **Not configurable from `config.yaml`, and
+not yet documented for operators.**
+
+What teleddns will add (deferred — design only, do **not** implement yet):
+- **Config-file SSO.** Surface provider config in `config.yaml` (issuer,
+  client id/secret, redirect, scopes, `groups_claim`, `create_groups`) so
+  operators don't edit Go; teleddns builds the `OIDCProvider` structs and calls
+  `AddOIDCProvider`.
+- **Declarative group rules.** Replace the hand-written `GroupMapper` with an
+  ordered list of email/identity **glob rules** in config, compiled into a
+  `GroupMapper`. This answers "set a group for SSO users without an explicit
+  group" (a blanket `*@domain` rule or `default_groups`) and "admin@domain →
+  admin group":
+  ```yaml
+  sso:
+    providers:
+      - name: okta
+        issuer: https://dev-123.okta.com
+        client_id: …
+        client_secret: …
+        groups_claim: groups          # Okta/Keycloak/Entra emit this
+        create_groups: false
+        default_groups: [example-user]
+        group_rules:                  # union with claim + default_groups
+          - match: "*@example.com";     groups: [example-user]
+          - match: "admin@example.com"; groups: [example-admin]
+      - name: google
+        issuer: https://accounts.google.com
+        client_id: …
+        client_secret: …
+        # Google sends no groups claim → rules + default_groups do the work
+        group_rules:
+          - match: "*@example.com";     groups: [example-user]
+  ```
+  Effective groups = union(claim, `default_groups`, matched rules), deduped.
+- **Per-login re-sync** (the gone gap): groups are resolved **only at account
+  auto-creation** today, never re-synced on later logins, so IdP/rule changes
+  don't propagate. Enhance gone's `resolveSSOLogin` to reconcile membership from
+  claim+rules on **every** login, and guard the `admin`→L3 group against
+  untrusted claims. See [[gone-local-dependency]].
+
+Not part of the M6 first cut.
 
 *(Former M7 "secondary replication" removed — replaced by the catalog zone +
 AXFR/TSIG handled in M5.)*

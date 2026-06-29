@@ -579,6 +579,47 @@ def authorized(token, user, action, target) -> bool:
 The `min(token.level, user_level)` rule is the key: a leaked L1 token never
 escalates to L2/L3 even if the owning user is more privileged.
 
+### 9.7 SSO group provisioning (planned — not in the M6 first cut)
+
+Group membership is the join between the IdP and the authorization model: a
+user's groups (§9.3) carry the `GroupZoneRole` / `GroupRRRole` grants, so
+whoever controls group membership controls DNS access. For SSO users that
+controller should be the **IdP + declarative rules**, not per-user hand-editing.
+
+SSO is **OIDC/OAuth2** (not literal SAML; enterprise IdPs — Okta, Keycloak,
+Entra/Azure AD, Auth0, Google Workspace — all expose OIDC). Required behavior,
+scoped per provider:
+
+- **IdP groups claim.** When the IdP emits a groups array (Okta / Keycloak /
+  Entra typically the `groups` claim), each name maps to a local group of the
+  same name. Providers that emit no groups claim (Google Workspace has only the
+  `hd` hosted-domain claim) rely on the rules below.
+- **Default groups.** A provider may grant every user it provisions a fixed set
+  of groups.
+- **Email / identity pattern rules.** A provider may carry an ordered list of
+  `pattern → groups` rules matched against the verified email (glob on
+  local-part/domain), e.g.
+
+  ```
+  "*@example.com"        → [example-user]
+  "admin@example.com"    → [example-admin]
+  "*@contractor.example" → [example-readonly]
+  ```
+
+  All matching rules contribute, so a blanket domain rule and a specific-address
+  rule compose.
+- **Union + create policy.** Effective groups = union(claim groups, default
+  groups, matched-rule groups), deduped. Unknown group names are auto-created
+  only when explicitly enabled; otherwise they are skipped (the operator
+  pre-creates the groups that carry roles).
+- **Re-sync on every login.** Membership MUST be reconciled from the IdP + rules
+  on **every** SSO login, not only at first provisioning, so deprovisioning and
+  role changes propagate. A group conferring L3 (the admin group, §9.1) MUST NOT
+  be grantable by an untrusted claim without explicit operator opt-in.
+
+This is provider configuration (the config surface + gone integration live in
+PLAN.md); none of it is exposed on the management API.
+
 ## 10. Data Model
 
 Logical entities required for v1. Names, exact column types, indexing
