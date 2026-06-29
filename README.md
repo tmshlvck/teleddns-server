@@ -55,8 +55,39 @@ Then:
 
 - Web UI / admin: `http://127.0.0.1:8080/admin`
 - API docs: `/swagger` (Swagger UI) and `/docs` (built-in), spec at `/openapi.json`
+- Management API: `/api/zones` + `/api/zones/{id}/rr` (see Management API)
 - Health: `/healthcheck` · Metrics: `/metrics` (see Monitoring)
 - DDNS: `GET /nic/update|/ddns/update|/update?hostname=…&myip=…` (HTTP Basic or `Authorization: Bearer <api-key>`)
+
+## Management API
+
+A JSON API for zones and resource records, for tooling (external-dns,
+cert-manager, libdns, …). **Bearer only** — `Authorization: Bearer <api-key>`
+(mint a key on `/preferences`); the key's level scopes access
+(`min(token, your-effective-level)`). Browse it at `/docs`.
+
+Records use one **unified, type-discriminated** shape — `type` selects the kind
+and only its rdata fields apply; the `id` is opaque and type-prefixed (`a-12`):
+
+```sh
+# create a zone (auto-generates SOA + apex NS)
+curl -X POST $URL/api/zones -H "Authorization: Bearer $KEY" \
+     -H 'Content-Type: application/json' -d '{"origin":"example.com."}'
+
+# add an A record
+curl -X POST $URL/api/zones/1/rr -H "Authorization: Bearer $KEY" \
+     -H 'Content-Type: application/json' \
+     -d '{"type":"A","name":"host","value":"1.2.3.4"}'
+
+# list / get / update / delete
+curl $URL/api/zones/1/rr -H "Authorization: Bearer $KEY"          # X-Total-Count header
+curl -X DELETE $URL/api/zones/1/rr/a-1 -H "Authorization: Bearer $KEY"
+```
+
+Zones: read/update need L2 on the zone, create/delete need L3 (admin). Records:
+A/AAAA read+update need L1, everything else L2. Mutations bump the SOA serial and
+push to Knot exactly like the admin UI. User/group/role management is **not** on
+the API — use the operator UI or your IdP (see [`PLAN.md`](PLAN.md)).
 
 ## Monitoring
 

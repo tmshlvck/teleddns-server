@@ -1,7 +1,8 @@
 # TeleDDNS Server — Go Rewrite Implementation Plan
 
-Status: **M0–M5.5 complete** (build clean, `go test ./...` green, verified live
-against Knot 3.4.6). **M6 (management/record API) is the next milestone.**
+Status: **M0–M6 (first cut: zones + RR) complete** (build clean, `go test ./...`
+green, verified live against Knot 3.4.6). Remaining M6: `source=api` audit
+tagging, `Idempotency-Key`, and the optional `cfapi/` facade.
 Source of truth for *behavior* is
 [`PRD.md`](PRD.md); operator usage is in [`README.md`](README.md) and
 [`DEPLOY.md`](DEPLOY.md). This document is the source of truth for *how we build
@@ -250,33 +251,39 @@ send updates": zero updates is green; update *volume* is the abuse signal.
   behind a simulated `X-Real-IP` proxy. Live-smoke verified (`log` backend:
   `knot=na`, all series at 0; gate returns 403 for an out-of-range client).
 
-### M6 — Management + record API (PRD §11, clients only) — **active**
+### M6 — Management + record API (PRD §11, clients only)
 Huma JSON API on the existing bootstrapped API (`api/`), **Bearer only** (Basic
 rejected), token level scopes access; authz reuses
 `RequiredLevel`/`EffectiveLevel`/`Authorized`. Mutations funnel through the
 model hooks (SOA bump, last-NS guard, `SyncTask` enqueue) exactly like the admin
-path; audit/metrics tagging extends to `source=api`.
+path.
 
-**First cut — zones + RR only (decided 2026-06-29):**
-- **Scope deferred:** users, groups, group-zone/rr-roles and other-user token
-  management are **out of the first cut**. Rationale: user lifecycle (2FA /
-  passkey / SSO) is hard to expose safely, and orgs provision access via their
-  IdP — group membership is expected to arrive through gone's OIDC `GroupsClaim`
-  / `GroupMapper` and drive L1/L2/L3 via the existing group→role tables, so the
-  API doesn't need to manage users/groups. The operator UI (L3) + IdP cover it.
+**First cut — zones + RR — ✅ done (2026-06-29):**
+- `api/` package: `Deps` + `Register(humaAPI, *Deps)`, wired into the Huma API
+  in `serve`. Bearer auth via `KeyStore.Validate` (`AuthIn` header struct —
+  exported so Huma reflection populates it); failures bump
+  `teleddns_auth_failures_total{surface=api}`.
 - **Zones:** `GET/POST /api/zones`, `GET/PUT/DELETE /api/zones/{id}`. Read/update
-  a zone needs L2 in-scope; create/delete is effectively L3 (no GroupZoneRole
-  exists yet on a new origin). Create auto-generates SOA + apex NS.
-- **RR-in-zone — unified record object (decided):** one `/api/zones/{id}/rr`
-  collection; each record is `{id, type, name, ttl, …rdata}` (flat struct, all
-  rdata fields `omitempty`, `type` discriminator + per-type server-side
-  validation) mapping to/from the 14 per-type tables. Chosen over per-type
-  subcollections for tooling ergonomics (external-dns / cert-manager / libdns).
-  `GET/POST /api/zones/{id}/rr`, `GET/PUT/DELETE /api/zones/{id}/rr/{rrid}`.
-  A/AAAA read+update → L1; other types and any create/delete → L2.
-- Pagination (default 50, max 500), `?field=` filtering, `{detail,code}` errors.
-- **Deferred within M6:** `Idempotency-Key` replay; richer filtering; the
-  `cfapi/` Cloudflare-compatible facade (pending §1 confirmation) — the only
+  needs L2 in-scope; create/delete gated on L3 (`requireAdmin`). Create
+  auto-generates SOA + apex NS; SOA edit bumps the serial.
+- **RR-in-zone — unified record object:** one `/api/zones/{id}/rr` collection;
+  each record is `{id, type, name, ttl, …rdata}` (flat struct, rdata `omitempty`,
+  `type` discriminator + per-type validation) over the 14 per-type tables. The
+  `id` is type-prefixed + opaque (`a-12`, `mx-7`) so it disambiguates across
+  tables. `GET/POST /api/zones/{id}/rr`, `GET/PUT/DELETE /api/zones/{id}/rr/{rrid}`.
+  A/AAAA read+update → L1; other types + any create/delete → L2. A generic
+  `rrKind` registry (built with `mkKind[T]`) shares the CRUD plumbing.
+- Pagination (default 50, max 500; `X-Total-Count` header), `?type=`/`?name=`
+  filtering, Huma `{title,status,detail}` errors; validation→422, last-NS→409.
+- **Scope deferred (by decision):** users, groups, group-zone/rr-roles and
+  other-user token management — provisioned via the operator UI (L3) + IdP groups
+  (PRD §9.7), so the API needn't manage them.
+- Tested: `humatest` integration (lifecycle, authz L1/L2/L3, validation,
+  bearer-required) + live e2e (create/list/get/update/delete zone+RR, 401/404/
+  409/422 paths, OpenAPI paths, worker drains the enqueued `SyncTask`).
+- **Deferred within M6:** `source=api` audit tagging; `Idempotency-Key` replay;
+  DB-level pagination for very large zones (list currently gathers in memory);
+  the `cfapi/` Cloudflare-compatible facade (pending §1 confirmation) — the only
   external API surface, no teleddns↔teleddns peer API.
 
 ### Future — SSO group provisioning (config-driven; noted, deferred — spec PRD §9.7)

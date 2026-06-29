@@ -31,6 +31,7 @@ import (
 	"github.com/tmshlvck/gone/auth"
 	"gorm.io/gorm"
 
+	"github.com/tmshlvck/teleddns-server/api"
 	"github.com/tmshlvck/teleddns-server/ddns"
 	"github.com/tmshlvck/teleddns-server/knot"
 	"github.com/tmshlvck/teleddns-server/metrics"
@@ -191,15 +192,16 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	// endpoints carry their own Basic/Bearer auth.
 	ddns.New(db, ag, ks, log, cfg).RegisterRoutes(root)
 
-	// Huma API: serves /openapi.json + /docs. The JSON management/record API
-	// (M6) registers its operations here; for now we document the
-	// chi-served DDNS endpoints in the generated spec.
+	// Huma API: serves /openapi.json + /docs, the chi-served DDNS endpoints'
+	// documentation, and the M6 management/record operations (zones + RR).
 	hcfg := huma.DefaultConfig("teleddns-server", "0.1.0")
 	hcfg.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"basic":  {Type: "http", Scheme: "basic"},
 		"bearer": {Type: "http", Scheme: "bearer"},
 	}
-	ddns.DocumentOpenAPI(humachi.New(root, hcfg))
+	humaAPI := humachi.New(root, hcfg)
+	ddns.DocumentOpenAPI(humaAPI)
+	api.Register(humaAPI, &api.Deps{DB: db, Keys: ks, Log: log, DefaultTTL: cfg.DefaultTTL})
 	root.Get("/swagger", web.SwaggerHandler("/openapi.json")) // public, like the spec
 
 	// Browser surfaces — cookie sessions + CSRF on mutating requests.
