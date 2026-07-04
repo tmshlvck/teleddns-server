@@ -32,6 +32,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/tmshlvck/teleddns-server/api"
+	"github.com/tmshlvck/teleddns-server/cfapi"
 	"github.com/tmshlvck/teleddns-server/ddns"
 	"github.com/tmshlvck/teleddns-server/knot"
 	"github.com/tmshlvck/teleddns-server/metrics"
@@ -191,6 +192,10 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	// Token/credential surfaces — no cookie session, so no CSRF. The DDNS
 	// endpoints carry their own Basic/Bearer auth.
 	ddns.New(db, ag, ks, log, cfg).RegisterRoutes(root)
+
+	// Cloudflare-compatible record facade (/client/v4), for cert-manager +
+	// external-dns. Bearer/X-Auth-Key auth via the shared KeyStore.
+	(&cfapi.Deps{DB: db, Keys: ks, Log: log, DefaultTTL: cfg.DefaultTTL}).RegisterRoutes(root)
 
 	// Huma API: serves /openapi.json + /docs, the chi-served DDNS endpoints'
 	// documentation, and the M6 management/record operations (zones + RR).

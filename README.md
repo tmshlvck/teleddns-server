@@ -89,6 +89,21 @@ A/AAAA read+update need L1, everything else L2. Mutations bump the SOA serial an
 push to Knot exactly like the admin UI. User/group/role management is **not** on
 the API — use the operator UI or your IdP (see [`PLAN.md`](PLAN.md)).
 
+### Cloudflare-compatible API (cert-manager, external-dns)
+
+For tooling that only speaks Cloudflare's API, teleddns exposes a compatible
+facade under `/client/v4` (envelope, record shape, `/user/tokens/verify`). Point
+the tool at teleddns as if it were Cloudflare, using a teleddns API key as the
+**API token**:
+
+- **cert-manager** (ACME DNS01): set the solver's `apiTokenSecretRef` to a
+  teleddns key and override the API base URL to `https://<host>/client/v4`.
+- **external-dns**: `--provider=cloudflare` with `CF_API_TOKEN=<teleddns-key>`
+  and the base URL pointed at `https://<host>/client/v4`.
+
+Supported record types: A, AAAA, CNAME, TXT, NS, MX (what those tools use). The
+key's level scopes which zones it can touch, same as the native API.
+
 ## Monitoring
 
 Two operability endpoints. Restrict them with `ops_allowed_ips` (a CIDR

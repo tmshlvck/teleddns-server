@@ -1,8 +1,9 @@
 # TeleDDNS Server — Go Rewrite Implementation Plan
 
-Status: **M0–M6 (first cut: zones + RR) complete** (build clean, `go test ./...`
-green, verified live against Knot 3.4.6). Remaining M6: `source=api` audit
-tagging, `Idempotency-Key`, and the optional `cfapi/` facade.
+Status: **M0–M6 complete** — native zones+RR API and the Cloudflare-compat
+facade (`cfapi/`, for cert-manager + external-dns) both done (build clean,
+`go test ./...` green, verified live against Knot 3.4.6). Remaining M6 polish:
+`source=api`/`cfapi` audit tagging, `Idempotency-Key`, DB-level pagination.
 Source of truth for *behavior* is
 [`PRD.md`](PRD.md); operator usage is in [`README.md`](README.md) and
 [`DEPLOY.md`](DEPLOY.md). This document is the source of truth for *how we build
@@ -281,10 +282,31 @@ path.
 - Tested: `humatest` integration (lifecycle, authz L1/L2/L3, validation,
   bearer-required) + live e2e (create/list/get/update/delete zone+RR, 401/404/
   409/422 paths, OpenAPI paths, worker drains the enqueued `SyncTask`).
-- **Deferred within M6:** `source=api` audit tagging; `Idempotency-Key` replay;
-  DB-level pagination for very large zones (list currently gathers in memory);
-  the `cfapi/` Cloudflare-compatible facade (pending §1 confirmation) — the only
-  external API surface, no teleddns↔teleddns peer API.
+
+**Cloudflare-compat facade (`cfapi/`) — ✅ done (2026-06-29), scoped to
+cert-manager + external-dns:**
+- Plain-chi `/client/v4` mirror of Cloudflare's DNS API: the `{success, errors,
+  messages, result, result_info}` envelope, the CF record shape (`name` as FQDN,
+  `content`, `ttl` with 1=automatic, `proxied:false`, `priority` for MX), and
+  `GET /user/tokens/verify` (cert-manager gates on it). Endpoints:
+  `GET /zones[?name=]`, and `GET/POST /zones/{id}/dns_records` +
+  `GET/PUT/PATCH/DELETE /zones/{id}/dns_records/{rid}`.
+- **Reuses the api registry** via an exported surface (`api.RR{List,Get,Create,
+  Update,Delete}` + `RRDecodeID`/`RRTarget`); cfapi only does CF↔model
+  translation (FQDN↔label, content↔value, id = the opaque `a-12`). Supported
+  types: A/AAAA/CNAME/TXT/NS/MX (what the two tools use). Auth via Bearer or
+  `X-Auth-Key` → shared `KeyStore`; authz reuses `EffectiveLevel`; failures bump
+  `teleddns_auth_failures_total{surface=cfapi}`.
+- Needed a **model fix**: `ValLabel` now permits `_` (underscored names —
+  `_acme-challenge`, `_dmarc`, SRV `_sip._tcp`); it previously rejected them,
+  which would have blocked cert-manager on every surface.
+- Tested: cert-manager flow (verify → zones?name → TXT create/list/delete) +
+  external-dns flow (zones list → A create → PATCH) via httptest; live e2e
+  through the full server confirms the CF envelope + record shapes.
+- **Deferred within M6:** `source=api`/`source=cfapi` audit tagging;
+  `Idempotency-Key` replay; DB-level pagination for very large zones (list
+  gathers in memory). No teleddns↔teleddns peer API — `cfapi` is the only
+  external-facing API surface.
 
 ### Future — SSO group provisioning (config-driven; noted, deferred — spec PRD §9.7)
 gone is **OIDC/OAuth2**, not literal SAML (enterprise IdPs expose OIDC). What

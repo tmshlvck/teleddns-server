@@ -12,9 +12,11 @@ import (
 // admin wiring.
 
 // ValLabel checks an RR label: either the literal "@" (apex), or a name that
-// is not all-digits, does not start/end with "-", uses only [A-Za-z0-9.-], and
-// is ≤ 63 chars. Empty passes (pair with crud.NotEmpty when required). Go's
+// is not all-digits, does not start/end with "-", uses only [A-Za-z0-9._-], and
+// is ≤ 63 chars. Underscore is permitted for the "underscored" names in common
+// use (RFC 8552: `_acme-challenge`, `_dmarc`, `_dkim`, SRV `_sip._tcp`, …). Go's
 // RE2 has no look-around, so this is hand-rolled rather than a single regexp.
+// Empty passes (pair with crud.NotEmpty when required).
 func ValLabel(value any) error {
 	s, ok := value.(string)
 	if !ok || s == "" || s == "@" {
@@ -32,10 +34,10 @@ func ValLabel(value any) error {
 		case r >= '0' && r <= '9':
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
 			allDigits = false
-		case r == '.' || r == '-':
+		case r == '.' || r == '-' || r == '_':
 			allDigits = false
 		default:
-			return fmt.Errorf("may contain only letters, digits, '.' and '-'")
+			return fmt.Errorf("may contain only letters, digits, '.', '-' and '_'")
 		}
 	}
 	if allDigits {
