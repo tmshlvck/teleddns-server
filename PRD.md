@@ -727,11 +727,21 @@ information set is normative.
 | GroupRRRole     | `/api/group-rr-roles/`  | —                  | CRUD in scope            | CRUD |
 | Token (self)     | `/api/me/tokens/`       | self CRD           | self CRD                 | self CRD |
 | Token (any user) | `/api/users/{id}/tokens/`| —                 | —                        | CRUD |
-| Server           | `/api/servers/`         | —                  | —                        | CRUD |
 | Healthcheck      | `/healthcheck`          | IP-gated by `ops_allowed_ips` (§11.5; not token-scoped) |||
 | Metrics          | `/metrics`              | IP-gated by `ops_allowed_ips` (§11.5; not token-scoped) |||
 
-Legend: C=create, R=read, U=update, D=delete.
+Legend: C=create, R=read, U=update, D=delete. (The legacy `Server` resource is
+removed — deployment is co-located and master-only; the local Knot is app
+config, not a table. See §10.3.)
+
+**v1 implementation status** (see PLAN.md for detail): **Zone** and **RR-in-zone**
+are implemented (Bearer-only, DB-paginated, `Idempotency-Key` on POST), as is a
+**Cloudflare-compatible record facade** for third-party tooling (§11.6). The
+User / Group / GroupZoneRole / GroupRRRole / Token resources are **deferred** —
+users and groups are provisioned through the operator UI and the IdP (SSO group
+mapping, §9.7), so the API does not manage them in v1. Errors currently use the
+framework's `{title,status,detail}` shape rather than the `{detail,code}` +
+`fields` form below.
 
 ### 11.3 Validation rules
 
@@ -815,6 +825,27 @@ credential). The per-token and per-`(user,hostname)` rate limits (§8.8) cap the
 blast radius and surface as `result="abuse"`. Metrics are deliberately **not**
 labelled by user/token (cardinality); the structured **audit log** (§10.5)
 carries the actor + source IP to identify *who* once an alert fires.
+
+### 11.6 Cloudflare-compatible record facade
+
+For third-party tooling that only speaks the Cloudflare DNS API (notably
+cert-manager's ACME DNS01 solver and external-dns' `cloudflare` provider),
+the server exposes a compatibility facade under `/client/v4` mirroring
+Cloudflare's shape closely enough for those clients:
+
+- the `{success, errors, messages, result, result_info}` envelope;
+- the CF record object (`name` as an FQDN, `content`, `ttl` with `1`=automatic,
+  `proxied:false`, `priority` for MX);
+- `GET /zones[?name=]`, `GET/POST /zones/{id}/dns_records`,
+  `GET/PUT/PATCH/DELETE /zones/{id}/dns_records/{rid}`, and
+  `GET /user/tokens/verify`;
+- auth by `Authorization: Bearer <api-key>` or `X-Auth-Key` (a teleddns API key
+  as the "API token"); the key's level scopes access exactly as the native API.
+
+It maps Cloudflare's `name`/`content` onto the model's `(zone, label, value)` and
+reuses the native per-type validation + write path (SOA bump, sync enqueue).
+Supported types: A, AAAA, CNAME, TXT, NS, MX (the set those tools use). This is
+the only *external* API surface; there is no teleddns↔teleddns peer API.
 
 ## 12. Backend Sync
 

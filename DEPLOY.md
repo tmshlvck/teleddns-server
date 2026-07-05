@@ -319,6 +319,11 @@ dig @127.0.0.1 host.example.com A
 - **Adding/removing zones:** creating a zone in teleddns declares it as a
   catalog member (it appears on secondaries within a NOTIFY/refresh); deleting
   it undeclares it and removes it from the catalog.
+- **Bootstrapping / API:** bulk-load existing zones with
+  `teleddns-server admin import <zonefile>` (offline, no server needed), or drive
+  the JSON API / Cloudflare-compatible facade (`/api`, `/client/v4`) — see
+  [`README.md`](README.md). All paths funnel through the same validation +
+  Knot-sync, so the catalog/IXFR behaviour above applies identically.
 - **TLS / client IP:** terminate HTTPS at Caddy (§3) and set `trust_proxy:
   true` so source IPs come from `X-Real-IP` — used for DDNS audit, rate limits,
   `allowed_ips`, and the request log.

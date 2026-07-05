@@ -397,4 +397,22 @@ AXFR/TSIG handled in M5.)*
   exposition + counter increments; `ops_allowed_ips` gate behind a simulated
   `X-Real-IP` proxy.
 - `httptest` + Huma's test API for management/record endpoints.
-```
+
+## 7. Remaining / deferred work
+
+Core milestones **M0–M6 are complete**; nothing below blocks a v1 deployment.
+These are optional polish and future features (each also noted at its milestone):
+
+- **Operator UI — per-zone RR editor.** The 14 per-type admin tables work but are
+  clunky; a per-zone record view is nicer UX (M2).
+- **SSO group provisioning** (config-driven OIDC providers + email-glob
+  `group_rules` + per-login group re-sync in gone) — design only, spec in
+  PRD §9.7 / the "Future" section above.
+- **Legacy SQLite import** — `admin import-legacy` from the old Python DB
+  (distinct from the shipped `admin import` for BIND zone files); PRD §13.5.
+- **DDNS transitional JSON `{detail}` mode** behind a flag (M4).
+- **Management-API niceties** — Huma emits `{title,status,detail}`; PRD §11.1's
+  `{detail,code}` + per-field `fields` map and the `?bump_serial=false` (L3)
+  override (§11.3) are not yet implemented.
+- **Backend** — optional `knotc zone-set` content plane (not needed given
+  `zonefile-load: difference`).

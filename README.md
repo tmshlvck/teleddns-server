@@ -2,9 +2,10 @@
 
 DNS management + Dynamic DNS server (Go rewrite). It runs **co-located with a
 Knot DNS master**: it owns the zone data (a small DB), serves a dyndns2 DDNS
-endpoint and an operator web UI, and pushes changes into the local Knot via
-`knotc`. Secondary servers replicate natively over **AXFR/TSIG** and
-auto-provision from a **catalog zone (RFC 9432)** — teleddns never talks to
+endpoint, a JSON management API (plus a Cloudflare-compatible facade for
+cert-manager / external-dns), and an operator web UI, and pushes changes into the
+local Knot via `knotc`. Secondary servers replicate natively over **AXFR/TSIG**
+and auto-provision from a **catalog zone (RFC 9432)** — teleddns never talks to
 other teleddns instances.
 
 Design/roadmap live in [`PLAN.md`](PLAN.md); the wire contract for DDNS clients
@@ -98,6 +99,11 @@ Zones: read/update need L2 on the zone, create/delete need L3 (admin). Records:
 A/AAAA read+update need L1, everything else L2. Mutations bump the SOA serial and
 push to Knot exactly like the admin UI. User/group/role management is **not** on
 the API — use the operator UI or your IdP (see [`PLAN.md`](PLAN.md)).
+
+Lists are paginated (`?page`/`?per_page`, default 50 / max 500) with an
+`X-Total-Count` header and `?type`/`?name` filters. A `POST` may carry an
+`Idempotency-Key` header — a retry within 24h replays the original response
+(`Idempotency-Replayed: true`) instead of creating a duplicate.
 
 ### Cloudflare-compatible API (cert-manager, external-dns)
 
@@ -255,8 +261,11 @@ zone:
 
 ## Status
 
-Working and tested against Knot DNS 3.4.6: zone + record CRUD via the admin,
-the DDNS endpoint, and the sync worker driving `knotc` (declare zone, write
-file, reload) so `kdig` serves the records. Catalog generation on the master
-is verified; full secondary auto-provisioning is the documented setup above.
-See [`PLAN.md`](PLAN.md) for the milestone status and what's still deferred.
+Working and tested against Knot DNS 3.4.6. Complete and verified: zone + record
+CRUD via the admin UI, the **JSON management API** and the **Cloudflare-compatible
+facade**, the DDNS endpoint, `admin import` for BIND zone files, Prometheus
+`/metrics` + the health/replication `/healthcheck`, and the sync worker driving
+`knotc` (declare zone, write file, reload) so `kdig` serves the records. Catalog
+generation on the master is verified; full secondary auto-provisioning is the
+documented setup above. Milestones M0–M6 are done; see [`PLAN.md`](PLAN.md) §7
+for the optional/deferred items that remain.
