@@ -171,7 +171,6 @@ expiry; Issue/Validate/List/Revoke) managed on `/preferences`; CLI `serve` +
 `miekg/dns` → `api.RRCreate`, so validation/SOA-bump/SyncTask all fire;
 `--replace` to wipe first, `--origin`/stdin supported; `zoneimport/` package),
 global `--debug`. → README "Run".
-Deferred: `admin import-legacy` one-shot from the old Python SQLite (PRD §13.5).
 
 ### M2 — DNS data model + admin ✅
 `Zone` (origin + 10 SOA fields) + 14 RR tables with per-type validators (PRD
@@ -385,7 +384,7 @@ AXFR/TSIG handled in M5.)*
    app-to-app sync.
 3. TeleDDNS client `User-Agent` opt-in — not required for v1.
 4. L1 client provisioning UX (pre-create row + mint L1 token) — operator-UI task.
-5. Legacy SQLite import — `admin import-legacy` once schema is final.
+5. Legacy SQLite import — **dropped** (the BIND zone-file `admin import` covers it).
 
 ## 6. Testing strategy
 - Port legacy `test_ddns_auth.py` + `test_ddns_http_integration.py` as the
@@ -403,16 +402,16 @@ AXFR/TSIG handled in M5.)*
 Core milestones **M0–M6 are complete**; nothing below blocks a v1 deployment.
 These are optional polish and future features (each also noted at its milestone):
 
+- **SSO group provisioning** (config-driven OIDC providers + email-regex
+  `group_rules` + per-login group reconcile in gone) — **next up, targeted for
+  release**; design in PRD §9.7 / the "Future" section above.
 - **Operator UI — per-zone RR editor.** The 14 per-type admin tables work but are
   clunky; a per-zone record view is nicer UX (M2).
-- **SSO group provisioning** (config-driven OIDC providers + email-glob
-  `group_rules` + per-login group re-sync in gone) — design only, spec in
-  PRD §9.7 / the "Future" section above.
-- **Legacy SQLite import** — `admin import-legacy` from the old Python DB
-  (distinct from the shipped `admin import` for BIND zone files); PRD §13.5.
 - **DDNS transitional JSON `{detail}` mode** behind a flag (M4).
 - **Management-API niceties** — Huma emits `{title,status,detail}`; PRD §11.1's
   `{detail,code}` + per-field `fields` map and the `?bump_serial=false` (L3)
   override (§11.3) are not yet implemented.
-- **Backend** — optional `knotc zone-set` content plane (not needed given
-  `zonefile-load: difference`).
+
+Dropped (won't do): legacy Python-SQLite import (`admin import-legacy` — the BIND
+zone-file `admin import` covers migration needs); optional `knotc zone-set`
+content plane (`zonefile-load: difference` already gives incremental IXFR).
