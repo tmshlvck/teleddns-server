@@ -180,6 +180,15 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	}
 	root.Use(web.IPAllowlist(cfg.AllowedIPs, log))
 
+	// Idempotency-Key replay for /api POSTs (PRD §11.1). Guarded internally, so
+	// it no-ops for every other route. Registered before routes (chi requires
+	// middleware to precede route registration).
+	idem, err := api.NewIdempotencyStore(db)
+	if err != nil {
+		return fmt.Errorf("idempotency store: %w", err)
+	}
+	root.Use(idem.Middleware)
+
 	// Operability endpoints — additionally gated by ops_allowed_ips (evaluated
 	// after RealIP, so it works behind Caddy). Empty list = no extra restriction
 	// beyond the global allowlist.

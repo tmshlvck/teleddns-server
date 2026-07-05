@@ -3,7 +3,7 @@
 Status: **M0–M6 complete** — native zones+RR API and the Cloudflare-compat
 facade (`cfapi/`, for cert-manager + external-dns) both done (build clean,
 `go test ./...` green, verified live against Knot 3.4.6). Remaining M6 polish:
-`Idempotency-Key`, DB-level pagination.
+DB-level pagination for very large zones.
 Source of truth for *behavior* is
 [`PRD.md`](PRD.md); operator usage is in [`README.md`](README.md) and
 [`DEPLOY.md`](DEPLOY.md). This document is the source of truth for *how we build
@@ -281,10 +281,13 @@ path.
   (PRD §9.7), so the API needn't manage them.
 - **Audit:** every mutation emits the shared `Audit` line (`source=api`,
   action/type/id/actor) — the same shape as the admin observer's `source=ui`.
+- **Idempotency-Key** (PRD §11.1): a chi middleware on `/api` POSTs stores each
+  2xx response in an `api_idempotency` table keyed by (key, credential-hash) and
+  replays it (header `Idempotency-Replayed: true`) on a retry within 24h; a key
+  reused with a different body → 422. Sequential-retry-safe (single instance).
 - Tested: `humatest` integration (lifecycle, authz L1/L2/L3, validation,
-  bearer-required, audit tagging) + live e2e (create/list/get/update/delete
-  zone+RR, 401/404/409/422 paths, OpenAPI paths, worker drains the enqueued
-  `SyncTask`).
+  bearer-required, audit tagging) + full-stack httptest for idempotency (replay
+  creates no duplicate, key-reuse→422, no-key→no dedup) + live e2e.
 
 **Cloudflare-compat facade (`cfapi/`) — ✅ done (2026-06-29), scoped to
 cert-manager + external-dns:**
@@ -307,9 +310,9 @@ cert-manager + external-dns:**
 - Tested: cert-manager flow (verify → zones?name → TXT create/list/delete) +
   external-dns flow (zones list → A create → PATCH) via httptest, incl. audit
   tagging; live e2e through the full server confirms the CF envelope + shapes.
-- **Deferred within M6:** `Idempotency-Key` replay; DB-level pagination for very
-  large zones (list gathers in memory). No teleddns↔teleddns peer API — `cfapi`
-  is the only external-facing API surface.
+- **Deferred within M6:** DB-level pagination for very large zones (list gathers
+  in memory). No teleddns↔teleddns peer API — `cfapi` is the only external-facing
+  API surface.
 
 ### Future — SSO group provisioning (config-driven; noted, deferred — spec PRD §9.7)
 gone is **OIDC/OAuth2**, not literal SAML (enterprise IdPs expose OIDC). What
