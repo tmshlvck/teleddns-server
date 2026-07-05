@@ -1,6 +1,7 @@
 package cfapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -20,9 +21,10 @@ import (
 )
 
 type harness struct {
-	srv *httptest.Server
-	db  *gorm.DB
-	key string
+	srv  *httptest.Server
+	db   *gorm.DB
+	key  string
+	logs *bytes.Buffer
 }
 
 func setup(t *testing.T) *harness {
@@ -46,11 +48,12 @@ func setup(t *testing.T) *harness {
 	raw, err := ks.Issue(u.ID, "cf", 3, nil)
 	must(t, err)
 
+	logs := &bytes.Buffer{}
 	r := chi.NewRouter()
-	(&Deps{DB: db, Keys: ks, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DefaultTTL: 3600}).RegisterRoutes(r)
+	(&Deps{DB: db, Keys: ks, Log: slog.New(slog.NewTextHandler(logs, nil)), DefaultTTL: 3600}).RegisterRoutes(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
-	return &harness{srv: srv, db: db, key: raw}
+	return &harness{srv: srv, db: db, key: raw, logs: logs}
 }
 
 type env struct {
@@ -194,6 +197,21 @@ func TestExternalDNSFlow(t *testing.T) {
 	must(t, json.Unmarshal(e.Result, &upd))
 	if upd.Content != "5.6.7.8" {
 		t.Fatalf("patched A: %+v", upd)
+	}
+}
+
+func TestAuditTagging(t *testing.T) {
+	h := setup(t)
+	st, e := h.do(t, "POST", "/client/v4/zones/1/dns_records",
+		`{"type":"A","name":"host.example.com","content":"1.2.3.4","ttl":1}`, true)
+	if st != 200 || !e.Success {
+		t.Fatalf("create A: %d", st)
+	}
+	logs := h.logs.String()
+	for _, want := range []string{"source=cfapi", "action=create", "type=A", "actor=admin"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("audit log missing %q in:\n%s", want, logs)
+		}
 	}
 }
 

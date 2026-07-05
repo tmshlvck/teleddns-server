@@ -136,6 +136,7 @@ func (d *Deps) createRecord(_ context.Context, in *CreateRecordInput) (*RecordOu
 	if err != nil {
 		return nil, mapWriteErr(err)
 	}
+	Audit(d.Log, "api", "create", r.Type, r.ID, c.user.Username())
 	return &RecordOutput{Body: r}, nil
 }
 
@@ -184,6 +185,7 @@ func (d *Deps) updateRecord(_ context.Context, in *UpdateRecordInput) (*RecordOu
 	if err != nil {
 		return nil, mapWriteErr(err)
 	}
+	Audit(d.Log, "api", "update", r.Type, r.ID, c.user.Username())
 	return &RecordOutput{Body: r}, nil
 }
 
@@ -221,6 +223,7 @@ func (d *Deps) deleteRecord(_ context.Context, in *DeleteRecordInput) (*EmptyOut
 	if err := k.del(d.DB, z.ID, pk); err != nil {
 		return nil, mapWriteErr(err)
 	}
+	Audit(d.Log, "api", "delete", k.name, in.RRID, c.user.Username())
 	return &EmptyOutput{}, nil
 }
 

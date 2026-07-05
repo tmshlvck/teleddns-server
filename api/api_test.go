@@ -1,11 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/alexedwards/scs/v2"
@@ -20,9 +21,10 @@ import (
 )
 
 type harness struct {
-	api humatest.TestAPI
-	db  *gorm.DB
-	ks  *model.KeyStore
+	api  humatest.TestAPI
+	db   *gorm.DB
+	ks   *model.KeyStore
+	logs *bytes.Buffer
 }
 
 func setup(t *testing.T) *harness {
@@ -56,10 +58,11 @@ func setup(t *testing.T) *harness {
 	cfg.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"bearer": {Type: "http", Scheme: "bearer"},
 	}
+	logs := &bytes.Buffer{}
 	_, tapi := humatest.New(t, cfg)
-	Register(tapi, &Deps{DB: db, Keys: ks, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DefaultTTL: 3600})
+	Register(tapi, &Deps{DB: db, Keys: ks, Log: slog.New(slog.NewTextHandler(logs, nil)), DefaultTTL: 3600})
 
-	return &harness{api: tapi, db: db, ks: ks}
+	return &harness{api: tapi, db: db, ks: ks, logs: logs}
 }
 
 func (h *harness) key(t *testing.T, username string, level int) string {
@@ -170,6 +173,21 @@ func TestZoneAndRecordLifecycle(t *testing.T) {
 	h.db.First(&zr, z.ID)
 	if zr.SOASerial <= z.SOA.Serial {
 		t.Fatalf("serial did not advance: %d <= %d", zr.SOASerial, z.SOA.Serial)
+	}
+}
+
+func TestAuditTagging(t *testing.T) {
+	h := setup(t)
+	admin := h.key(t, "admin", 3)
+
+	if r := h.api.Post("/api/zones", admin, map[string]any{"origin": "audit.test."}); r.Code != http.StatusCreated {
+		t.Fatalf("create zone: %d", r.Code)
+	}
+	logs := h.logs.String()
+	for _, want := range []string{"source=api", "action=create", "type=Zone", "actor=admin"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("audit log missing %q in:\n%s", want, logs)
+		}
 	}
 }
 

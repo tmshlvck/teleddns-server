@@ -3,7 +3,7 @@
 Status: **M0–M6 complete** — native zones+RR API and the Cloudflare-compat
 facade (`cfapi/`, for cert-manager + external-dns) both done (build clean,
 `go test ./...` green, verified live against Knot 3.4.6). Remaining M6 polish:
-`source=api`/`cfapi` audit tagging, `Idempotency-Key`, DB-level pagination.
+`Idempotency-Key`, DB-level pagination.
 Source of truth for *behavior* is
 [`PRD.md`](PRD.md); operator usage is in [`README.md`](README.md) and
 [`DEPLOY.md`](DEPLOY.md). This document is the source of truth for *how we build
@@ -279,9 +279,12 @@ path.
 - **Scope deferred (by decision):** users, groups, group-zone/rr-roles and
   other-user token management — provisioned via the operator UI (L3) + IdP groups
   (PRD §9.7), so the API needn't manage them.
+- **Audit:** every mutation emits the shared `Audit` line (`source=api`,
+  action/type/id/actor) — the same shape as the admin observer's `source=ui`.
 - Tested: `humatest` integration (lifecycle, authz L1/L2/L3, validation,
-  bearer-required) + live e2e (create/list/get/update/delete zone+RR, 401/404/
-  409/422 paths, OpenAPI paths, worker drains the enqueued `SyncTask`).
+  bearer-required, audit tagging) + live e2e (create/list/get/update/delete
+  zone+RR, 401/404/409/422 paths, OpenAPI paths, worker drains the enqueued
+  `SyncTask`).
 
 **Cloudflare-compat facade (`cfapi/`) — ✅ done (2026-06-29), scoped to
 cert-manager + external-dns:**
@@ -300,13 +303,13 @@ cert-manager + external-dns:**
 - Needed a **model fix**: `ValLabel` now permits `_` (underscored names —
   `_acme-challenge`, `_dmarc`, SRV `_sip._tcp`); it previously rejected them,
   which would have blocked cert-manager on every surface.
+- **Audit:** record mutations emit the shared `Audit` line with `source=cfapi`.
 - Tested: cert-manager flow (verify → zones?name → TXT create/list/delete) +
-  external-dns flow (zones list → A create → PATCH) via httptest; live e2e
-  through the full server confirms the CF envelope + record shapes.
-- **Deferred within M6:** `source=api`/`source=cfapi` audit tagging;
-  `Idempotency-Key` replay; DB-level pagination for very large zones (list
-  gathers in memory). No teleddns↔teleddns peer API — `cfapi` is the only
-  external-facing API surface.
+  external-dns flow (zones list → A create → PATCH) via httptest, incl. audit
+  tagging; live e2e through the full server confirms the CF envelope + shapes.
+- **Deferred within M6:** `Idempotency-Key` replay; DB-level pagination for very
+  large zones (list gathers in memory). No teleddns↔teleddns peer API — `cfapi`
+  is the only external-facing API surface.
 
 ### Future — SSO group provisioning (config-driven; noted, deferred — spec PRD §9.7)
 gone is **OIDC/OAuth2**, not literal SAML (enterprise IdPs expose OIDC). What

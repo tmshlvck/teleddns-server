@@ -2,11 +2,15 @@ package api
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/tmshlvck/teleddns-server/model"
 )
+
+// zoneIDStr renders a zone id for audit lines.
+func zoneIDStr(id uint) string { return strconv.FormatUint(uint64(id), 10) }
 
 // APIZone is the JSON representation of a zone (origin + inline SOA).
 type APIZone struct {
@@ -135,6 +139,7 @@ func (d *Deps) createZone(_ context.Context, in *CreateZoneInput) (*ZoneOutput, 
 	if err := d.DB.Create(&z).Error; err != nil {
 		return nil, huma.Error422UnprocessableEntity("create zone: " + err.Error())
 	}
+	Audit(d.Log, "api", "create", "Zone", zoneIDStr(z.ID), c.user.Username())
 	return &ZoneOutput{Body: toAPIZone(z)}, nil
 }
 
@@ -200,6 +205,7 @@ func (d *Deps) updateZone(_ context.Context, in *UpdateZoneInput) (*ZoneOutput, 
 	if err := d.DB.Save(&z).Error; err != nil { // AfterUpdate enqueues the sync
 		return nil, huma.Error422UnprocessableEntity("update zone: " + err.Error())
 	}
+	Audit(d.Log, "api", "update", "Zone", zoneIDStr(z.ID), c.user.Username())
 	return &ZoneOutput{Body: toAPIZone(z)}, nil
 }
 
@@ -228,5 +234,6 @@ func (d *Deps) deleteZone(_ context.Context, in *DeleteZoneInput) (*EmptyOutput,
 	if err := d.DB.Delete(&z).Error; err != nil {
 		return nil, huma.Error500InternalServerError("delete zone: " + err.Error())
 	}
+	Audit(d.Log, "api", "delete", "Zone", zoneIDStr(z.ID), c.user.Username())
 	return &EmptyOutput{}, nil
 }

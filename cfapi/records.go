@@ -182,6 +182,7 @@ func (d *Deps) createRecord(w http.ResponseWriter, r *http.Request) {
 		writeRRErr(w, err)
 		return
 	}
+	api.Audit(d.Log, "cfapi", "create", created.Type, created.ID, c.user.Username())
 	writeResult(w, toCF(created, z, chi.URLParam(r, "zoneID")))
 }
 
@@ -260,6 +261,7 @@ func (d *Deps) updateRecord(w http.ResponseWriter, r *http.Request) {
 		writeRRErr(w, err)
 		return
 	}
+	api.Audit(d.Log, "cfapi", "update", updated.Type, updated.ID, c.user.Username())
 	writeResult(w, toCF(updated, z, chi.URLParam(r, "zoneID")))
 }
 
@@ -287,6 +289,7 @@ func (d *Deps) deleteRecord(w http.ResponseWriter, r *http.Request) {
 		writeRRErr(w, err)
 		return
 	}
+	api.Audit(d.Log, "cfapi", "delete", typ, chi.URLParam(r, "recordID"), c.user.Username())
 	// Cloudflare's delete returns just the id.
 	writeResult(w, map[string]string{"id": chi.URLParam(r, "recordID")})
 }
