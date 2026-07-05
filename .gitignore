@@ -1,11 +1,5 @@
-__pycache__/
-*.py[cod]
-*$py.class
-poetry.lock
+# testing DB
 *.sqlite
-
-# Legacy Python implementation kept locally for reference, not tracked
-obsolete/
 
 # Local runtime config (copy config.sample.yaml → config.yaml)
 config.yaml
