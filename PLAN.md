@@ -167,9 +167,11 @@ AuthGORM (`UserGORM`/`GroupGORM`, sessions, CSRF, password+TOTP+passkey+SSO);
 app `site.Shell` (head/theme/nav/HTMX, theme+timezone pickers); CRUD **Admin**
 over users/groups (L3); `model.APIKey` + `KeyStore` (SHA-256, prefix, level,
 expiry; Issue/Validate/List/Revoke) managed on `/preferences`; CLI `serve` +
-`admin reset-password`, global `--debug`. → README "Run".
-Deferred: `admin import-legacy` one-shot from old SQLite (PRD §13.5, once
-schema is final).
+`admin reset-password` + `admin import` (bulk-load a BIND zone file via
+`miekg/dns` → `api.RRCreate`, so validation/SOA-bump/SyncTask all fire;
+`--replace` to wipe first, `--origin`/stdin supported; `zoneimport/` package),
+global `--debug`. → README "Run".
+Deferred: `admin import-legacy` one-shot from the old Python SQLite (PRD §13.5).
 
 ### M2 — DNS data model + admin ✅
 `Zone` (origin + 10 SOA fields) + 14 RR tables with per-type validators (PRD

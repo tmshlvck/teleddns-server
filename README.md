@@ -51,6 +51,16 @@ On first start it seeds an `admin` user and logs the generated password once
 teleddns-server -c /etc/teleddns.yaml admin reset-password admin
 ```
 
+Bulk-load records from a BIND zone file (parsed with `miekg/dns`; the origin
+comes from the file's SOA / `$ORIGIN`, or pass `--origin`). Records go through
+the same validation + Knot-sync path as the API. `--replace` clears the zone's
+existing records first; the default merges. Reads stdin with `-`:
+
+```sh
+teleddns-server -c /etc/teleddns.yaml admin import example.com.zone
+teleddns-server -c /etc/teleddns.yaml admin import --replace example.com.zone
+```
+
 Then:
 
 - Web UI / admin: `http://127.0.0.1:8080/admin`

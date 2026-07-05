@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -38,6 +39,7 @@ import (
 	"github.com/tmshlvck/teleddns-server/metrics"
 	"github.com/tmshlvck/teleddns-server/model"
 	"github.com/tmshlvck/teleddns-server/web"
+	"github.com/tmshlvck/teleddns-server/zoneimport"
 )
 
 func main() {
@@ -45,6 +47,9 @@ func main() {
 	var debug bool
 	flag.StringVarP(&cfgPath, "config", "c", "", "path to YAML config file")
 	flag.BoolVarP(&debug, "debug", "d", false, "enable debug logging")
+	// Stop global flag parsing at the first positional so subcommand flags
+	// (e.g. `admin import --replace`) pass through to the subcommand's flagset.
+	flag.CommandLine.SetInterspersed(false)
 	flag.Parse()
 
 	path := resolveConfigPath(cfgPath)
@@ -91,12 +96,12 @@ func run(cfg model.Config, log *slog.Logger, args []string) error {
 	}
 
 	if len(args) > 0 {
-		return runCLI(ag, log, args)
+		return runCLI(db, ag, log, args)
 	}
 	return serve(cfg, log, db, sm, ag)
 }
 
-func runCLI(ag *auth.AuthGORM, log *slog.Logger, args []string) error {
+func runCLI(db *gorm.DB, ag *auth.AuthGORM, log *slog.Logger, args []string) error {
 	switch {
 	case args[0] == "admin" && len(args) >= 3 && args[1] == "reset-password":
 		username := args[2]
@@ -115,9 +120,59 @@ func runCLI(ag *auth.AuthGORM, log *slog.Logger, args []string) error {
 			fmt.Printf("Password for %q updated.\n", username)
 		}
 		return nil
+	case args[0] == "admin" && len(args) >= 2 && args[1] == "import":
+		return runImport(db, log, args[2:])
 	default:
 		return fmt.Errorf("unknown command: %v", args)
 	}
+}
+
+// runImport implements `admin import [--origin FQDN] [--replace] <zonefile|->`:
+// bulk-load a BIND zone file into the DB via the shared model write path.
+func runImport(db *gorm.DB, log *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	origin := fs.String("origin", "", "zone origin FQDN (optional when the file has an SOA or $ORIGIN)")
+	replace := fs.Bool("replace", false, "clear the zone's existing records before loading")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: admin import [--origin FQDN] [--replace] <zonefile|->")
+	}
+	if err := model.MigrateDNS(db); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+
+	path := fs.Arg(0)
+	r := io.Reader(os.Stdin)
+	if path != "-" {
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		r = f
+	}
+
+	sum, err := zoneimport.Import(db, r, path, *origin, *replace, log)
+	if err != nil {
+		return err
+	}
+	where := "into existing zone"
+	switch {
+	case sum.Created:
+		where = "into new zone"
+	case sum.Replaced:
+		where = "replacing contents of zone"
+	}
+	fmt.Printf("Imported %d records %s %s (skipped %d unsupported, %d errors).\n",
+		sum.Total(), where, sum.Origin, sum.Skipped, sum.Errors)
+	for _, t := range []string{"NS", "A", "AAAA", "CNAME", "MX", "TXT", "PTR", "SRV", "CAA", "SSHFP", "TLSA", "DNSKEY", "DS", "NAPTR"} {
+		if n := sum.Imported[t]; n > 0 {
+			fmt.Printf("  %-7s %d\n", t, n)
+		}
+	}
+	return nil
 }
 
 func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManager, ag *auth.AuthGORM) error {
