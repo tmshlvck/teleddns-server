@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/danielgtaylor/huma/v2"
+	"gorm.io/gorm"
 
 	"github.com/tmshlvck/teleddns-server/model"
 )
@@ -62,26 +63,34 @@ func (d *Deps) listZones(_ context.Context, in *ListZonesInput) (*ListZonesOutpu
 		return nil, err
 	}
 
-	q := d.DB.Model(&model.Zone{}).Order("origin")
-	if in.Origin != "" {
-		q = q.Where("origin LIKE ?", "%"+in.Origin+"%")
+	// Restrict to readable zones (≥ L2) in SQL, so pagination happens in the DB.
+	scope, ok := model.ZoneReadScope(d.DB, c.user, c.tokenLevel)
+	if !ok {
+		return &ListZonesOutput{Total: 0, Body: []APIZone{}}, nil
 	}
+	originScope := func(tx *gorm.DB) *gorm.DB {
+		if in.Origin != "" {
+			return tx.Where("origin LIKE ?", "%"+in.Origin+"%")
+		}
+		return tx
+	}
+
+	var total int64
+	if err := d.DB.Model(&model.Zone{}).Scopes(scope, originScope).Count(&total).Error; err != nil {
+		return nil, huma.Error500InternalServerError("database error")
+	}
+	limit, offset := pageBounds(in.Page, in.PerPage)
 	var zones []model.Zone
-	if err := q.Find(&zones).Error; err != nil {
+	if err := d.DB.Model(&model.Zone{}).Scopes(scope, originScope).
+		Order("origin").Limit(limit).Offset(offset).Find(&zones).Error; err != nil {
 		return nil, huma.Error500InternalServerError("database error")
 	}
 
-	// Keep only zones the caller can read (≥ L2 in scope, capped by token).
-	visible := make([]APIZone, 0, len(zones))
-	for _, z := range zones {
-		eff := model.EffectiveLevel(d.DB, c.user, z.ID, "@")
-		if model.Authorized(c.tokenLevel, eff, model.L2) {
-			visible = append(visible, toAPIZone(z))
-		}
+	body := make([]APIZone, len(zones))
+	for i := range zones {
+		body[i] = toAPIZone(zones[i])
 	}
-
-	lo, hi := page(in.Page, in.PerPage, len(visible))
-	return &ListZonesOutput{Total: len(visible), Body: visible[lo:hi]}, nil
+	return &ListZonesOutput{Total: int(total), Body: body}, nil
 }
 
 // ── get ──

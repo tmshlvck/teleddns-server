@@ -62,6 +62,11 @@ type rrKind struct {
 	name   string
 	target model.TargetKind
 	list   func(db *gorm.DB, zoneID uint) ([]APIRecord, error)
+	// count / page support DB-level pagination with optional exact filters on
+	// label and value ("" = no filter). value must only be passed for
+	// value-bearing types (all cfapi types have a value column).
+	count  func(db *gorm.DB, zoneID uint, label, value string) (int64, error)
+	page   func(db *gorm.DB, zoneID uint, label, value string, limit, offset int) ([]APIRecord, error)
 	get    func(db *gorm.DB, zoneID, pk uint) (APIRecord, bool, error)
 	create func(db *gorm.DB, zoneID uint, in APIRecord) (APIRecord, error)
 	update func(db *gorm.DB, zoneID, pk uint, in APIRecord) (APIRecord, error)
@@ -81,6 +86,23 @@ func mkKind[T any](name string, target model.TargetKind,
 		list: func(db *gorm.DB, zoneID uint) ([]APIRecord, error) {
 			var rows []T
 			if err := db.Where("zone_id = ?", zoneID).Order("id").Find(&rows).Error; err != nil {
+				return nil, err
+			}
+			out := make([]APIRecord, len(rows))
+			for i := range rows {
+				out[i] = toAPI(&rows[i])
+			}
+			return out, nil
+		},
+		count: func(db *gorm.DB, zoneID uint, label, value string) (int64, error) {
+			var n int64
+			err := rrFilter(db.Model(new(T)), zoneID, label, value).Count(&n).Error
+			return n, err
+		},
+		page: func(db *gorm.DB, zoneID uint, label, value string, limit, offset int) ([]APIRecord, error) {
+			var rows []T
+			q := rrFilter(db, zoneID, label, value).Order("id").Limit(limit).Offset(offset)
+			if err := q.Find(&rows).Error; err != nil {
 				return nil, err
 			}
 			out := make([]APIRecord, len(rows))
@@ -139,6 +161,18 @@ func mkKind[T any](name string, target model.TargetKind,
 			return db.Delete(&row).Error
 		},
 	}
+}
+
+// rrFilter applies the common (zone, optional label, optional value) predicates.
+func rrFilter(q *gorm.DB, zoneID uint, label, value string) *gorm.DB {
+	q = q.Where("zone_id = ?", zoneID)
+	if label != "" {
+		q = q.Where("label = ?", label)
+	}
+	if value != "" {
+		q = q.Where("value = ?", value)
+	}
+	return q
 }
 
 // rrKinds is the registry keyed by lowercase type name (matching the id prefix).

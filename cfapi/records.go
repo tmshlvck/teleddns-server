@@ -85,23 +85,11 @@ func (d *Deps) fromCF(in cfRecordInput, z model.Zone) (string, api.APIRecord, *c
 	return typ, rec, nil
 }
 
-// gatherRecords returns every supported record in the zone as CF records.
-func (d *Deps) gatherRecords(z model.Zone, zoneIDStr string) ([]cfRecord, error) {
-	var out []cfRecord
-	for _, typ := range supportedTypes {
-		recs, err := api.RRList(d.DB, typ, z.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range recs {
-			out = append(out, toCF(r, z, zoneIDStr))
-		}
-	}
-	return out, nil
-}
-
 // ── GET /zones/{id}/dns_records ──
-
+//
+// Filters used by the clients: type, name (exact FQDN), content (exact). They
+// are pushed into SQL (type → the matching table(s); name → label; content →
+// value) so pagination happens in the DB, not in memory.
 func (d *Deps) listRecords(w http.ResponseWriter, r *http.Request) {
 	c, ok := d.authenticate(r)
 	if !ok {
@@ -117,38 +105,37 @@ func (d *Deps) listRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	all, err := d.gatherRecords(z, chi.URLParam(r, "zoneID"))
+	q := r.URL.Query()
+	page, per := cfPageParams(r)
+
+	types := supportedTypes
+	if t := strings.ToUpper(q.Get("type")); t != "" {
+		if !isSupported(t) {
+			writeResultList(w, []cfRecord{}, cfInfo(page, per, 0, 0))
+			return
+		}
+		types = []string{t}
+	}
+	label := ""
+	if name := q.Get("name"); name != "" {
+		l, in := fqdnToLabel(name, z.Origin)
+		if !in { // name is outside this zone → no matches
+			writeResultList(w, []cfRecord{}, cfInfo(page, per, 0, 0))
+			return
+		}
+		label = l
+	}
+
+	recs, total, err := api.RRPageAcross(d.DB, types, z.ID, label, q.Get("content"), per, (page-1)*per)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, 1000, "database error")
 		return
 	}
-
-	// Cloudflare list filters used by the clients: type, name (exact FQDN),
-	// content (exact).
-	q := r.URL.Query()
-	fType := strings.ToUpper(q.Get("type"))
-	fName := strings.TrimSuffix(strings.ToLower(q.Get("name")), ".")
-	fContent := q.Get("content")
-	filtered := all[:0:0]
-	for _, rec := range all {
-		if fType != "" && rec.Type != fType {
-			continue
-		}
-		if fName != "" && strings.ToLower(rec.Name) != fName {
-			continue
-		}
-		if fContent != "" && rec.Content != fContent {
-			continue
-		}
-		filtered = append(filtered, rec)
+	out := make([]cfRecord, len(recs))
+	for i, rec := range recs {
+		out[i] = toCF(rec, z, chi.URLParam(r, "zoneID"))
 	}
-
-	lo, hi, info := paginate(r, len(filtered))
-	page := filtered[lo:hi]
-	if page == nil {
-		page = []cfRecord{}
-	}
-	writeResultList(w, page, info)
+	writeResultList(w, out, cfInfo(page, per, total, len(out)))
 }
 
 // ── POST /zones/{id}/dns_records ──

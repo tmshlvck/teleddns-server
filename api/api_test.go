@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -200,6 +201,63 @@ func TestValidationRejectsBadIP(t *testing.T) {
 	if r.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("bad IP: want 422, got %d %s", r.Code, r.Body.String())
 	}
+}
+
+func TestRecordPaginationAcrossTypes(t *testing.T) {
+	h := setup(t)
+	admin := h.key(t, "admin", 3)
+	z := model.Zone{Origin: "page.test."}
+	mustNil(t, h.db.Create(&z).Error) // auto apex NS (1)
+	for i := 0; i < 3; i++ {
+		mustNil(t, h.db.Create(&model.RRA{ZoneID: z.ID, Label: fmt.Sprintf("a%d", i), TTL: 60, Value: fmt.Sprintf("10.0.0.%d", i+1)}).Error)
+	}
+	for i := 0; i < 2; i++ {
+		mustNil(t, h.db.Create(&model.RRAAAA{ZoneID: z.ID, Label: fmt.Sprintf("b%d", i), TTL: 60, Value: fmt.Sprintf("2001:db8::%d", i+1)}).Error)
+	}
+	mustNil(t, h.db.Create(&model.RRMX{ZoneID: z.ID, Label: "@", TTL: 60, Priority: 10, Value: "mail.page.test."}).Error)
+	// Global order (listOrder): NS(1), A(3), AAAA(2), MX(1) = 7.
+
+	base := fmt.Sprintf("/api/zones/%d/rr", z.ID)
+	p1 := listRR(t, h, base+"?per_page=3&page=1", admin)
+	p2 := listRR(t, h, base+"?per_page=3&page=2", admin)
+	p3 := listRR(t, h, base+"?per_page=3&page=3", admin)
+	if len(p1) != 3 || len(p2) != 3 || len(p3) != 1 {
+		t.Fatalf("page sizes: %d %d %d, want 3 3 1", len(p1), len(p2), len(p3))
+	}
+	if p1[0].Type != "NS" || p1[1].Type != "A" || p1[2].Type != "A" {
+		t.Errorf("page1 types = %s %s %s, want NS A A", p1[0].Type, p1[1].Type, p1[2].Type)
+	}
+	if p2[0].Type != "A" || p2[1].Type != "AAAA" || p2[2].Type != "AAAA" {
+		t.Errorf("page2 types = %s %s %s, want A AAAA AAAA (window spans a type boundary)", p2[0].Type, p2[1].Type, p2[2].Type)
+	}
+	if p3[0].Type != "MX" {
+		t.Errorf("page3 type = %s, want MX", p3[0].Type)
+	}
+	seen := map[string]bool{}
+	for _, r := range append(append(append([]APIRecord{}, p1...), p2...), p3...) {
+		if seen[r.ID] {
+			t.Errorf("record %s appears on more than one page", r.ID)
+		}
+		seen[r.ID] = true
+	}
+	if len(seen) != 7 {
+		t.Errorf("distinct records across pages = %d, want 7", len(seen))
+	}
+}
+
+// listRR fetches a record page and asserts the DB-computed X-Total-Count is 7.
+func listRR(t *testing.T, h *harness, path, auth string) []APIRecord {
+	t.Helper()
+	r := h.api.Get(path, auth)
+	if r.Code != 200 {
+		t.Fatalf("list %s: %d", path, r.Code)
+	}
+	if got := r.Header().Get("X-Total-Count"); got != "7" {
+		t.Fatalf("X-Total-Count for %s = %s, want 7", path, got)
+	}
+	var body []APIRecord
+	mustNil(t, json.Unmarshal(r.Body.Bytes(), &body))
+	return body
 }
 
 func TestAuthz(t *testing.T) {

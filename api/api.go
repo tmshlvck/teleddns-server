@@ -137,27 +137,19 @@ func (d *Deps) loadZone(id uint) (model.Zone, error) {
 	return z, nil
 }
 
-// page clamps pagination params to PRD §11.1 (default 50, max 500) and returns a
-// [lo:hi) window over n items.
-func page(pageNum, perPage, n int) (lo, hi int) {
+// pageBounds clamps pagination params (PRD §11.1: default 50, max 500) into a
+// SQL LIMIT/OFFSET.
+func pageBounds(pageNum, perPage int) (limit, offset int) {
 	if perPage <= 0 {
 		perPage = 50
 	}
 	if perPage > 500 {
 		perPage = 500
 	}
-	if pageNum <= 0 {
+	if pageNum < 1 {
 		pageNum = 1
 	}
-	lo = (pageNum - 1) * perPage
-	if lo > n {
-		lo = n
-	}
-	hi = lo + perPage
-	if hi > n {
-		hi = n
-	}
-	return lo, hi
+	return perPage, (pageNum - 1) * perPage
 }
 
 // mapWriteErr turns model/validation errors into HTTP errors.

@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"gorm.io/gorm"
+
 	"github.com/tmshlvck/teleddns-server/model"
 )
 
@@ -28,35 +30,41 @@ func (d *Deps) listZones(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnauthorized, 9109, "Invalid access token")
 		return
 	}
+	page, per := cfPageParams(r)
 
-	q := d.DB.Model(&model.Zone{}).Order("origin")
-	if name := q2origin(r.URL.Query().Get("name")); name != "" {
-		// Cloudflare's `name` filter is exact on the zone apex here.
-		q = q.Where("lower(origin) = ? OR lower(origin) = ?", name, name+".")
+	scope, ok := model.ZoneReadScope(d.DB, c.user, c.tokenLevel)
+	if !ok {
+		writeResultList(w, []cfZone{}, cfInfo(page, per, 0, 0))
+		return
+	}
+	nameScope := func(tx *gorm.DB) *gorm.DB {
+		if name := q2origin(r.URL.Query().Get("name")); name != "" {
+			return tx.Where("lower(origin) = ? OR lower(origin) = ?", name, name+".")
+		}
+		return tx
+	}
+
+	var total int64
+	if err := d.DB.Model(&model.Zone{}).Scopes(scope, nameScope).Count(&total).Error; err != nil {
+		fail(w, http.StatusInternalServerError, 1000, "database error")
+		return
 	}
 	var zones []model.Zone
-	if err := q.Find(&zones).Error; err != nil {
+	if err := d.DB.Model(&model.Zone{}).Scopes(scope, nameScope).
+		Order("origin").Limit(per).Offset((page - 1) * per).Find(&zones).Error; err != nil {
 		fail(w, http.StatusInternalServerError, 1000, "database error")
 		return
 	}
 
-	visible := make([]cfZone, 0, len(zones))
-	for _, z := range zones {
-		if d.authz(c, z.ID, "@", model.Read, model.TargetZoneData) {
-			visible = append(visible, cfZone{
-				ID:     strconv.FormatUint(uint64(z.ID), 10),
-				Name:   strings.TrimSuffix(z.Origin, "."),
-				Status: "active",
-			})
+	out := make([]cfZone, len(zones))
+	for i, z := range zones {
+		out[i] = cfZone{
+			ID:     strconv.FormatUint(uint64(z.ID), 10),
+			Name:   strings.TrimSuffix(z.Origin, "."),
+			Status: "active",
 		}
 	}
-
-	lo, hi, info := paginate(r, len(visible))
-	page := visible[lo:hi]
-	if page == nil {
-		page = []cfZone{}
-	}
-	writeResultList(w, page, info)
+	writeResultList(w, out, cfInfo(page, per, int(total), len(out)))
 }
 
 // q2origin normalizes a ?name= query value for comparison (lowercased, no

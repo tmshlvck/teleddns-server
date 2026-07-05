@@ -51,22 +51,15 @@ func (d *Deps) listRecords(_ context.Context, in *ListRecordsInput) (*ListRecord
 		types = []string{in.Type}
 	}
 
-	var all []APIRecord
-	for _, t := range types {
-		k, _ := kindByType(t)
-		recs, err := k.list(d.DB, z.ID)
-		if err != nil {
-			return nil, huma.Error500InternalServerError("database error")
-		}
-		for _, r := range recs {
-			if in.Name == "" || r.Name == in.Name {
-				all = append(all, r)
-			}
-		}
+	limit, offset := pageBounds(in.Page, in.PerPage)
+	recs, total, err := RRPageAcross(d.DB, types, z.ID, in.Name, "", limit, offset)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("database error")
 	}
-
-	lo, hi := page(in.Page, in.PerPage, len(all))
-	return &ListRecordsOutput{Total: len(all), Body: all[lo:hi]}, nil
+	if recs == nil {
+		recs = []APIRecord{}
+	}
+	return &ListRecordsOutput{Total: total, Body: recs}, nil
 }
 
 // ── get ──

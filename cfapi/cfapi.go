@@ -193,27 +193,34 @@ func fqdnToLabel(name, origin string) (string, bool) {
 	return "", false
 }
 
-// paginate parses ?page/?per_page (CF defaults: page 1, per_page 100) and
-// returns the [lo:hi) window over n plus the result_info to report.
-func paginate(r *http.Request, n int) (lo, hi int, info cfResultInfo) {
-	page := atoiDefault(r.URL.Query().Get("page"), 1)
-	per := atoiDefault(r.URL.Query().Get("per_page"), 100)
+// cfMaxPerPage caps ?per_page for the facade's list endpoints.
+const cfMaxPerPage = 5000
+
+// cfPageParams parses ?page/?per_page (CF defaults: page 1, per_page 100),
+// clamped, for a DB LIMIT/OFFSET.
+func cfPageParams(r *http.Request) (page, per int) {
+	page = atoiDefault(r.URL.Query().Get("page"), 1)
+	per = atoiDefault(r.URL.Query().Get("per_page"), 100)
 	if per < 1 {
 		per = 100
+	}
+	if per > cfMaxPerPage {
+		per = cfMaxPerPage
 	}
 	if page < 1 {
 		page = 1
 	}
-	lo = (page - 1) * per
-	if lo > n {
-		lo = n
+	return page, per
+}
+
+// cfInfo builds the Cloudflare result_info for a page of `count` rows out of
+// `total` matches.
+func cfInfo(page, per, total, count int) cfResultInfo {
+	tp := 0
+	if per > 0 {
+		tp = int(math.Ceil(float64(total) / float64(per)))
 	}
-	hi = lo + per
-	if hi > n {
-		hi = n
-	}
-	total := int(math.Ceil(float64(n) / float64(per)))
-	return lo, hi, cfResultInfo{Page: page, PerPage: per, Count: hi - lo, TotalCount: n, TotalPages: total}
+	return cfResultInfo{Page: page, PerPage: per, Count: count, TotalCount: total, TotalPages: tp}
 }
 
 func atoiDefault(s string, def int) int {

@@ -1,9 +1,9 @@
 # TeleDDNS Server — Go Rewrite Implementation Plan
 
 Status: **M0–M6 complete** — native zones+RR API and the Cloudflare-compat
-facade (`cfapi/`, for cert-manager + external-dns) both done (build clean,
-`go test ./...` green, verified live against Knot 3.4.6). Remaining M6 polish:
-DB-level pagination for very large zones.
+facade (`cfapi/`, for cert-manager + external-dns) both done, including audit
+tagging, Idempotency-Key, and DB-level pagination (build clean, `go test ./...`
+green, verified live against Knot 3.4.6).
 Source of truth for *behavior* is
 [`PRD.md`](PRD.md); operator usage is in [`README.md`](README.md) and
 [`DEPLOY.md`](DEPLOY.md). This document is the source of truth for *how we build
@@ -276,8 +276,12 @@ path.
   tables. `GET/POST /api/zones/{id}/rr`, `GET/PUT/DELETE /api/zones/{id}/rr/{rrid}`.
   A/AAAA read+update → L1; other types + any create/delete → L2. A generic
   `rrKind` registry (built with `mkKind[T]`) shares the CRUD plumbing.
-- Pagination (default 50, max 500; `X-Total-Count` header), `?type=`/`?name=`
-  filtering, Huma `{title,status,detail}` errors; validation→422, last-NS→409.
+- **DB-level pagination** (default 50, max 500; `X-Total-Count` header): zone
+  authz is pushed into SQL (`model.ZoneReadScope`) and records paginate across
+  the 14 per-type tables via a count-per-type + windowed LIMIT/OFFSET fetch
+  (`RRPageAcross`) — only the page's rows are read, never the whole zone.
+  `?type=`/`?name=` filters are SQL predicates. Huma `{title,status,detail}`
+  errors; validation→422, last-NS→409.
 - **Scope deferred (by decision):** users, groups, group-zone/rr-roles and
   other-user token management — provisioned via the operator UI (L3) + IdP groups
   (PRD §9.7), so the API needn't manage them.
@@ -312,9 +316,11 @@ cert-manager + external-dns:**
 - Tested: cert-manager flow (verify → zones?name → TXT create/list/delete) +
   external-dns flow (zones list → A create → PATCH) via httptest, incl. audit
   tagging; live e2e through the full server confirms the CF envelope + shapes.
-- **Deferred within M6:** DB-level pagination for very large zones (list gathers
-  in memory). No teleddns↔teleddns peer API — `cfapi` is the only external-facing
-  API surface.
+- **DB-level pagination** too: zone/record lists reuse `model.ZoneReadScope` +
+  `api.RRPageAcross`, with CF filters (`type`→table, `name`→label,
+  `content`→value) pushed to SQL and correct `result_info`.
+- No teleddns↔teleddns peer API — `cfapi` is the only external-facing API
+  surface. M6 has no remaining deferred items.
 
 ### Future — SSO group provisioning (config-driven; noted, deferred — spec PRD §9.7)
 gone is **OIDC/OAuth2**, not literal SAML (enterprise IdPs expose OIDC). What

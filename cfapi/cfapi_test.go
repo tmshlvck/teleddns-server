@@ -3,6 +3,7 @@ package cfapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -212,6 +213,32 @@ func TestAuditTagging(t *testing.T) {
 		if !strings.Contains(logs, want) {
 			t.Errorf("audit log missing %q in:\n%s", want, logs)
 		}
+	}
+}
+
+func TestRecordListPagination(t *testing.T) {
+	h := setup(t)
+	for i := 0; i < 5; i++ {
+		st, e := h.do(t, "POST", "/client/v4/zones/1/dns_records",
+			fmt.Sprintf(`{"type":"A","name":"h%d.example.com","content":"10.0.0.%d","ttl":1}`, i, i+1), true)
+		if st != 200 || !e.Success {
+			t.Fatalf("create %d: %d", i, st)
+		}
+	}
+	// page 2 of per_page 2 → the 3rd and 4th of 5, total_count 5, DB-paginated
+	st, e := h.do(t, "GET", "/client/v4/zones/1/dns_records?type=A&per_page=2&page=2", "", true)
+	if st != 200 || e.ResultInfo.TotalCount != 5 || e.ResultInfo.Count != 2 {
+		t.Fatalf("page 2: %d total=%v", st, e.ResultInfo)
+	}
+	var recs []cfRecord
+	must(t, json.Unmarshal(e.Result, &recs))
+	if len(recs) != 2 {
+		t.Fatalf("page 2 len = %d, want 2", len(recs))
+	}
+	// last page has the remainder
+	_, e = h.do(t, "GET", "/client/v4/zones/1/dns_records?type=A&per_page=2&page=3", "", true)
+	if e.ResultInfo.Count != 1 {
+		t.Fatalf("page 3 count = %d, want 1", e.ResultInfo.Count)
 	}
 }
 

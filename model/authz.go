@@ -121,6 +121,30 @@ func UserMaxLevel(db *gorm.DB, u auth.User) int {
 	return LevelNone
 }
 
+// ZoneReadScope returns a GORM scope restricting a zones query to those the
+// caller may read (effective level ≥ L2, capped by tokenLevel) — so list
+// endpoints can paginate in the DB instead of loading every zone and filtering
+// in memory. The bool is false when nothing is visible (the caller should
+// return an empty page without querying). Mirrors EffectiveLevel(zone,"@") ≥ L2:
+// admins see all zones, others see zones they hold a GroupZoneRole on; an L1
+// token sees none (min(token,eff) < L2).
+func ZoneReadScope(db *gorm.DB, u auth.User, tokenLevel int) (func(*gorm.DB) *gorm.DB, bool) {
+	if tokenLevel < L2 {
+		return nil, false
+	}
+	gids, isAdmin := userGroups(db, u)
+	if isAdmin {
+		return func(tx *gorm.DB) *gorm.DB { return tx }, true
+	}
+	if len(gids) == 0 {
+		return nil, false
+	}
+	return func(tx *gorm.DB) *gorm.DB {
+		sub := db.Model(&GroupZoneRole{}).Select("zone_id").Where("group_id IN ?", gids)
+		return tx.Where("id IN (?)", sub)
+	}, true
+}
+
 // userGroups returns the user's group ids and whether one of them is the admin
 // group. Queried directly so callers needn't preload Groups onto the user.
 func userGroups(db *gorm.DB, u auth.User) (gids []uint, isAdmin bool) {
