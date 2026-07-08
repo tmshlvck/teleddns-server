@@ -122,11 +122,40 @@ key's level scopes which zones it can touch, same as the native API.
 
 ## Single sign-on (SSO)
 
-Optional OpenID Connect login (Google, Okta, Keycloak, Entra, …), configured
-under `sso_providers` with a `public_url` base for the redirect. **Groups are
-provisioned from rules on every login:** each rule matches a claim (`equals` or
-`regex`; `claim` defaults to `email`) and contributes its `groups`; the union is
-reconciled — so removing a user from an IdP group deprovisions them here, while
+Optional OpenID Connect login (Google, Okta, Keycloak, Entra, …). Configure it
+with a `public_url` (the external HTTPS base — see [`DEPLOY.md`](DEPLOY.md) §3)
+and one entry per IdP under `sso_providers`.
+
+**Redirect URL.** teleddns serves the OIDC callback at
+
+```
+<public_url>/login/sso/<name>/callback
+```
+
+where `<name>` is the provider's `name`. Register **exactly that URL** as the
+authorized redirect URI in the IdP (e.g. for `name: google` and
+`public_url: https://ddns.example.com` → `https://ddns.example.com/login/sso/google/callback`).
+teleddns derives it from `public_url`; you don't set it in the config.
+
+**Setup steps (per provider):**
+
+1. In the IdP, create an **OIDC / OAuth 2.0 web application**; set its redirect
+   URI to the URL above.
+2. Copy the **client ID** and **client secret** into the provider entry.
+3. Set `issuer` to the IdP's OpenID issuer (teleddns does discovery at
+   `<issuer>/.well-known/openid-configuration` on startup — a wrong/unreachable
+   issuer fails the boot with a clear error).
+4. Default scopes are `openid email profile`. To use a **groups** claim
+   (Okta/Keycloak/Entra), make the IdP emit it (Okta: add a `groups` claim to
+   the authorization server / app) and, if it needs a scope, add it under
+   `scopes:` (e.g. `["openid","email","profile","groups"]`).
+5. Add `group_rules` (below), pre-create the local groups they name (or set
+   `create_groups: true`), and attach `GroupZoneRole`/`GroupRRRole` to those
+   groups so membership grants DNS access.
+
+**Group provisioning.** On **every** login each rule matches a claim (`equals`
+or `regex`; `claim` defaults to `email`) and contributes its `groups`; the union
+is reconciled — removing a user from an IdP group deprovisions them here, while
 groups no rule names (manual grants) are left untouched. Those local groups are
 what carry L1/L2/L3 via `GroupZoneRole` / `GroupRRRole`.
 
@@ -144,6 +173,7 @@ sso_providers:
     issuer: "https://dev-123.okta.com"
     client_id: "…"
     client_secret: "…"
+    scopes: ["openid", "email", "profile", "groups"]
     group_rules:
       - {claim: "groups", equals: "dns-operators", groups: ["example-ops"]}
 ```

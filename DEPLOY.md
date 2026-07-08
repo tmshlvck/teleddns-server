@@ -215,6 +215,14 @@ DDNS clients then point at `https://ddns.example.com/nic/update?...`.
 > `servers { trusted_proxies static <cidrs> }` and use `{client_ip}` instead of
 > `{remote_host}` so the *originating* client is forwarded.
 
+**SSO note.** If you enable OpenID Connect login, set `public_url` to this same
+external HTTPS origin (`https://ddns.example.com`) — teleddns builds each
+provider's OIDC redirect as `<public_url>/login/sso/<name>/callback`, and you
+must register **that exact URL** as the authorized redirect URI at the IdP. The
+callback must be reachable over HTTPS (i.e. through Caddy), so keep the `/login/`
+paths proxied (the default `reverse_proxy` above already forwards everything).
+Provider setup + `group_rules` are in [`README.md`](README.md).
+
 ---
 
 ## 4. Secondary — Knot
