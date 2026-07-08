@@ -579,46 +579,39 @@ def authorized(token, user, action, target) -> bool:
 The `min(token.level, user_level)` rule is the key: a leaked L1 token never
 escalates to L2/L3 even if the owning user is more privileged.
 
-### 9.7 SSO group provisioning (planned — not in the M6 first cut)
+### 9.7 SSO group provisioning (implemented)
 
 Group membership is the join between the IdP and the authorization model: a
 user's groups (§9.3) carry the `GroupZoneRole` / `GroupRRRole` grants, so
 whoever controls group membership controls DNS access. For SSO users that
-controller should be the **IdP + declarative rules**, not per-user hand-editing.
+controller is the **IdP + declarative rules**, not per-user hand-editing.
 
-SSO is **OIDC/OAuth2** (not literal SAML; enterprise IdPs — Okta, Keycloak,
-Entra/Azure AD, Auth0, Google Workspace — all expose OIDC). Required behavior,
-scoped per provider:
+SSO is **OIDC** (not literal SAML; enterprise IdPs — Okta, Keycloak, Entra/Azure
+AD, Auth0, Google Workspace — all expose OIDC). Each provider carries a list of
+**group rules**; on **every** login gone (`auth`) evaluates them and reconciles
+membership. Behavior:
 
-- **IdP groups claim.** When the IdP emits a groups array (Okta / Keycloak /
-  Entra typically the `groups` claim), each name maps to a local group of the
-  same name. Providers that emit no groups claim (Google Workspace has only the
-  `hd` hosted-domain claim) rely on the rules below.
-- **Default groups.** A provider may grant every user it provisions a fixed set
-  of groups.
-- **Email / identity pattern rules.** A provider may carry an ordered list of
-  `pattern → groups` rules matched against the verified email (glob on
-  local-part/domain), e.g.
+- **Rules.** A rule matches one claim (`claim`, default `email`) by `equals` or
+  `regex` (RE2; against a scalar claim or any element of an array claim such as
+  `groups`), and names local `groups`. Examples: `{regex: "@example.com$",
+  groups: [example-users]}` (Google, no groups claim → match the email);
+  `{claim: groups, equals: dns-operators, groups: [example-ops]}` (Okta group
+  array); `{regex: ".*", groups: [guest]}` (a default-for-all — there is no
+  separate "default groups" field).
+- **Union = managed set.** The desired groups for a login are the deduped union
+  of every matching rule's `groups`. The union of *all* the provider's rule
+  targets is the provider's **managed set**.
+- **Per-login reconcile.** Membership *within the managed set* is set to the
+  matched union on every login (deprovisioning included — dropping out of an
+  Okta group removes the local group on next login); groups **outside** the
+  managed set (manual grants) are left untouched. Unknown rule-named groups are
+  auto-created only when `create_groups` is set, else skipped.
+- **No admin special-casing.** A rule that names the admin group grants L3 — the
+  operator scopes rules accordingly; there is no built-in protection.
 
-  ```
-  "*@example.com"        → [example-user]
-  "admin@example.com"    → [example-admin]
-  "*@contractor.example" → [example-readonly]
-  ```
-
-  All matching rules contribute, so a blanket domain rule and a specific-address
-  rule compose.
-- **Union + create policy.** Effective groups = union(claim groups, default
-  groups, matched-rule groups), deduped. Unknown group names are auto-created
-  only when explicitly enabled; otherwise they are skipped (the operator
-  pre-creates the groups that carry roles).
-- **Re-sync on every login.** Membership MUST be reconciled from the IdP + rules
-  on **every** SSO login, not only at first provisioning, so deprovisioning and
-  role changes propagate. A group conferring L3 (the admin group, §9.1) MUST NOT
-  be grantable by an untrusted claim without explicit operator opt-in.
-
-This is provider configuration (the config surface + gone integration live in
-PLAN.md); none of it is exposed on the management API.
+This is provider configuration (`public_url` + `sso_providers` in the config
+file; see README); none of it is exposed on the management API. The reconcile
+logic lives in gone `auth` (≥ v0.1.3).
 
 ## 10. Data Model
 

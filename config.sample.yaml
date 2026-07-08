@@ -37,6 +37,42 @@ trust_proxy: false
 # Verbose (debug-level) logging. Same as the -debug flag.   [false]
 debug: true
 
+# Single sign-on (OpenID Connect). Optional. public_url is the externally
+# reachable base URL, used to build each provider's redirect
+# (<public_url>/login/sso/<name>/callback — register that at the IdP).
+#
+# group_rules provision local groups on EVERY login: every rule whose claim
+# matches contributes its groups (union), and membership within that union is
+# reconciled to the match — so removing a user from an IdP group deprovisions
+# them here, while manually-assigned groups (not named by any rule) are left
+# alone. Set exactly one of `equals` / `regex` per rule; `claim` defaults to
+# "email". There is no admin exception — a rule that assigns your admin group
+# grants L3, so scope rules carefully. `create_groups: true` auto-creates
+# rule-named groups; otherwise pre-create them (and attach zone/RR roles).
+#
+# public_url: "https://ddns.example.com"
+# sso_providers:
+#   - name: google                      # Google sends no groups → match on email
+#     display_name: "Google"
+#     issuer: "https://accounts.google.com"
+#     client_id: "…"
+#     client_secret: "…"
+#     group_rules:
+#       - regex: "@example\\.com$"       # claim defaults to email
+#         groups: ["example-users"]
+#       - regex: ".*"                    # everyone → guest
+#         groups: ["guest"]
+#   - name: okta                        # Okta/Keycloak/Entra send a groups array
+#     display_name: "Okta"
+#     issuer: "https://dev-123.okta.com"
+#     client_id: "…"
+#     client_secret: "…"
+#     create_groups: false
+#     group_rules:
+#       - claim: "groups"
+#         equals: "dns-operators"
+#         groups: ["example-ops"]
+
 # TTLs (seconds).
 default_ttl: 3600   # $TTL + records created via the management API   [3600]
 ddns_rr_ttl: 60     # A/AAAA records touched via the DDNS endpoint    [60]

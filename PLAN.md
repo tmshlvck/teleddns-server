@@ -321,56 +321,16 @@ cert-manager + external-dns:**
 - No teleddns↔teleddns peer API — `cfapi` is the only external-facing API
   surface. M6 has no remaining deferred items.
 
-### Future — SSO group provisioning (config-driven; noted, deferred — spec PRD §9.7)
-gone is **OIDC/OAuth2**, not literal SAML (enterprise IdPs expose OIDC). What
-exists **today in gone** (`auth/sso.go`): providers are configured **in Go**
-(`AddOIDCProvider(OIDCProvider{…})`), with three group knobs on the provider —
-`GroupsClaim` (IdP groups array; Okta/Keycloak/Entra emit `groups`),
-`DefaultGroups`, and a Go `GroupMapper(claims) []string` — plus `CreateGroups`
-to auto-create unknown groups. Google has **no** groups claim (only `hd`), so it
-needs `DefaultGroups` or a mapper. These names map to `GroupGORM` and feed our
-L1/L2/L3 via the group→role tables. **Not configurable from `config.yaml`, and
-not yet documented for operators.**
-
-What teleddns will add (deferred — design only, do **not** implement yet):
-- **Config-file SSO.** Surface provider config in `config.yaml` (issuer,
-  client id/secret, redirect, scopes, `groups_claim`, `create_groups`) so
-  operators don't edit Go; teleddns builds the `OIDCProvider` structs and calls
-  `AddOIDCProvider`.
-- **Declarative group rules.** Replace the hand-written `GroupMapper` with an
-  ordered list of email/identity **glob rules** in config, compiled into a
-  `GroupMapper`. This answers "set a group for SSO users without an explicit
-  group" (a blanket `*@domain` rule or `default_groups`) and "admin@domain →
-  admin group":
-  ```yaml
-  sso:
-    providers:
-      - name: okta
-        issuer: https://dev-123.okta.com
-        client_id: …
-        client_secret: …
-        groups_claim: groups          # Okta/Keycloak/Entra emit this
-        create_groups: false
-        default_groups: [example-user]
-        group_rules:                  # union with claim + default_groups
-          - match: "*@example.com";     groups: [example-user]
-          - match: "admin@example.com"; groups: [example-admin]
-      - name: google
-        issuer: https://accounts.google.com
-        client_id: …
-        client_secret: …
-        # Google sends no groups claim → rules + default_groups do the work
-        group_rules:
-          - match: "*@example.com";     groups: [example-user]
-  ```
-  Effective groups = union(claim, `default_groups`, matched rules), deduped.
-- **Per-login re-sync** (the gone gap): groups are resolved **only at account
-  auto-creation** today, never re-synced on later logins, so IdP/rule changes
-  don't propagate. Enhance gone's `resolveSSOLogin` to reconcile membership from
-  claim+rules on **every** login, and guard the `admin`→L3 group against
-  untrusted claims. See [[gone-local-dependency]].
-
-Not part of the M6 first cut.
+### SSO group provisioning — ✅ done (gone ≥ v0.1.3)
+Config `public_url` + `sso_providers` (`model.SSOProvider`) → `web.RegisterSSO`
+builds `auth.OIDCProvider`s and registers them before the auth routes. Group
+provisioning is **rule-based** in gone: each provider's `group_rules` (match a
+`claim` — default `email` — by `equals`/`regex`, name `groups`) are evaluated on
+every login, their union is the managed set, and membership within it is
+reconciled (deprovision included) while manual grants are untouched. No
+`default_groups`/`groups_claim`/`GroupMapper` (a `.*` rule is the default; a
+`{claim: groups}` rule reads an array claim); no admin special-casing. Spec:
+PRD §9.7; ops docs: README "Single sign-on". See [[gone-local-dependency]].
 
 *(Former M7 "secondary replication" removed — replaced by the catalog zone +
 AXFR/TSIG handled in M5.)*
@@ -402,9 +362,9 @@ AXFR/TSIG handled in M5.)*
 Core milestones **M0–M6 are complete**; nothing below blocks a v1 deployment.
 These are optional polish and future features (each also noted at its milestone):
 
-- **SSO group provisioning** (config-driven OIDC providers + email-regex
-  `group_rules` + per-login group reconcile in gone) — **next up, targeted for
-  release**; design in PRD §9.7 / the "Future" section above.
+- ~~SSO group provisioning~~ ✅ **done** — config `sso_providers` with rule-based
+  group provisioning (per-login managed-set reconcile in gone ≥ v0.1.3). See
+  PRD §9.7, README "Single sign-on", `web/sso.go`.
 - **Operator UI — per-zone RR editor.** The 14 per-type admin tables work but are
   clunky; a per-zone record view is nicer UX (M2).
 - **DDNS transitional JSON `{detail}` mode** behind a flag (M4).

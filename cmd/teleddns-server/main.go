@@ -190,6 +190,12 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 		return fmt.Errorf("dns migrate: %w", err)
 	}
 
+	// SSO providers must be registered before the auth routes (RegisterAdmin →
+	// ag.RegisterRoutes renders the login buttons from the provider list).
+	if err := web.RegisterSSO(ag, cfg, log); err != nil {
+		return fmt.Errorf("sso: %w", err)
+	}
+
 	// Backend + sync worker. Created here so /healthcheck can read worker
 	// liveness + the knot-status probe; started (go worker.Run) once the signal
 	// ctx exists below.

@@ -120,6 +120,38 @@ the tool at teleddns as if it were Cloudflare, using a teleddns API key as the
 Supported record types: A, AAAA, CNAME, TXT, NS, MX (what those tools use). The
 key's level scopes which zones it can touch, same as the native API.
 
+## Single sign-on (SSO)
+
+Optional OpenID Connect login (Google, Okta, Keycloak, Entra, …), configured
+under `sso_providers` with a `public_url` base for the redirect. **Groups are
+provisioned from rules on every login:** each rule matches a claim (`equals` or
+`regex`; `claim` defaults to `email`) and contributes its `groups`; the union is
+reconciled — so removing a user from an IdP group deprovisions them here, while
+groups no rule names (manual grants) are left untouched. Those local groups are
+what carry L1/L2/L3 via `GroupZoneRole` / `GroupRRRole`.
+
+```yaml
+public_url: "https://ddns.example.com"
+sso_providers:
+  - name: google                     # no groups claim → match on email
+    issuer: "https://accounts.google.com"
+    client_id: "…"
+    client_secret: "…"
+    group_rules:
+      - regex: "@example\\.com$"
+        groups: ["example-users"]
+  - name: okta                       # groups array claim
+    issuer: "https://dev-123.okta.com"
+    client_id: "…"
+    client_secret: "…"
+    group_rules:
+      - {claim: "groups", equals: "dns-operators", groups: ["example-ops"]}
+```
+
+There is no admin special-casing — a rule that assigns your admin group grants
+L3, so scope rules carefully. See [`config.sample.yaml`](config.sample.yaml) for
+the full commented example.
+
 ## Monitoring
 
 Two operability endpoints. Restrict them with `ops_allowed_ips` (a CIDR

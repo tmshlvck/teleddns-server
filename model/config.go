@@ -55,9 +55,53 @@ type Config struct {
 
 	Debug bool `yaml:"debug"`
 
+	// PublicURL is the externally-reachable base URL (scheme+host, no trailing
+	// path), e.g. "https://ddns.example.com". Used to build each SSO provider's
+	// OIDC redirect URL; required when sso_providers is set.
+	PublicURL string `yaml:"public_url"`
+	// SSOProviders configures OpenID Connect single-sign-on (gone auth). Each
+	// provider maps IdP logins to local users and provisions groups from its
+	// GroupRules on every login (see PRD §9.7).
+	SSOProviders []SSOProvider `yaml:"sso_providers"`
+
 	// Presentation defaults for gone components. Embedding gives a free
 	// TimeFormatter; PaginationSizeDefault is overridden below to 50 (PRD §11.1).
 	site.DefaultSettings `yaml:"-"`
+}
+
+// SSOProvider is one OpenID Connect provider (Google, Okta, Keycloak, Entra, …).
+// It mirrors gone's auth.OIDCProvider; the redirect URL is derived from
+// PublicURL, so it is not configured here.
+type SSOProvider struct {
+	Name         string   `yaml:"name"`          // URL segment: /login/sso/<name>/callback; unique
+	DisplayName  string   `yaml:"display_name"`  // label on the "Sign in with X" button
+	Issuer       string   `yaml:"issuer"`        // OIDC discovery base, e.g. https://accounts.google.com
+	ClientID     string   `yaml:"client_id"`     //
+	ClientSecret string   `yaml:"client_secret"` //
+	Scopes       []string `yaml:"scopes"`        // default ["openid","email","profile"]
+
+	// GroupRules provision local groups on every login: every matching rule's
+	// Groups are unioned, and membership within that union (the provider's
+	// managed set) is reconciled to the match. Empty = no group management.
+	GroupRules []SSOGroupRule `yaml:"group_rules"`
+	// CreateGroups auto-creates rule-named groups missing from the DB (default
+	// false — the operator pre-creates groups + attaches roles).
+	CreateGroups bool `yaml:"create_groups"`
+	// AutoLinkByEmail adopts a pre-existing local user whose (verified) email
+	// matches. Only enable for IdPs whose email verification you trust.
+	AutoLinkByEmail bool `yaml:"auto_link_by_email"`
+	// DisableAutoCreate requires admin pre-provisioning instead of creating a
+	// local user on first login.
+	DisableAutoCreate bool `yaml:"disable_auto_create"`
+}
+
+// SSOGroupRule assigns local groups when a claim matches. Set exactly one of
+// Equals or Regex; Claim defaults to "email". Mirrors gone's auth.SSOGroupRule.
+type SSOGroupRule struct {
+	Claim  string   `yaml:"claim"`  // claim key to test; default "email"
+	Equals string   `yaml:"equals"` // exact match (or any element of an array claim)
+	Regex  string   `yaml:"regex"`  // RE2 pattern (or any element of an array claim)
+	Groups []string `yaml:"groups"` // local groups assigned on match
 }
 
 // PaginationSizeDefault overrides gone's 20-row default to the PRD §11.1
