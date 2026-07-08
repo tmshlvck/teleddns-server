@@ -37,9 +37,20 @@ trust_proxy: false
 # Verbose (debug-level) logging. Same as the -debug flag.   [false]
 debug: true
 
-# Single sign-on (OpenID Connect). Optional. public_url is the externally
-# reachable base URL, used to build each provider's redirect
-# (<public_url>/login/sso/<name>/callback — register that at the IdP).
+# Single sign-on (OpenID Connect). Optional.
+#
+# public_url is the externally reachable base URL (scheme + host, no trailing
+# path). Each provider's OIDC redirect URL is built from it as:
+#
+#     <public_url>/login/sso/<name>/callback
+#
+# where <name> is that provider's `name:` below. `name` is a label you choose
+# (must be unique + URL-safe; lowercase recommended) — it does NOT have to equal
+# the IdP's product name, but using "google" / "okta" / etc. is clearest. You
+# must register the resulting URL as the authorized redirect URI at the IdP.
+# With public_url: "https://ddns.example.com" the examples below produce:
+#     name: google  →  https://ddns.example.com/login/sso/google/callback
+#     name: okta     →  https://ddns.example.com/login/sso/okta/callback
 #
 # group_rules provision local groups on EVERY login: every rule whose claim
 # matches contributes its groups (union), and membership within that union is
@@ -52,8 +63,8 @@ debug: true
 #
 # public_url: "https://ddns.example.com"
 # sso_providers:
-#   - name: google                      # Google sends no groups → match on email
-#     display_name: "Google"
+#   - name: google                      # → /login/sso/google/callback
+#     display_name: "Google"            # Google sends no groups → match on email
 #     issuer: "https://accounts.google.com"
 #     client_id: "…"
 #     client_secret: "…"
@@ -62,11 +73,12 @@ debug: true
 #         groups: ["example-users"]
 #       - regex: ".*"                    # everyone → guest
 #         groups: ["guest"]
-#   - name: okta                        # Okta/Keycloak/Entra send a groups array
-#     display_name: "Okta"
+#   - name: okta                        # → /login/sso/okta/callback
+#     display_name: "Okta"              # Okta/Keycloak/Entra send a groups array
 #     issuer: "https://dev-123.okta.com"
 #     client_id: "…"
 #     client_secret: "…"
+#     scopes: ["openid", "email", "profile", "groups"]   # add "groups" for the claim
 #     create_groups: false
 #     group_rules:
 #       - claim: "groups"
