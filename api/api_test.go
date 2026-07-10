@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +42,7 @@ func setup(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := model.MigrateDNS(db); err != nil {
+	if err := model.Migrate(db, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatal(err)
 	}
 	ks, err := model.NewKeyStore(db)
@@ -87,7 +88,7 @@ func (h *harness) grantZoneRole(t *testing.T, username, group string, zoneID uin
 	t.Helper()
 	var g auth.GroupGORM
 	mustNil(t, h.db.Where("name = ?", group).First(&g).Error)
-	mustNil(t, h.db.Create(&model.GroupZoneRole{GroupID: g.ID, ZoneID: zoneID, Level: 2}).Error)
+	mustNil(t, h.db.Create(&model.GroupZoneRole{GroupID: g.ID, ZoneID: zoneID}).Error)
 }
 
 func TestRequiresBearer(t *testing.T) {

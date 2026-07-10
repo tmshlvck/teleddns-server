@@ -35,7 +35,7 @@ func setup(t *testing.T) *harness {
 	must(t, site.ForceUTC(db))
 	ag, err := auth.NewAuthGORM(scs.New(), db)
 	must(t, err)
-	must(t, model.MigrateDNS(db))
+	must(t, model.Migrate(db, slog.New(slog.NewTextHandler(io.Discard, nil))))
 	ks, err := model.NewKeyStore(db)
 	must(t, err)
 

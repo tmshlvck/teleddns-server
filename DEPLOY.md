@@ -354,6 +354,45 @@ dig @127.0.0.1 host.example.com A
   stolen or brute-forced credential.
 - **Backup:** the teleddns SQLite/Postgres DB is the source of truth; Knot
   state (zone files, journal) is regenerated from it on the next push.
+- **Schema migrations:** the server runs its migrations at startup and logs the
+  path taken (`msg="migrate: ..."`). A brand-new database is built in one shot
+  and needs nothing. See below for adopting a database created *before*
+  migrations existed.
+
+## 7. Adopting a pre-migrations database (one-time)
+
+Databases created by an early build have the app tables but no `migrations`
+version table. On such a database the migrator would treat it as *fresh* and
+stamp every migration as already-applied without running them — so the first
+real migration (dropping the dead `group_zone_roles.level` column) would be
+skipped. Seed the version table once, by hand, so the migrator instead runs the
+pending steps:
+
+```sh
+systemctl stop teleddns-server
+cp /var/lib/teleddns-server/db.sqlite /var/lib/teleddns-server/db.sqlite.bak   # always back up first
+```
+
+Then, against the database (SQLite shown; the same SQL works on Postgres):
+
+```sql
+CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY);
+INSERT INTO migrations (id) VALUES ('SCHEMA_INIT'), ('0001_initial_schema');
+```
+
+`SCHEMA_INIT` tells the migrator the schema is already established (skip the
+fresh-DB shortcut); `0001_initial_schema` says the base schema is already
+present. Everything appended after `0001` then runs in order on the next start:
+
+```sh
+systemctl start teleddns-server
+journalctl -u teleddns-server | grep 'migrate:'
+# ... msg="migrate: applying" id=0002_drop_gzr_level ...
+# ... msg="migrate: done" result=applied new=[0002_drop_gzr_level] ...
+```
+
+This is a **one-time** step per legacy instance. Databases created after
+migrations were introduced maintain the `migrations` table themselves.
 
 See [`README.md`](README.md) for the app itself and [`PLAN.md`](PLAN.md) for
 design/status.

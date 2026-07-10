@@ -23,7 +23,7 @@ func authzFixture(t *testing.T, db *gorm.DB) (zoneID uint, admin, l2, l1, none a
 	if err := db.Create(&z).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&GroupZoneRole{GroupID: zoneG.ID, ZoneID: z.ID, Level: L2}).Error; err != nil {
+	if err := db.Create(&GroupZoneRole{GroupID: zoneG.ID, ZoneID: z.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&GroupRRRole{GroupID: rrG.ID, ZoneID: z.ID, Label: "host"}).Error; err != nil {

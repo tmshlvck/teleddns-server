@@ -49,11 +49,9 @@ func (APIKey) TableName() string { return "api_keys" }
 // rest of the app uses, so keys live alongside users in one database.
 type KeyStore struct{ DB *gorm.DB }
 
-// NewKeyStore auto-migrates the api_keys table and returns a store over db.
+// NewKeyStore returns a store over db. The api_keys table is created by
+// Migrate (it is in appModels), which must have run first.
 func NewKeyStore(db *gorm.DB) (*KeyStore, error) {
-	if err := db.AutoMigrate(&APIKey{}); err != nil {
-		return nil, err
-	}
 	return &KeyStore{DB: db}, nil
 }
 

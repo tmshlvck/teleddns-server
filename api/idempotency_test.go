@@ -37,7 +37,7 @@ func setupIdem(t *testing.T) *idemHarness {
 	mustNil(t, site.ForceUTC(db))
 	ag, err := auth.NewAuthGORM(scs.New(), db)
 	mustNil(t, err)
-	mustNil(t, model.MigrateDNS(db))
+	mustNil(t, model.Migrate(db, slog.New(slog.NewTextHandler(io.Discard, nil))))
 	ks, err := model.NewKeyStore(db)
 	mustNil(t, err)
 	mustNil(t, ag.GroupAdd(model.AdminGroup))

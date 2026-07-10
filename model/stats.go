@@ -12,7 +12,7 @@ type Stats struct {
 }
 
 // rrTypeTables maps each RR type's metric label to its table, for per-type
-// record counts. Mirrors the tables registered in MigrateDNS.
+// record counts. Mirrors the tables in appModels (see migrate.go).
 var rrTypeTables = []struct{ name, table string }{
 	{"A", "rr_a"}, {"AAAA", "rr_aaaa"}, {"NS", "rr_ns"}, {"PTR", "rr_ptr"},
 	{"CNAME", "rr_cname"}, {"TXT", "rr_txt"}, {"MX", "rr_mx"}, {"SRV", "rr_srv"},

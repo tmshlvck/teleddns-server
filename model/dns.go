@@ -393,14 +393,16 @@ func (r *RRNS) BeforeDelete(tx *gorm.DB) error {
 
 // ── Authorization grants (PRD §9.3). ──
 
-// GroupZoneRole grants L2 (full zone CRUD) to a group on a whole zone.
+// GroupZoneRole grants L2 (full zone CRUD) to a group on a whole zone. The
+// grant is the row's existence; there is no level column. A per-zone level was
+// dropped (migration 0002) because L3 is global (User in the admin group), not
+// something a zone-scoped row can express — see the authz model in authz.go.
 type GroupZoneRole struct {
 	ID        uint           `gorm:"primaryKey"`
 	GroupID   uint           `gorm:"not null;uniqueIndex:idx_gzr_group_zone"`
 	Group     auth.GroupGORM `gorm:"foreignKey:GroupID;->"`
 	ZoneID    uint           `gorm:"not null;uniqueIndex:idx_gzr_group_zone"`
 	Zone      Zone           `gorm:"foreignKey:ZoneID;->"`
-	Level     int            `gorm:"not null;default:2"` // 2 in v1
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -422,13 +424,19 @@ type GroupRRRole struct {
 
 func (GroupRRRole) TableName() string { return "group_rr_roles" }
 
-// MigrateDNS auto-migrates the DNS schema. Call after the auth tables exist
-// (NewAuthGORM) since the role grants carry FKs into auth_groups.
-func MigrateDNS(db *gorm.DB) error {
-	return db.AutoMigrate(
+// appModels lists every table this application owns, in dependency order (a
+// table's FK targets precede it). It is the single source of truth for the
+// current schema: Migrate's InitSchema builds a fresh database straight from
+// this list, and the initial migration replays it. The gone auth tables
+// (auth_users, auth_groups, …) are NOT here — gone migrates them itself in
+// NewAuthGORM, which must run before Migrate since the role grants below carry
+// FKs into auth_groups.
+func appModels() []any {
+	return []any{
+		&APIKey{},
 		&Zone{}, &SyncTask{},
 		&RRA{}, &RRAAAA{}, &RRNS{}, &RRPTR{}, &RRCNAME{}, &RRTXT{},
 		&RRMX{}, &RRSRV{}, &RRCAA{}, &RRSSHFP{}, &RRTLSA{}, &RRDNSKEY{}, &RRDS{}, &RRNAPTR{},
 		&GroupZoneRole{}, &GroupRRRole{},
-	)
+	}
 }

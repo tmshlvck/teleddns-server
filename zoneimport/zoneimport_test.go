@@ -34,7 +34,7 @@ func testDB(t *testing.T) *gorm.DB {
 	if err := site.ForceUTC(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.MigrateDNS(db); err != nil {
+	if err := model.Migrate(db, discard()); err != nil {
 		t.Fatal(err)
 	}
 	return db

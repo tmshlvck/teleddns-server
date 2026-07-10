@@ -173,7 +173,7 @@ func runImport(db *gorm.DB, log *slog.Logger, args []string) error {
 	if fs.NArg() < 1 {
 		return fmt.Errorf("usage: admin import [--origin FQDN] [--replace] <zonefile|->")
 	}
-	if err := model.MigrateDNS(db); err != nil {
+	if err := model.Migrate(db, log); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
@@ -216,12 +216,12 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 
 	shell := web.Shell{Auth: ag, Log: log}.Func()
 
+	if err := model.Migrate(db, log); err != nil {
+		return fmt.Errorf("schema migrate: %w", err)
+	}
 	ks, err := model.NewKeyStore(db)
 	if err != nil {
 		return fmt.Errorf("api keys init: %w", err)
-	}
-	if err := model.MigrateDNS(db); err != nil {
-		return fmt.Errorf("dns migrate: %w", err)
 	}
 
 	// SSO providers must be registered before the auth routes (RegisterAdmin →

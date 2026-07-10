@@ -1,6 +1,8 @@
 package model
 
 import (
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -8,6 +10,9 @@ import (
 	"github.com/tmshlvck/gone/site"
 	"gorm.io/gorm"
 )
+
+// discardLog is a no-op logger for tests that don't assert on log output.
+func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -18,11 +23,11 @@ func testDB(t *testing.T) *gorm.DB {
 	if err := site.ForceUTC(db); err != nil {
 		t.Fatal(err)
 	}
-	// Zone/role FKs reference the auth tables.
+	// Zone/role FKs reference the auth tables; gone migrates these before Migrate.
 	if err := db.AutoMigrate(&auth.UserGORM{}, &auth.GroupGORM{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := MigrateDNS(db); err != nil {
+	if err := Migrate(db, discardLog()); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -133,7 +138,7 @@ func TestZoneDeleteCascades(t *testing.T) {
 	if err := db.Create(&g).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&GroupZoneRole{GroupID: g.ID, ZoneID: z.ID, Level: 2}).Error; err != nil {
+	if err := db.Create(&GroupZoneRole{GroupID: g.ID, ZoneID: z.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
 
