@@ -255,6 +255,14 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	})
 
 	root := chi.NewRouter()
+	// RealIP must precede the request logger: httplog snapshots RemoteAddr when
+	// the request enters, so a rewrite mounted after it would log the proxy's
+	// address (127.0.0.1) forever while the allow-list and audit saw the real
+	// client. Everything downstream reads the rewritten RemoteAddr.
+	if cfg.TrustProxy {
+		root.Use(middleware.RealIP)
+	}
+
 	// Log every request (success at INFO, 4xx/5xx at WARN). ECS-concise trims
 	// the field wall but also drops the client IP — re-add it under "src" so
 	// auth failures and DDNS calls are always traceable to a source. The
@@ -270,9 +278,6 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 			return r.URL.Path == "/healthcheck" || r.URL.Path == "/metrics"
 		},
 	}))
-	if cfg.TrustProxy {
-		root.Use(middleware.RealIP)
-	}
 	root.Use(web.IPAllowlist(cfg.AllowedIPs, log))
 
 	// Idempotency-Key replay for /api POSTs (PRD §11.1). Guarded internally, so
