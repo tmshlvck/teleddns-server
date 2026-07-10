@@ -1,3 +1,11 @@
+// Copyright (C) 2026 Tomas Hlavacek
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version. See the LICENSE file for the full text.
+
 // Command teleddns-server is the DNS management + DDNS server (Go rewrite).
 //
 // Usage:
@@ -20,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -62,6 +71,7 @@ Usage:
   teleddns-server [flags]                                serve
   teleddns-server [flags] admin reset-password USER [PASSWORD]
   teleddns-server [flags] admin import [--origin FQDN] [--replace] <zonefile|->
+  teleddns-server --version
 
 With no subcommand the HTTP server runs in the foreground. A password is
 generated and printed when reset-password is called without one; import reads
@@ -75,16 +85,22 @@ The config file is optional — every key has a built-in default.
 
 func main() {
 	var cfgPath string
-	var debug bool
+	var debug, showVersion bool
 	flag.StringVarP(&cfgPath, "config", "c", "", fmt.Sprintf(
 		"path to YAML config file (default $TELEDDNS_CONFIG, ./%s, %s)",
 		localConfigPath, systemConfigPath))
 	flag.BoolVarP(&debug, "debug", "d", false, "enable debug logging")
+	flag.BoolVarP(&showVersion, "version", "V", false, "print version and exit")
 	flag.Usage = usage
 	// Stop global flag parsing at the first positional so subcommand flags
 	// (e.g. `admin import --replace`) pass through to the subcommand's flagset.
 	flag.CommandLine.SetInterspersed(false)
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(versionString())
+		return
+	}
 
 	path := resolveConfigPath(cfgPath)
 	cfg, err := model.Load(path)
@@ -214,7 +230,7 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 		return err
 	}
 
-	shell := web.Shell{Auth: ag, Log: log}.Func()
+	shell := web.Shell{Auth: ag, Log: log, Version: versionShort()}.Func()
 
 	if err := model.Migrate(db, log); err != nil {
 		return fmt.Errorf("schema migrate: %w", err)
@@ -308,7 +324,7 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 
 	// Huma API: serves /openapi.json + /docs, the chi-served DDNS endpoints'
 	// documentation, and the M6 management/record operations (zones + RR).
-	hcfg := huma.DefaultConfig("teleddns-server", "0.1.0")
+	hcfg := huma.DefaultConfig("teleddns-server", strings.TrimPrefix(version, "v"))
 	hcfg.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"basic":  {Type: "http", Scheme: "basic"},
 		"bearer": {Type: "http", Scheme: "bearer"},

@@ -24,7 +24,18 @@ import (
 type Shell struct {
 	Auth *auth.AuthGORM
 	Log  *slog.Logger
+	// Version is the running build's short version (e.g. "v0.3.0"), shown in
+	// the page footer.
+	Version string
 }
+
+// Footer metadata shown on every page.
+const (
+	repoURL      = "https://github.com/tmshlvck/teleddns-server"
+	licenseName  = "GPL-3.0-or-later"
+	licenseURL   = "https://www.gnu.org/licenses/gpl-3.0.html"
+	copyrightStr = "© 2026 Tomas Hlavacek"
+)
 
 // Func returns the site.Shell closure to hand to gone (auth/admin RegisterRoutes).
 func (s Shell) Func() site.Shell {
@@ -47,8 +58,28 @@ func (s Shell) Func() site.Shell {
 		if err := content.Render(r.Context(), w); err != nil {
 			s.Log.Error("shell render", "err", err)
 		}
-		s.write(w, "</main></body></html>")
+		s.write(w, "</main>")
+		s.writeFooter(w)
+		s.write(w, "</body></html>")
 	}
+}
+
+// writeFooter renders the copyright / license / source / version line shown at
+// the bottom of every page.
+func (s Shell) writeFooter(w http.ResponseWriter) {
+	ver := s.Version
+	if ver == "" {
+		ver = "dev"
+	}
+	const footFmt = `<footer class="p-4 mt-8 text-center text-xs opacity-60">
+teleddns-server %s · %s · <a href="%s" class="link link-hover">%s</a> · <a href="%s" class="link link-hover">source</a>
+</footer>`
+	s.write(w, footFmt,
+		html.EscapeString(ver),
+		html.EscapeString(copyrightStr),
+		html.EscapeString(licenseURL), html.EscapeString(licenseName),
+		html.EscapeString(repoURL),
+	)
 }
 
 func (s Shell) writeHead(w http.ResponseWriter, title, csrf, theme string) {
