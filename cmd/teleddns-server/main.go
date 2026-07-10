@@ -2,8 +2,11 @@
 //
 // Usage:
 //
-//	teleddns-server [-config FILE] [-debug]                 # run the server
-//	teleddns-server [-config FILE] admin reset-password USER [PASSWORD]
+//	teleddns-server [-c FILE] [-d]                          # run the server
+//	teleddns-server [-c FILE] admin reset-password USER [PASSWORD]
+//	teleddns-server [-c FILE] admin import [--origin FQDN] [--replace] <zonefile|->
+//
+// See usage() for the --help text.
 package main
 
 import (
@@ -48,11 +51,36 @@ const (
 	systemConfigPath = "/etc/teleddns/teleddns-server.yaml"
 )
 
+// usage prints the global flags plus the subcommand synopsis. pflag only knows
+// about the global flags, so the subcommands runCLI dispatches on are listed
+// here by hand.
+func usage() {
+	out := flag.CommandLine.Output()
+	fmt.Fprintf(out, `teleddns-server — DNS management + DDNS server
+
+Usage:
+  teleddns-server [flags]                                serve
+  teleddns-server [flags] admin reset-password USER [PASSWORD]
+  teleddns-server [flags] admin import [--origin FQDN] [--replace] <zonefile|->
+
+With no subcommand the HTTP server runs in the foreground. A password is
+generated and printed when reset-password is called without one; import reads
+stdin when the zonefile is "-".
+
+Flags:
+%s
+The config file is optional — every key has a built-in default.
+`, flag.CommandLine.FlagUsages())
+}
+
 func main() {
 	var cfgPath string
 	var debug bool
-	flag.StringVarP(&cfgPath, "config", "c", "", "path to YAML config file")
+	flag.StringVarP(&cfgPath, "config", "c", "", fmt.Sprintf(
+		"path to YAML config file (default $TELEDDNS_CONFIG, ./%s, %s)",
+		localConfigPath, systemConfigPath))
 	flag.BoolVarP(&debug, "debug", "d", false, "enable debug logging")
+	flag.Usage = usage
 	// Stop global flag parsing at the first positional so subcommand flags
 	// (e.g. `admin import --replace`) pass through to the subcommand's flagset.
 	flag.CommandLine.SetInterspersed(false)
