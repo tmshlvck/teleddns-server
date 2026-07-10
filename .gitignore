@@ -1,5 +1,5 @@
 # testing DB
 *.sqlite
 
-# Local runtime config (copy config.sample.yaml → config.yaml)
-config.yaml
+# Local runtime config (copy teleddns-server.sample.yaml → teleddns-server.yaml)
+teleddns-server.yaml

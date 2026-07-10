@@ -42,6 +42,12 @@ import (
 	"github.com/tmshlvck/teleddns-server/zoneimport"
 )
 
+// Config-file lookup locations, tried in order after $TELEDDNS_CONFIG.
+const (
+	localConfigPath  = "teleddns-server.yaml"
+	systemConfigPath = "/etc/teleddns/teleddns-server.yaml"
+)
+
 func main() {
 	var cfgPath string
 	var debug bool
@@ -377,8 +383,8 @@ func healthcheck(cfg model.Config, db *gorm.DB, worker *knot.Worker, started tim
 }
 
 // resolveConfigPath picks the config file to load when -config/-c is not
-// given: $TELEDDNS_CONFIG, then ./config.yaml, then the system path. Returns
-// "" when none exists (built-in defaults apply).
+// given: $TELEDDNS_CONFIG, then ./teleddns-server.yaml, then the system path.
+// Returns "" when none exists (built-in defaults apply).
 func resolveConfigPath(explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -386,7 +392,7 @@ func resolveConfigPath(explicit string) string {
 	if v := os.Getenv("TELEDDNS_CONFIG"); v != "" {
 		return v
 	}
-	for _, p := range []string{"config.yaml", "/etc/teleddns-server/config.yaml"} {
+	for _, p := range []string{localConfigPath, systemConfigPath} {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}

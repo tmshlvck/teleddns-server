@@ -23,33 +23,35 @@ CGO_ENABLED=0 go build -o teleddns-server ./cmd/teleddns-server
 
 ## Configure
 
-Copy [`config.sample.yaml`](config.sample.yaml) and edit. The essentials:
+Copy [`teleddns-server.sample.yaml`](teleddns-server.sample.yaml) and edit. The
+essentials:
 
 ```yaml
 db_dsn: "sqlite:///var/lib/teleddns/db.sqlite"   # or postgres://…
 listen_addr: "127.0.0.1:8080"
 
-backend: "knot"                 # "log" (default, no-op) or "knot"
-knot_zone_dir: "/var/lib/knot"  # where zone files are written (must match the Knot template's storage)
+backend: "knot"                       # "log" (default, no-op) or "knot"
+knot_zone_dir: "/var/lib/knot/zones"  # where zone files are written (must match the Knot template's storage)
 knotc_path: "/usr/sbin/knotc"
-knot_template: "master"         # the knot.conf template teleddns assigns to each managed zone
+knot_template: "master"               # the knot.conf template teleddns assigns to each managed zone
 ```
 
 All keys are optional (built-in defaults apply); durations are quoted strings
 (`"10s"`). Config file is found via `-c/--config`, `$TELEDDNS_CONFIG`,
-`./config.yaml`, or `/etc/teleddns-server/config.yaml`.
+`./teleddns-server.yaml`, or `/etc/teleddns/teleddns-server.yaml`.
 
 ## Run
 
 ```sh
-teleddns-server -c /etc/teleddns.yaml
+teleddns-server                                       # uses the default config path
+teleddns-server -c /etc/teleddns/teleddns-server.yaml # or point at one explicitly
 ```
 
 On first start it seeds an `admin` user and logs the generated password once
 (`level=WARN msg="seeded initial admin user"`). Reset it any time:
 
 ```sh
-teleddns-server -c /etc/teleddns.yaml admin reset-password admin
+teleddns-server admin reset-password admin
 ```
 
 Bulk-load records from a BIND zone file (parsed with `miekg/dns`; the origin
@@ -58,8 +60,8 @@ the same validation + Knot-sync path as the API. `--replace` clears the zone's
 existing records first; the default merges. Reads stdin with `-`:
 
 ```sh
-teleddns-server -c /etc/teleddns.yaml admin import example.com.zone
-teleddns-server -c /etc/teleddns.yaml admin import --replace example.com.zone
+teleddns-server admin import example.com.zone
+teleddns-server admin import --replace example.com.zone
 ```
 
 Then:
@@ -179,7 +181,8 @@ sso_providers:
 ```
 
 There is no admin special-casing — a rule that assigns your admin group grants
-L3, so scope rules carefully. See [`config.sample.yaml`](config.sample.yaml) for
+L3, so scope rules carefully. See
+[`teleddns-server.sample.yaml`](teleddns-server.sample.yaml) for
 the full commented example.
 
 ## Monitoring
@@ -266,7 +269,7 @@ acl:
 
 template:
   - id: master
-    storage: "/var/lib/knot"         # must equal teleddns knot_zone_dir
+    storage: "/var/lib/knot/zones"   # must equal teleddns knot_zone_dir
     file: "%s.zone"
     zonefile-load: difference        # → incremental IXFR to secondaries
     catalog-role: member
@@ -281,7 +284,11 @@ zone:
     notify: slave
 ```
 
-Set teleddns `knot_zone_dir: /var/lib/knot` and `knot_template: master`.
+`database.storage` (confdb, journal, timers, keys) and the template's zone-file
+`storage` are separate options; keep the zone files in their own subdirectory
+(`mkdir -p /var/lib/knot/zones && chown knot:knot /var/lib/knot/zones`).
+
+Set teleddns `knot_zone_dir: /var/lib/knot/zones` and `knot_template: master`.
 Create a zone in teleddns → it is declared as a `master`-template member →
 Knot adds it to `catalog.` (check with `knotc zone-read catalog.`).
 

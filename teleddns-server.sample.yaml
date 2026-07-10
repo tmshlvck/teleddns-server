@@ -1,6 +1,9 @@
 # teleddns-server sample configuration.
 #
-# Copy to config.yaml and run:  teleddns-server -config config.yaml
+# Copy to teleddns-server.yaml and run:  teleddns-server -c teleddns-server.yaml
+# Without -c the file is looked up as $TELEDDNS_CONFIG, then
+# ./teleddns-server.yaml, then /etc/teleddns/teleddns-server.yaml.
+#
 # Every key is optional — omitted keys fall back to the built-in defaults
 # shown in brackets. Durations are strings ("10s", "5m", "2h"); a bare number
 # will NOT parse.

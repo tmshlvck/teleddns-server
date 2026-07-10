@@ -59,7 +59,7 @@ acl:
 
 template:
   - id: master
-    storage: "/var/lib/knot"          # MUST equal teleddns knot_zone_dir
+    storage: "/var/lib/knot/zones"    # MUST equal teleddns knot_zone_dir
     file: "%s.zone"
     zonefile-load: difference         # → incremental IXFR to secondaries
     catalog-role: member
@@ -74,7 +74,15 @@ zone:
     notify: [ sec1, sec2 ]
 ```
 
+`database.storage` is where Knot keeps its own state (`confdb/`, `journal/`,
+`timers/`, `keys/`, `catalog/`); the template's `storage` is where *zone files*
+live. They default to the same `/var/lib/knot`, but keeping the zone files in
+their own subdirectory — as Knot's own examples do — means teleddns writes into
+a directory that holds nothing but zones:
+
 ```sh
+mkdir -p /var/lib/knot/zones
+chown knot:knot /var/lib/knot/zones
 knotc conf-check       # validate the file
 ```
 
@@ -123,7 +131,8 @@ CGO_ENABLED=0 go build -o teleddns-server ./cmd/teleddns-server
 scp teleddns-server root@primary:/usr/local/bin/
 ```
 
-`/etc/teleddns-server/config.yaml`:
+`/etc/teleddns/teleddns-server.yaml` (the default path — `-c` only needed
+elsewhere):
 
 ```yaml
 db_dsn: "sqlite:///var/lib/teleddns-server/db.sqlite"
@@ -131,14 +140,14 @@ listen_addr: "127.0.0.1:8080"        # plaintext; front with Caddy for TLS (§3)
 trust_proxy: true                     # read the real client IP from the proxy (§3)
 
 backend: "knot"
-knot_zone_dir: "/var/lib/knot"        # == the template's storage
+knot_zone_dir: "/var/lib/knot/zones"  # == the template's storage
 knotc_path: "/usr/sbin/knotc"
 knot_template: "master"               # the template from §1
 backend_sync_delay: "5s"
 ```
 
 Run it as the **`knot` user** so it can use the control socket
-(`/run/knot/knot.sock`) and write zone files into `/var/lib/knot`.
+(`/run/knot/knot.sock`) and write zone files into `/var/lib/knot/zones`.
 `/etc/systemd/system/teleddns-server.service`:
 
 ```ini
@@ -150,7 +159,7 @@ Wants=network-online.target knot.service
 [Service]
 User=knot
 Group=knot
-ExecStart=/usr/local/bin/teleddns-server -c /etc/teleddns-server/config.yaml
+ExecStart=/usr/local/bin/teleddns-server -c /etc/teleddns/teleddns-server.yaml
 StateDirectory=teleddns-server         # creates /var/lib/teleddns-server (knot:knot)
 Restart=on-failure
 
@@ -161,7 +170,7 @@ WantedBy=multi-user.target
 ```sh
 systemctl daemon-reload && systemctl enable --now teleddns-server
 journalctl -u teleddns-server | grep 'seeded initial admin'   # one-time admin password
-# or: teleddns-server -c /etc/teleddns-server/config.yaml admin reset-password admin
+# or: teleddns-server -c /etc/teleddns/teleddns-server.yaml admin reset-password admin
 ```
 
 Open the UI at `http://127.0.0.1:8080/admin` (tunnel or reverse-proxy it),
