@@ -8,8 +8,9 @@ local Knot via `knotc`. Secondary servers replicate natively over **AXFR/TSIG**
 and auto-provision from a **catalog zone (RFC 9432)** — teleddns never talks to
 other teleddns instances.
 
-Design/roadmap live in [`PLAN.md`](PLAN.md); the wire contract for DDNS clients
-is in [`PRD.md`](PRD.md). For a full production runbook — systemd service,
+The design (surfaces, authorization, DDNS wire contract, Knot integration) is in
+[`docs/DESIGN.md`](docs/DESIGN.md); the roadmap is in
+[`docs/TODO.md`](docs/TODO.md). For a full production runbook — systemd service,
 Caddy/TLS with correct client-IP forwarding, and secondary **Knot or BIND9**
 via the catalog zone — see [`DEPLOY.md`](DEPLOY.md).
 
@@ -18,6 +19,8 @@ via the catalog zone — see [`DEPLOY.md`](DEPLOY.md).
 Pure-Go (no cgo); produces a static binary.
 
 ```sh
+make build   # stamps the version from git describe (recommended)
+# or, without the version stamp:
 CGO_ENABLED=0 go build -o teleddns-server ./cmd/teleddns-server
 ```
 
@@ -45,6 +48,7 @@ All keys are optional (built-in defaults apply); durations are quoted strings
 ```sh
 teleddns-server                                       # uses the default config path
 teleddns-server -c /etc/teleddns/teleddns-server.yaml # or point at one explicitly
+teleddns-server --version                             # print version and exit
 ```
 
 On first start it seeds an `admin` user and logs the generated password once
@@ -100,7 +104,7 @@ curl -X DELETE $URL/api/zones/1/rr/a-1 -H "Authorization: Bearer $KEY"
 Zones: read/update need L2 on the zone, create/delete need L3 (admin). Records:
 A/AAAA read+update need L1, everything else L2. Mutations bump the SOA serial and
 push to Knot exactly like the admin UI. User/group/role management is **not** on
-the API — use the operator UI or your IdP (see [`PLAN.md`](PLAN.md)).
+the API — use the operator UI or your IdP (see [`docs/DESIGN.md`](docs/DESIGN.md) §4).
 
 Lists are paginated (`?page`/`?per_page`, default 50 / max 500) with an
 `X-Total-Count` header and `?type`/`?name` filters. A `POST` may carry an
@@ -235,106 +239,29 @@ managed zone. Everything cluster-static — the transfer ACL, TSIG keys, catalog
 membership — lives in the operator's base `knot.conf` template, so teleddns
 only has to assign that template per zone.
 
-## Operator base `knot.conf` (master with catalog generation)
+## Knot configuration
 
-teleddns assigns the `master` template to each zone; the template makes the
-zone a catalog member, and Knot generates the catalog the secondaries consume.
-This config is `knotc conf-check`-valid on Knot 3.4 and loads the catalog zone
-as `role: master | catalog: generate`:
-
-```yaml
-server:
-    rundir: "/run/knot"
-    listen: [ 127.0.0.1@53 ]
-    automatic-acl: on
-
-database:
-    storage: "/var/lib/knot"
-
-key:
-  - id: xfrkey
-    algorithm: hmac-sha256
-    secret: "<base64 secret>"        # head -c 32 /dev/urandom | base64
-
-remote:
-  - id: slave
-    address: 192.0.2.2@53            # the secondary
-    key: xfrkey
-
-acl:
-  - id: slave_acl
-    address: 192.0.2.2
-    key: xfrkey
-    action: transfer
-
-template:
-  - id: master
-    storage: "/var/lib/knot/zones"   # must equal teleddns knot_zone_dir
-    file: "%s.zone"
-    zonefile-load: difference        # → incremental IXFR to secondaries
-    catalog-role: member
-    catalog-zone: catalog.
-    acl: slave_acl
-    notify: slave
-
-zone:
-  - domain: catalog.
-    catalog-role: generate
-    acl: slave_acl
-    notify: slave
-```
-
-`database.storage` (confdb, journal, timers, keys) and the template's zone-file
-`storage` are separate options; keep the zone files in their own subdirectory
-(`mkdir -p /var/lib/knot/zones && chown knot:knot /var/lib/knot/zones`).
-
-Set teleddns `knot_zone_dir: /var/lib/knot/zones` and `knot_template: master`.
-Create a zone in teleddns → it is declared as a `master`-template member →
-Knot adds it to `catalog.` (check with `knotc zone-read catalog.`).
-
-## Secondary (consumes the catalog)
-
-A plain Knot instance, configured once to interpret the catalog and AXFR from
-the master with the shared TSIG key — it then auto-provisions every member
-zone (no per-zone config):
-
-```yaml
-key:
-  - id: xfrkey
-    algorithm: hmac-sha256
-    secret: "<same base64 secret>"
-
-remote:
-  - id: master
-    address: 192.0.2.1@53
-    key: xfrkey
-
-acl:
-  - id: master_acl
-    address: 192.0.2.1
-    key: xfrkey
-    action: notify
-
-template:
-  - id: catalog-member
-    master: master
-    acl: master_acl
-
-zone:
-  - domain: catalog.
-    master: master
-    acl: master_acl
-    catalog-role: interpret
-    catalog-template: catalog-member
-```
+teleddns keeps **no** Knot config of its own — it assigns the operator's
+`master` template to each managed zone via `knotc conf-set`, and everything
+cluster-static (the transfer ACL, TSIG keys, catalog membership) lives in the
+operator's base `knot.conf`. The complete, `knotc conf-check`-valid base config
+for the master (catalog generation) and the secondaries (Knot and BIND 9) is in
+[`DEPLOY.md`](DEPLOY.md) §1 and §4–§5. In short: set teleddns
+`knot_zone_dir: /var/lib/knot/zones` and `knot_template: master`; create a zone
+in teleddns → it is declared as a `master`-template member → Knot adds it to
+`catalog.` and the secondaries auto-provision it.
 
 ## Status
 
-Working and tested against Knot DNS 3.4.6. Complete and verified: zone + record
-CRUD via the admin UI, the **JSON management API** and the **Cloudflare-compatible
-facade**, the DDNS endpoint, `admin import` for BIND zone files, Prometheus
-`/metrics` + the health/replication `/healthcheck`, and the sync worker driving
-`knotc` (declare zone, write file, reload) so `kdig` serves the records. Catalog
-generation on the master is verified; full secondary auto-provisioning is the
-documented setup above. Milestones M0–M6 are done; see [`PLAN.md`](PLAN.md) §7
-for the optional/deferred items that remain.
+Working and verified against Knot DNS 3.4.6: zone + record CRUD via the admin UI,
+the **JSON management API** and the **Cloudflare-compatible facade**, the DDNS
+endpoint, `admin import` for BIND zone files, Prometheus `/metrics` + the
+health/replication `/healthcheck`, and the sync worker driving `knotc` (declare
+zone, write file, reload) so `kdig` serves the records. Catalog generation on the
+master is verified; secondary auto-provisioning is the documented setup in
+[`DEPLOY.md`](DEPLOY.md). Remaining/optional work is in
+[`docs/TODO.md`](docs/TODO.md).
+
+## License
+
+GPL-3.0-or-later. See [`LICENSE`](LICENSE). Copyright © 2026 Tomas Hlavacek.

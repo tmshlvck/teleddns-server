@@ -1,10 +1,10 @@
-// Package api implements the native management JSON API (PRD §11, PLAN.md M6):
+// Package api implements the native management JSON API (docs/DESIGN.md §6):
 // a Huma-served, Bearer-only surface for zones and resource records, for
 // clients/tooling (external-dns, cert-manager, libdns, …). Authorization reuses
 // the model's RequiredLevel/EffectiveLevel/Authorized helpers; every mutation
 // funnels through the same GORM hooks as the admin + DDNS paths (SOA bump,
-// last-NS guard, SyncTask enqueue). The first cut covers zones + RR only —
-// users/groups/roles are managed via the operator UI + the IdP (see PLAN.md).
+// last-NS guard, SyncTask enqueue). It covers zones + RR only —
+// users/groups/roles are managed via the operator UI + the IdP (see docs/DESIGN.md §4).
 package api
 
 import (

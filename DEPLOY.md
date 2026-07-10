@@ -359,5 +359,5 @@ dig @127.0.0.1 host.example.com A
   an existing one has any pending migrations applied in order. Neither needs
   operator action.
 
-See [`README.md`](README.md) for the app itself and [`PLAN.md`](PLAN.md) for
-design/status.
+See [`README.md`](README.md) for the app itself and
+[`docs/DESIGN.md`](docs/DESIGN.md) for the design.

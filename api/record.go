@@ -13,7 +13,7 @@ import (
 )
 
 // APIRecord is the unified, type-discriminated representation of a resource
-// record over the management API (PLAN.md M6). One JSON shape covers all 14 RR
+// record over the management API (docs/DESIGN.md §6). One JSON shape covers all 14 RR
 // types: `type` selects the record kind, and only the rdata fields relevant to
 // that type are populated (the rest are omitted). It maps to/from the
 // one-table-per-type GORM models. `id` is an opaque, type-prefixed handle

@@ -13,7 +13,7 @@ import (
 var ErrLastNSRecord = errors.New("cannot delete the last NS record of a zone")
 
 // This file defines the DNS data model, scoped to the co-located, master-only,
-// Knot-only design (see PLAN.md):
+// Knot-only design (see docs/DESIGN.md §7):
 //
 //   - Zone — a master origin with inline SOA fields.
 //   - RR*   — one GORM table per RR type (PRD §4.2). Structs are flat (no

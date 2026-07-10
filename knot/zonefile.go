@@ -1,6 +1,6 @@
 // Package knot renders zone files for the local Knot DNS server and pushes
 // them via the backend-sync worker. Scoped to the co-located, master-only,
-// Knot-only design (see PLAN.md).
+// Knot-only design (see docs/DESIGN.md §7).
 package knot
 
 import (
