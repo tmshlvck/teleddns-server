@@ -37,6 +37,14 @@ dedicated onboarding flow in the operator UI would make this self-service.
   map, plus a `?bump_serial=false` (L3-only) override on mutations, are specced
   but not implemented.
 
+## Done
+
+- **User-Agent logging** (v0.3.1) — the request log and the DDNS audit/warn
+  lines now carry the client `user_agent` / `ua`, so operators can see which
+  client (router firmware, `ddclient`, the TeleDDNS client) drove an update or a
+  failure. The related idea of *behavioral* opt-ins keyed on a
+  `teleddns/<version>` User-Agent remains future work.
+
 ## Won't do
 
 - **Legacy Python-SQLite import.** The BIND zone-file `admin import` covers
