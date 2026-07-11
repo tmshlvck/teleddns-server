@@ -62,12 +62,13 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request) {
 	myip := strings.TrimSpace(q.Get("myip"))
 	myipv6 := strings.TrimSpace(q.Get("myipv6"))
 	src := clientIP(r)
+	ua := r.UserAgent()
 
 	c, ok, fail := h.resolveCaller(r)
 	if !ok {
 		metrics.AuthFailures.WithLabelValues("ddns", authReason(fail)).Inc()
 		h.Log.Warn("ddns auth rejected", "reason", fail.reason, "user", fail.user,
-			"src", src, "hostname", hostname)
+			"src", src, "hostname", hostname, "ua", ua)
 		h.write(w, http.StatusUnauthorized, []line{{code: "badauth", status: 401}}, fail.www)
 		return
 	}
@@ -77,23 +78,23 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.lim.allow(c, hostname) {
 		metrics.RateLimited.WithLabelValues("ddns").Inc()
-		h.Log.Warn("ddns rate limited", "user", c.user.Username(), "hostname", hostname, "src", src)
+		h.Log.Warn("ddns rate limited", "user", c.user.Username(), "hostname", hostname, "src", src, "ua", ua)
 		h.write(w, http.StatusTooManyRequests, []line{{code: "abuse", status: 429}}, "")
 		return
 	}
 
 	var lines []line
 	if myip != "" {
-		lines = append(lines, h.one(c, hostname, myip, src))
+		lines = append(lines, h.one(c, hostname, myip, src, ua))
 	}
 	if myipv6 != "" {
-		lines = append(lines, h.one(c, hostname, myipv6, src))
+		lines = append(lines, h.one(c, hostname, myipv6, src, ua))
 	}
 	h.write(w, worstStatus(lines), lines, "")
 }
 
 // one processes a single address against the resolved (zone, label).
-func (h *Handler) one(c caller, hostname, addrStr, src string) line {
+func (h *Handler) one(c caller, hostname, addrStr, src, ua string) line {
 	addr, err := netip.ParseAddr(addrStr)
 	if err != nil {
 		return line{code: "notfqdn", status: 400}
@@ -115,7 +116,7 @@ func (h *Handler) one(c caller, hostname, addrStr, src string) line {
 	if !model.Authorized(c.tokenLevel, eff, need) {
 		h.Log.Warn("ddns authz denied", "user", c.user.Username(), "src", src,
 			"zone", zone.Origin, "label", label, "tokenLevel", c.tokenLevel,
-			"effective", eff, "need", need)
+			"effective", eff, "need", need, "ua", ua)
 		return line{code: "!yours", ip: ip, status: 403}
 	}
 
@@ -128,7 +129,7 @@ func (h *Handler) one(c caller, hostname, addrStr, src string) line {
 	}
 	if status == http.StatusOK {
 		h.Log.Info("ddns", "result", code, "label", label, "zone", zone.Origin, "ip", ip,
-			"user", c.user.Username(), "src", src)
+			"user", c.user.Username(), "src", src, "ua", ua)
 	}
 	return line{code: code, ip: ip, status: status}
 }

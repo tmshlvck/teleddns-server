@@ -286,6 +286,7 @@ func serve(cfg model.Config, log *slog.Logger, db *gorm.DB, sm *scs.SessionManag
 	// flooding the log.
 	reqSchema := httplog.SchemaECS.Concise(true)
 	reqSchema.RequestRemoteIP = "src"
+	reqSchema.RequestUserAgent = "user_agent" // concise drops it; re-add for client diagnostics
 	root.Use(httplog.RequestLogger(log, &httplog.Options{
 		Level:         slog.LevelInfo,
 		Schema:        reqSchema,
