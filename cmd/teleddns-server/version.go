@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strings"
 )
 
 // version is the release version. It is "dev" for a plain `go build` and is
@@ -33,7 +34,10 @@ func resolveVersion() (ver, revision string) {
 		// never a noisy pseudo-version (we show the revision separately).
 		if ver == "dev" && bi.Main.Version != "" && bi.Main.Version != "(devel)" &&
 			!pseudoVersion.MatchString(bi.Main.Version) {
-			ver = bi.Main.Version
+			// Go appends "+dirty" build metadata to Main.Version for a modified
+			// tree; drop it — the revision suffix below already reports dirty,
+			// so keeping it here would double-report ("v0.3.0+dirty (…-dirty)").
+			ver, _, _ = strings.Cut(bi.Main.Version, "+")
 		}
 		var modified bool
 		for _, s := range bi.Settings {

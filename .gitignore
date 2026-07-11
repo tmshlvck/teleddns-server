@@ -1,5 +1,14 @@
+# built binary (make build / go build ./cmd/teleddns-server) — left in the repo
+# root it would otherwise show as untracked and make `go build` stamp the
+# version -dirty on every rebuild.
+/teleddns-server
+
 # testing DB
 *.sqlite
 
 # Local runtime config (copy teleddns-server.sample.yaml → teleddns-server.yaml)
 teleddns-server.yaml
+
+# editor swap/backup files (would otherwise dirty the build stamp)
+*.swp
+*~
