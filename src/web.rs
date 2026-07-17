@@ -91,6 +91,7 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
         .separator()
         .group("Reference")
         .link("API docs", "/docs")
+        .link("My API keys", "/keys")
         .link("Profile", "/profile")
         .link("Log out", "/logout")
 }

@@ -2701,8 +2701,10 @@ name = "teleddns-server"
 version = "0.2.0"
 dependencies = [
  "askama",
+ "async-trait",
  "axum",
  "axum-extra",
+ "base64",
  "clap",
  "hex",
  "http-body-util",

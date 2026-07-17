@@ -52,6 +52,8 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/", get(crate::web::home))
+        .route("/keys", get(crate::keys::page).post(crate::keys::mint))
+        .route("/keys/{id}/revoke", axum::routing::post(crate::keys::revoke))
         .route("/openapi.json", get(crate::web::openapi_json))
         .route("/docs", get(crate::web::docs))
         .route("/healthcheck", get(healthcheck))

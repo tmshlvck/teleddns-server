@@ -2,9 +2,13 @@
 //! See PRD.md for the product spec and RUSTREWRITE.md for the implementation plan.
 
 mod app;
+mod authz;
 mod config;
 mod db;
+mod keys;
 mod model;
+mod principal;
+mod sync;
 mod web;
 
 use clap::{Parser, Subcommand};

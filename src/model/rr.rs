@@ -40,7 +40,19 @@ macro_rules! rr_entity {
                 }
             }
 
-            impl ActiveModelBehavior for ActiveModel {}
+            // On create/update through ANY path (the admin UI, the API, DDNS), bump the parent zone's
+            // serial and enqueue a backend push. Deletes are enqueued explicitly by the write paths
+            // (bulk deletes bypass per-row hooks).
+            #[async_trait::async_trait]
+            impl ActiveModelBehavior for ActiveModel {
+                async fn after_save<C>(model: Model, db: &C, _insert: bool) -> Result<Model, DbErr>
+                where
+                    C: ConnectionTrait,
+                {
+                    crate::sync::on_rr_saved(db, model.zone_id).await?;
+                    Ok(model)
+                }
+            }
         }
     };
 }

@@ -25,7 +25,18 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 
-impl ActiveModelBehavior for ActiveModel {}
+// A direct zone create/edit (e.g. an SOA change in the admin UI) enqueues a push. It does not
+// auto-bump the serial — the operator/API controls the serial on a zone edit; RR changes bump it.
+#[async_trait::async_trait]
+impl ActiveModelBehavior for ActiveModel {
+    async fn after_save<C>(model: Model, db: &C, _insert: bool) -> Result<Model, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        crate::sync::enqueue(db, &model.origin).await?;
+        Ok(model)
+    }
+}
 
 impl Model {
     /// Default SOA/NS-bearing zone for a freshly created origin. `serial` starts at 1; MNAME defaults
