@@ -80,6 +80,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .route("/openapi.json", get(crate::web::openapi_json))
         .route("/docs", get(crate::web::docs))
         .route("/healthcheck", get(healthcheck))
+        .merge(crate::api::router())
         .with_state(state.clone())
         .merge(auth.routes())
         .merge(engine.router());
