@@ -6,9 +6,13 @@ mod authz;
 mod backend;
 mod config;
 mod db;
+mod ddns;
+mod dns;
 mod keys;
+mod metrics;
 mod model;
 mod principal;
+mod ratelimit;
 mod sync;
 mod web;
 

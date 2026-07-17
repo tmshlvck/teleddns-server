@@ -18,6 +18,8 @@ pub struct AppState {
     pub openapi: String,
     pub backend: Arc<dyn crate::backend::Backend>,
     pub worker: crate::backend::worker::WorkerHandle,
+    pub metrics: Arc<crate::metrics::Metrics>,
+    pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
 }
 
 /// Run the HTTP server.
@@ -63,12 +65,18 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         openapi,
         backend,
         worker,
+        metrics: Arc::new(crate::metrics::Metrics::new()),
+        ratelimit: Arc::new(crate::ratelimit::RateLimiter::new()),
     };
 
+    let ddns = get(crate::ddns::update).fallback(crate::ddns::reject_non_get);
     let app = Router::new()
         .route("/", get(crate::web::home))
         .route("/keys", get(crate::keys::page).post(crate::keys::mint))
         .route("/keys/{id}/revoke", axum::routing::post(crate::keys::revoke))
+        .route("/nic/update", ddns.clone())
+        .route("/ddns/update", ddns.clone())
+        .route("/update", ddns)
         .route("/openapi.json", get(crate::web::openapi_json))
         .route("/docs", get(crate::web::docs))
         .route("/healthcheck", get(healthcheck))
