@@ -6,6 +6,12 @@ in-tree development copy). This document is the working plan: architecture,
 module layout, what the library gives us vs. what we build, and the milestone
 sequence. It supersedes the Go implementation, which is removed on this branch.
 
+**Status:** M0–M8 are **done** (scaffold, model + admin UI, authz + API keys,
+backend + worker + zonefile, DDNS, native API, CF facade, operability, docs) and
+verified end-to-end against the `log` backend; the `knot` backend is implemented
+and documented in [`DEPLOY.md`](DEPLOY.md). M9 (OIDC SSO login) is deferred — its
+config is parsed today. See §11 for the per-milestone detail and §12 for gaps.
+
 ## 1. Goals & constraints
 
 - **Faithful to the PRD.** Same wire contracts (dyndns2 vocabulary, native API
