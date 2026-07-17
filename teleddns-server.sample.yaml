@@ -5,20 +5,15 @@
 # ./teleddns-server.yaml, then /etc/teleddns/teleddns-server.yaml.
 #
 # Every key is optional — omitted keys fall back to the built-in defaults
-# shown in brackets. Durations are strings ("10s", "5m", "2h"); a bare number
-# will NOT parse.
+# shown in brackets. Durations are strings ("10s", "5m", "2h").
 
 # Database. Scheme picks the engine:
-#   sqlite://<path>      pure-Go SQLite (file is created if missing)
-#   postgres://<dsn...>  Postgres
-#
-# This points at a file in the working directory, so data persists across
-# restarts — delete the file to start fresh.
+#   sqlite://<path>      SQLite (the file is created if missing)
+#   postgres://<dsn...>  PostgreSQL
 db_dsn: "sqlite://teleddns.sqlite"
-# Postgres alternative:
-# db_dsn: "postgres://teleddns:secret@localhost:5432/teleddns?sslmode=disable"
+# db_dsn: "postgres://teleddns:secret@localhost:5432/teleddns"
 
-# Address the HTTP server listens on.            [":8080"]
+# Address the HTTP server listens on. A leading ":" means all interfaces. [":8080"]
 listen_addr: ":8080"
 
 # CIDRs allowed to connect; empty/omitted = allow all.   [all]
@@ -26,96 +21,46 @@ listen_addr: ":8080"
 #   - "127.0.0.1/32"
 #   - "10.0.0.0/8"
 
-# Extra allow-list for the operability endpoints /healthcheck and /metrics, ON
-# TOP OF allowed_ips. Empty/omitted = no extra restriction. Evaluated after the
-# proxy real-IP rewrite, so list the monitoring host's real IP (works behind
-# Caddy with trust_proxy: true).   [no extra restriction]
+# Extra allow-list for /healthcheck and /metrics, ON TOP OF allowed_ips.
+# Evaluated after the proxy real-IP rewrite.   [no extra restriction]
 # ops_allowed_ips:
-#   - "10.9.0.0/24"     # Prometheus / uptime monitor
+#   - "10.9.0.0/24"
 
-# Trust reverse-proxy headers (X-Forwarded-For / X-Real-IP / X-Forwarded-Proto)
-# for the real client IP. Enable only behind a proxy you control.   [false]
+# Trust reverse-proxy headers (X-Forwarded-For / X-Real-IP) for the real client
+# IP. Enable only behind a proxy you control.   [false]
 trust_proxy: false
 
-# Verbose (debug-level) logging. Same as the -debug flag.   [false]
-debug: true
-
-# Single sign-on (OpenID Connect). Optional.
-#
-# public_url is the externally reachable base URL (scheme + host, no trailing
-# path). Each provider's OIDC redirect URL is built from it as:
-#
-#     <public_url>/login/sso/<name>/callback
-#
-# where <name> is that provider's `name:` below. `name` is a label you choose
-# (must be unique + URL-safe; lowercase recommended) — it does NOT have to equal
-# the IdP's product name, but using "google" / "okta" / etc. is clearest. You
-# must register the resulting URL as the authorized redirect URI at the IdP.
-# With public_url: "https://ddns.example.com" the examples below produce:
-#     name: google  →  https://ddns.example.com/login/sso/google/callback
-#     name: okta     →  https://ddns.example.com/login/sso/okta/callback
-#
-# group_rules provision local groups on EVERY login: every rule whose claim
-# matches contributes its groups (union), and membership within that union is
-# reconciled to the match — so removing a user from an IdP group deprovisions
-# them here, while manually-assigned groups (not named by any rule) are left
-# alone. Set exactly one of `equals` / `regex` per rule; `claim` defaults to
-# "email". There is no admin exception — a rule that assigns your admin group
-# grants L3, so scope rules carefully. `create_groups: true` auto-creates
-# rule-named groups; otherwise pre-create them (and attach zone/RR roles).
-#
-# public_url: "https://ddns.example.com"
-# sso_providers:
-#   - name: google                      # → /login/sso/google/callback
-#     display_name: "Google"            # Google sends no groups → match on email
-#     issuer: "https://accounts.google.com"
-#     client_id: "…"
-#     client_secret: "…"
-#     group_rules:
-#       - regex: "@example\\.com$"       # claim defaults to email
-#         groups: ["example-users"]
-#       - regex: ".*"                    # everyone → guest
-#         groups: ["guest"]
-#   - name: okta                        # → /login/sso/okta/callback
-#     display_name: "Okta"              # Okta/Keycloak/Entra send a groups array
-#     issuer: "https://dev-123.okta.com"
-#     client_id: "…"
-#     client_secret: "…"
-#     scopes: ["openid", "email", "profile", "groups"]   # add "groups" for the claim
-#     create_groups: false
-#     group_rules:
-#       - claim: "groups"
-#         equals: "dns-operators"
-#         groups: ["example-ops"]
+# Verbose (debug-level) logging.   [false]
+debug: false
 
 # TTLs (seconds).
-default_ttl: 3600   # $TTL + records created via the management API   [3600]
-ddns_rr_ttl: 60     # A/AAAA records touched via the DDNS endpoint    [60]
+default_ttl: 3600   # records created via the management API / import   [3600]
+ddns_rr_ttl: 60     # A/AAAA records touched via the DDNS endpoint      [60]
 
 # Backend-sync timing.
-backend_sync_delay:  "10s"    # worker tick / debounce before a push   ["10s"]
-backend_sync_period: "300s"   # worker-liveness window for healthcheck ["300s"]
-
-# Healthcheck. /healthcheck always returns HTTP 200; the body's first token is
-# OK or WARN. Health means "can we serve + replicate" — a server with zero DDNS
-# updates is healthy. It WARNs when the sync worker stalls, a push is
-# dead-lettered, the knot backend is unreachable, or the push backlog is stuck:
-warn_on_nopush: "3600s"       # WARN if oldest unfinished push older    ["3600s"]
+backend_sync_delay:  "10s"    # worker tick / debounce before a push     ["10s"]
+backend_sync_period: "300s"   # worker-liveness window for healthcheck   ["300s"]
+warn_on_nopush:      "3600s"  # WARN if the oldest unfinished push is older ["3600s"]
 
 # Backend. "log" (default) just logs what it would push — safe for first boot
-# and dev. "knot" writes <knot_zone_dir>/<zone>.zone, runs `knotc zone-reload`,
-# and declares the zone in Knot's config DB as a member of <knot_template> via
-# `knotc conf-set`. The backend-sync worker drains a journal of changes and
-# regenerates the full zone on each push.
+# and dev. "knot" writes <knot_zone_dir>/<origin>.zone, declares the zone in
+# Knot's config DB as a member of <knot_template>, and runs `knotc zone-reload`.
 backend: "log"
 # backend: "knot"
 # knot_zone_dir: "/var/lib/knot/zones"
 # knotc_path: "knotc"
 # knot_template: "master"
 
-# Replication is native DNS, configured in the OPERATOR'S base knot.conf — not
-# here. The base config provides: the control socket, a "master" template that
-# carries the AXFR ACL + TSIG keys + catalog membership (catalog-role: member),
-# and the catalog zone (catalog-role: generate) that slaves consume. Slaves are
-# plain Knot instances configured once to read that catalog. teleddns only
-# assigns the template to each managed zone via knotc conf-set.
+# Single sign-on (OpenID Connect). Optional; the callback URL is derived as
+# <public_url>/login/sso/<name>/callback. group_rules provision local groups on
+# every login (see README §SSO). (SSO wiring is planned; config is parsed now.)
+# public_url: "https://ddns.example.com"
+# sso_providers:
+#   - name: google
+#     display_name: "Google"
+#     issuer: "https://accounts.google.com"
+#     client_id: "…"
+#     client_secret: "…"
+#     group_rules:
+#       - regex: "@example\\.com$"
+#         groups: ["example-users"]
