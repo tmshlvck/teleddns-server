@@ -4,6 +4,8 @@
 mod app;
 mod config;
 mod db;
+mod model;
+mod web;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
