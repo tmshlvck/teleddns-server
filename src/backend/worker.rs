@@ -33,6 +33,7 @@ pub fn spawn(
     db: DatabaseConnection,
     cfg: Arc<Config>,
     backend: Arc<dyn Backend>,
+    metrics: Arc<crate::metrics::Metrics>,
 ) -> WorkerHandle {
     let last_tick = Arc::new(AtomicI64::new(0));
     let last_push = Arc::new(AtomicI64::new(0));
@@ -49,7 +50,7 @@ pub fn spawn(
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            if let Err(e) = tick(&db, &*backend, period, &last_push).await {
+            if let Err(e) = tick(&db, &*backend, period, &last_push, &metrics).await {
                 tracing::warn!(error = %e, "sync worker tick failed");
             }
             last_tick.store(now(), Ordering::Relaxed);
@@ -73,6 +74,7 @@ async fn tick(
     backend: &dyn Backend,
     period: i64,
     last_push: &AtomicI64,
+    metrics: &crate::metrics::Metrics,
 ) -> Result<(), sea_orm::DbErr> {
     // Reclaim stuck in-flight rows (older than 2× the period).
     let cutoff = now() - 2 * period.max(1);
@@ -98,7 +100,7 @@ async fn tick(
             // A newer/older duplicate for the same origin is already being handled this tick.
             continue;
         }
-        process(db, backend, task, last_push).await?;
+        process(db, backend, task, last_push, metrics).await?;
     }
     Ok(())
 }
@@ -108,6 +110,7 @@ async fn process(
     backend: &dyn Backend,
     task: sync_task::Model,
     last_push: &AtomicI64,
+    metrics: &crate::metrics::Metrics,
 ) -> Result<(), sea_orm::DbErr> {
     // Claim it.
     let id = task.id;
@@ -138,9 +141,11 @@ async fn process(
             // Success: drop the journal row.
             sync_task::Entity::delete_by_id(id).exec(db).await?;
             last_push.store(now(), Ordering::Relaxed);
+            metrics.backend_push.with_label_values(&[&task.kind, "ok"]).inc();
             tracing::debug!(origin = %task.origin, kind = %task.kind, "pushed");
         }
         Err(e) => {
+            metrics.backend_push.with_label_values(&[&task.kind, "error"]).inc();
             let attempts = task.attempts + 1;
             let mut am: sync_task::ActiveModel = sync_task::Entity::find_by_id(id)
                 .one(db)

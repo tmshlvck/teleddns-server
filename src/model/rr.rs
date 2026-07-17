@@ -71,9 +71,3 @@ rr_entity!(tlsa, "rr_tlsa", { cert_usage: i32, selector: i32, matching_type: i32
 rr_entity!(dnskey, "rr_dnskey", { flags: i32, protocol: i32, algorithm: i32, public_key: String });
 rr_entity!(ds, "rr_ds", { key_tag: i32, algorithm: i32, digest_type: i32, digest: String });
 rr_entity!(naptr, "rr_naptr", { order: i32, preference: i32, flags: String, service: String, regexp: String, replacement: String });
-
-/// The set of RR type tags, in a stable order (used for iteration, metrics, the admin UI).
-pub const RR_TYPES: &[&str] = &[
-    "A", "AAAA", "NS", "PTR", "CNAME", "TXT", "MX", "SRV", "CAA", "SSHFP", "TLSA", "DNSKEY", "DS",
-    "NAPTR",
-];

@@ -123,7 +123,7 @@ pub async fn update(
     for (family, addr) in families {
         let o = update_one(&app, &principal, &zone, &label, family, &addr).await;
         tracing::info!(
-            actor = %principal.username, source = "ddns", ua = %ua,
+            actor = %principal.username, source = principal.source.as_str(), ua = %ua,
             zone = %zone.origin, label = %label, family = ?family, addr = %addr,
             result = o.label(), "ddns update"
         );
@@ -185,6 +185,7 @@ async fn update_one(
     let token_key = format!("tok:{}", principal.key_id.map(|k| k.to_string()).unwrap_or_else(|| format!("u{}", principal.user_id)));
     let record_key = format!("rec:{}:{}:{:?}", zone.id, label, family);
     if !app.ratelimit.allow_update(&token_key, &record_key) {
+        app.metrics.ratelimit_hit("ddns");
         return Outcome::Abuse;
     }
 

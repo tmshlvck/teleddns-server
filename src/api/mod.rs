@@ -12,7 +12,7 @@ use crate::app::AppState;
 use crate::principal::{self, Principal, Source};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::Json;
 use serde_json::json;
 

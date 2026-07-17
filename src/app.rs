@@ -64,8 +64,10 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let cfg = Arc::new(cfg);
+    let metrics = Arc::new(crate::metrics::Metrics::new());
     let backend = crate::backend::make(&cfg);
-    let worker = crate::backend::worker::spawn(db.clone(), cfg.clone(), backend.clone());
+    let worker =
+        crate::backend::worker::spawn(db.clone(), cfg.clone(), backend.clone(), metrics.clone());
     tracing::info!(backend = backend.name(), "backend sync worker started");
 
     let allowed_nets = Arc::new(crate::net::parse_nets(&cfg.allowed_ips));
@@ -78,7 +80,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         openapi,
         backend,
         worker,
-        metrics: Arc::new(crate::metrics::Metrics::new()),
+        metrics,
         ratelimit: Arc::new(crate::ratelimit::RateLimiter::new()),
         started_at: crate::model::now(),
         allowed_nets,

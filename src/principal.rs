@@ -38,6 +38,8 @@ pub struct Principal {
     pub user_id: i32,
     pub username: String,
     pub group_ids: Vec<i32>,
+    /// Group names the caller belongs to (kept for audit/diagnostics; admin status is `is_admin`).
+    #[allow(dead_code)]
     pub group_names: Vec<String>,
     pub is_admin: bool,
     /// The credential's own level cap: L3 for a session/Basic login, the key's level for a token.

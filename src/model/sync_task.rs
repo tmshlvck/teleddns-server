@@ -30,5 +30,5 @@ pub const KIND_ZONE: &str = "zone";
 pub const KIND_ZONE_REMOVE: &str = "zone-remove";
 pub const STATE_PENDING: &str = "pending";
 pub const STATE_IN_FLIGHT: &str = "in_flight";
-pub const STATE_DONE: &str = "done";
 pub const STATE_FAILED: &str = "failed";
+// (successful tasks are deleted from the journal, so there is no persisted "done" state)

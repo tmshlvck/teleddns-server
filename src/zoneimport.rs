@@ -6,7 +6,6 @@ use crate::api::record_view;
 use crate::config::Config;
 use crate::dns;
 use crate::model::{now, rr, zone};
-use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::json;
 
