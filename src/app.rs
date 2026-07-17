@@ -81,6 +81,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .route("/docs", get(crate::web::docs))
         .route("/healthcheck", get(healthcheck))
         .merge(crate::api::router())
+        .merge(crate::cfapi::router())
         .with_state(state.clone())
         .merge(auth.routes())
         .merge(engine.router());

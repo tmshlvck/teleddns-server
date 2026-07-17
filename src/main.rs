@@ -5,6 +5,7 @@ mod api;
 mod app;
 mod authz;
 mod backend;
+mod cfapi;
 mod config;
 mod db;
 mod ddns;
