@@ -16,6 +16,8 @@ pub struct AppState {
     pub auth: Auth,
     pub engine: Arc<Engine>,
     pub openapi: String,
+    pub backend: Arc<dyn crate::backend::Backend>,
+    pub worker: crate::backend::worker::WorkerHandle,
 }
 
 /// Run the HTTP server.
@@ -48,7 +50,20 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .to_pretty_json()
         .unwrap_or_default();
 
-    let state = AppState { db, cfg: Arc::new(cfg), auth: auth.clone(), engine: engine.clone(), openapi };
+    let cfg = Arc::new(cfg);
+    let backend = crate::backend::make(&cfg);
+    let worker = crate::backend::worker::spawn(db.clone(), cfg.clone(), backend.clone());
+    tracing::info!(backend = backend.name(), "backend sync worker started");
+
+    let state = AppState {
+        db,
+        cfg,
+        auth: auth.clone(),
+        engine: engine.clone(),
+        openapi,
+        backend,
+        worker,
+    };
 
     let app = Router::new()
         .route("/", get(crate::web::home))

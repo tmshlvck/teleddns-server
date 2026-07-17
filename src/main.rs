@@ -3,6 +3,7 @@
 
 mod app;
 mod authz;
+mod backend;
 mod config;
 mod db;
 mod keys;

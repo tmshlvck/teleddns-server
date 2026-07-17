@@ -3,7 +3,7 @@
 //! from the DDNS / native-API / CF write paths (which also cover deletes, since bulk deletes bypass
 //! the per-row hooks). All are transaction-safe (they take whatever connection the caller holds).
 
-use crate::model::sync_task::{self, KIND_ZONE, KIND_ZONE_REMOVE, STATE_IN_FLIGHT, STATE_PENDING};
+use crate::model::sync_task::{self, KIND_ZONE, KIND_ZONE_REMOVE, STATE_PENDING};
 use crate::model::{now, zone};
 use sea_orm::sea_query::Expr;
 use sea_orm::ActiveValue::{NotSet, Set};
@@ -39,10 +39,12 @@ pub async fn enqueue_remove<C: ConnectionTrait>(db: &C, origin: &str) -> Result<
 }
 
 async fn enqueue_kind<C: ConnectionTrait>(db: &C, origin: &str, kind: &str) -> Result<(), DbErr> {
+    // Coalesce on the *pending* state only: an edit while a push is in-flight enqueues a fresh
+    // pending row, so the just-committed change gets its own follow-up push.
     let outstanding = sync_task::Entity::find()
         .filter(sync_task::Column::Origin.eq(origin))
         .filter(sync_task::Column::Kind.eq(kind))
-        .filter(sync_task::Column::State.is_in([STATE_PENDING, STATE_IN_FLIGHT]))
+        .filter(sync_task::Column::State.eq(STATE_PENDING))
         .one(db)
         .await?;
     if outstanding.is_some() {
