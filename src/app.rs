@@ -20,6 +20,9 @@ pub struct AppState {
     pub worker: crate::backend::worker::WorkerHandle,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
+    pub started_at: i64,
+    pub allowed_nets: Arc<Vec<ipnet::IpNet>>,
+    pub ops_nets: Arc<Vec<ipnet::IpNet>>,
 }
 
 /// Run the HTTP server.
@@ -48,15 +51,25 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
                 .build(),
         )
         .build();
-    let openapi = relativelylight::crud::openapi::merge_into(app_doc, &engine)
+    let merged = relativelylight::crud::openapi::merge_into(app_doc, &engine)
         .to_pretty_json()
         .unwrap_or_default();
+    // Fold in the hand-written native-API + CF-facade paths (their handlers aren't introspected).
+    let openapi = match serde_json::from_str::<serde_json::Value>(&merged) {
+        Ok(mut doc) => {
+            crate::api::openapi::merge(&mut doc);
+            serde_json::to_string_pretty(&doc).unwrap_or(merged)
+        }
+        Err(_) => merged,
+    };
 
     let cfg = Arc::new(cfg);
     let backend = crate::backend::make(&cfg);
     let worker = crate::backend::worker::spawn(db.clone(), cfg.clone(), backend.clone());
     tracing::info!(backend = backend.name(), "backend sync worker started");
 
+    let allowed_nets = Arc::new(crate::net::parse_nets(&cfg.allowed_ips));
+    let ops_nets = Arc::new(crate::net::parse_nets(&cfg.ops_allowed_ips));
     let state = AppState {
         db,
         cfg,
@@ -67,6 +80,9 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         worker,
         metrics: Arc::new(crate::metrics::Metrics::new()),
         ratelimit: Arc::new(crate::ratelimit::RateLimiter::new()),
+        started_at: crate::model::now(),
+        allowed_nets,
+        ops_nets,
     };
 
     let ddns = get(crate::ddns::update).fallback(crate::ddns::reject_non_get);
@@ -79,23 +95,24 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .route("/update", ddns)
         .route("/openapi.json", get(crate::web::openapi_json))
         .route("/docs", get(crate::web::docs))
-        .route("/healthcheck", get(healthcheck))
+        .route("/healthcheck", get(crate::ops::healthcheck))
+        .route("/metrics", get(crate::ops::metrics))
         .merge(crate::api::router())
         .merge(crate::cfapi::router())
         .with_state(state.clone())
         .merge(auth.routes())
-        .merge(engine.router());
+        .merge(engine.router())
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::allow_list));
 
     let addr = state.cfg.bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(%addr, "teleddns-server listening");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
-}
-
-/// Minimal healthcheck placeholder (full implementation in the ops milestone).
-async fn healthcheck() -> &'static str {
-    "OK\n"
 }
 
 /// On first start (no users yet), seed an `admin` user in the `admin` group and log the generated

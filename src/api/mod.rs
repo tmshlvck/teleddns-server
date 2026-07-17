@@ -3,6 +3,7 @@
 //! document; these routes are described there via utoipa paths merged in `app.rs` (kept minimal here).
 
 pub mod idempotency;
+pub mod openapi;
 pub mod record_view;
 pub mod records;
 pub mod zones;

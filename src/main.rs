@@ -13,10 +13,13 @@ mod dns;
 mod keys;
 mod metrics;
 mod model;
+mod net;
+mod ops;
 mod principal;
 mod ratelimit;
 mod sync;
 mod web;
+mod zoneimport;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -47,6 +50,17 @@ enum Command {
 enum AdminCommand {
     /// Reset a user's password (prompts are avoided; a new random password is printed).
     ResetPassword { username: String },
+    /// Bulk-load a BIND zone file into the DB (use `-` to read stdin).
+    Import {
+        /// Path to the zone file, or `-` for stdin.
+        file: String,
+        /// Clear the zone's existing records first (default merges).
+        #[arg(long)]
+        replace: bool,
+        /// Override the origin (else taken from $ORIGIN / SOA).
+        #[arg(long)]
+        origin: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -59,6 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None | Some(Command::Serve) => app::serve(cfg).await,
         Some(Command::Admin(AdminCommand::ResetPassword { username })) => {
             app::reset_password(cfg, &username).await
+        }
+        Some(Command::Admin(AdminCommand::Import { file, replace, origin })) => {
+            zoneimport::import(cfg, &file, replace, origin.as_deref()).await
         }
     }
 }
