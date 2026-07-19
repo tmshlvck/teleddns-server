@@ -34,12 +34,22 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     seed_admin(&db).await?;
 
     let secure = cfg.public_url.starts_with("https://");
+    // The profile page (password + 2FA) is owned by relativelylight; teleddns composes its
+    // API-key/bearer-token component in below it via `profile_extra`.
+    let extra_db = db.clone();
     let auth = Auth::new(db.clone())
         .secure_cookies(secure)
         .admin_group("admin")
         .totp_issuer("teleddns")
         .login_shell(crate::web::login_shell)
-        .profile_shell(crate::web::profile_shell);
+        .profile_shell(crate::web::profile_shell)
+        .profile_extra(move |who| {
+            let db = extra_db.clone();
+            async move {
+                let uid = who.id.parse::<i32>().unwrap_or(0);
+                crate::keys::section(&db, uid).await
+            }
+        });
 
     let engine = Arc::new(crate::web::build_engine(db.clone(), &auth));
 
@@ -91,7 +101,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let ddns = get(crate::ddns::update).fallback(crate::ddns::reject_non_get);
     let app = Router::new()
         .route("/", get(crate::web::home))
-        .route("/keys", get(crate::keys::page).post(crate::keys::mint))
+        .route("/keys", axum::routing::post(crate::keys::mint))
         .route("/keys/{id}/revoke", axum::routing::post(crate::keys::revoke))
         .route("/nic/update", ddns.clone())
         .route("/ddns/update", ddns.clone())

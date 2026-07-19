@@ -248,21 +248,25 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
         .entity_with("rl_group", |t| {
             t.title("Groups").description("Groups drive access grants and the admin gate.")
         })
-        .separator()
-        .group("Reference")
-        .link("API docs", "/docs")
-        .link("My API keys", "/keys")
-        .link("Profile", "/profile")
-        .link("Log out", "/logout")
+    // (API docs, profile, and log out now live in the page header/footer — see `shell`.)
 }
 
-/// The app's HTML page shell (Bootstrap + Alpine — required by the crud::ui fragments).
+/// The repository, shown in the footer.
+const REPO_URL: &str = "https://github.com/tmshlvck/teleddns-server";
+
+/// The app's HTML page shell (Bootstrap + Alpine — required by the crud::ui fragments). The header
+/// shows the signed-in username as a link to their profile (+ log out); the footer carries the API
+/// docs link, the source link, and the copyright.
 pub fn shell(title: &str, user: &str, body: &str) -> String {
     let nav_user = if user.is_empty() {
         String::new()
     } else {
+        // Clicking the username opens the profile page.
         format!(
-            r#"<span class="navbar-text ms-auto">{user} · <a href="/logout">log out</a></span>"#
+            r#"<span class="navbar-text ms-auto">
+<a href="/profile" class="link-body-emphasis text-decoration-none fw-medium">{user}</a>
+ · <a href="/logout" class="link-secondary text-decoration-none">log out</a></span>"#,
+            user = crate::keys::html_escape(user)
         )
     };
     format!(
@@ -271,9 +275,14 @@ pub fn shell(title: &str, user: &str, body: &str) -> String {
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-</head><body class="bg-body-tertiary">
-<nav class="navbar bg-body border-bottom px-3"><span class="navbar-brand">teleddns</span>{nav_user}</nav>
-<main class="container-fluid py-3">{body}</main></body></html>"#
+</head><body class="bg-body-tertiary d-flex flex-column min-vh-100">
+<nav class="navbar bg-body border-bottom px-3"><a class="navbar-brand" href="/">teleddns</a>{nav_user}</nav>
+<main class="container-fluid py-3 flex-grow-1">{body}</main>
+<footer class="border-top py-3 mt-auto"><div class="container-fluid text-center small text-muted">
+<a href="/docs" class="link-secondary text-decoration-none">API docs</a>
+ · <a href="{REPO_URL}" class="link-secondary text-decoration-none" target="_blank" rel="noopener">GitHub</a>
+ · © 2026 Tomas Hlavacek · <span>GPL-3.0-or-later</span></div></footer>
+</body></html>"#
     )
 }
 

@@ -1,42 +1,34 @@
-//! Self-service API-key (bearer token) management on the operator profile. A logged-in user lists,
-//! mints, and revokes their **own** keys; the level picker is capped at their max level (L3 for
-//! admins, else the highest role level they hold) and re-capped server-side. Only the SHA-256 hash is
-//! stored; the raw key is shown once on mint. Plain MPA forms, no JS.
+//! Self-service API-key (bearer token) management. This is the teleddns-owned component that
+//! `relativelylight`'s profile page composes in below password + 2FA (via `Auth::profile_extra`):
+//! [`section`] renders the card, and the mint/revoke form posts land on `/keys` + `/keys/{id}/revoke`
+//! and return to `/profile`. A user lists/mints/revokes their **own** keys; the level picker is capped
+//! at their max level and re-capped server-side. Only the SHA-256 hash is stored; the raw key is
+//! shown once, on the mint confirmation page.
 
 use crate::app::AppState;
 use crate::authz::Level;
 use crate::model::{api_key, now};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use rand::Rng;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use serde::Deserialize;
 
-#[derive(Deserialize)]
-pub struct PageQuery {
-    /// A freshly minted raw key, shown once immediately after mint.
-    pub new: Option<String>,
-}
-
-/// GET /keys — the key list + mint form. `?new=<raw>` shows a freshly minted key once.
-pub async fn page(headers: HeaderMap, State(app): State<AppState>, Query(q): Query<PageQuery>) -> Response {
-    let Some(who) = signed_in(&app, &headers).await else {
-        return Redirect::to(app.auth.login_path()).into_response();
-    };
-    let max = crate::authz::user_max_level(&app.db, &who.group_ids, who.is_admin)
-        .await
-        .unwrap_or(Level::None);
-
+/// Render the API-keys card (mint form + list + revoke buttons) for one user. Returned as an HTML
+/// fragment so the profile page (relativelylight) can append it below password/2FA.
+pub async fn section(db: &DatabaseConnection, user_id: i32) -> String {
+    let (group_ids, _names, is_admin) =
+        crate::authz::user_groups(db, user_id).await.unwrap_or_default();
+    let max = crate::authz::user_max_level(db, &group_ids, is_admin).await.unwrap_or(Level::None);
     let keys = api_key::Entity::find()
-        .filter(api_key::Column::UserId.eq(who.user_id))
+        .filter(api_key::Column::UserId.eq(user_id))
         .order_by_desc(api_key::Column::Id)
-        .all(&app.db)
+        .all(db)
         .await
         .unwrap_or_default();
-
-    Html(render(&who.username, max, &keys, q.new.as_deref())).into_response()
+    render_card(max, &keys)
 }
 
 #[derive(Deserialize)]
@@ -47,7 +39,7 @@ pub struct MintForm {
     pub expires_days: Option<i64>,
 }
 
-/// POST /keys — mint a key. The raw value is returned once via a redirect query param.
+/// POST /keys — mint a key, then show a one-time confirmation page with the raw value.
 pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form<MintForm>) -> Response {
     let Some(who) = signed_in(&app, &headers).await else {
         return Redirect::to(app.auth.login_path()).into_response();
@@ -81,10 +73,20 @@ pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form
         return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "could not mint key").into_response();
     }
     tracing::info!(actor = %who.username, level = level.as_i32(), "minted API key");
-    Redirect::to(&format!("/keys?new={raw}")).into_response()
+
+    // Show the raw key once, then send the user back to their profile.
+    let body = format!(
+        r#"<div class="card shadow-sm mx-auto mt-4" style="max-width:36rem"><div class="card-body">
+<h1 class="h5">API key created</h1>
+<div class="alert alert-success mt-3"><strong>Copy it now — it is shown only once:</strong>
+<pre class="mb-0 mt-2"><code>{}</code></pre></div>
+<a class="btn btn-primary" href="/profile">Back to profile</a></div></div>"#,
+        html_escape(&raw)
+    );
+    Html(crate::web::shell("API key created — teleddns", &who.username, &body)).into_response()
 }
 
-/// POST /keys/{id}/revoke — delete one of the caller's own keys.
+/// POST /keys/{id}/revoke — delete one of the caller's own keys, then return to the profile.
 pub async fn revoke(headers: HeaderMap, State(app): State<AppState>, Path(id): Path<i32>) -> Response {
     let Some(who) = signed_in(&app, &headers).await else {
         return Redirect::to(app.auth.login_path()).into_response();
@@ -95,7 +97,7 @@ pub async fn revoke(headers: HeaderMap, State(app): State<AppState>, Path(id): P
         .filter(api_key::Column::UserId.eq(who.user_id))
         .exec(&app.db)
         .await;
-    Redirect::to("/keys").into_response()
+    Redirect::to("/profile").into_response()
 }
 
 async fn signed_in(app: &AppState, headers: &HeaderMap) -> Option<crate::principal::Principal> {
@@ -108,15 +110,8 @@ fn gen_token() -> String {
     format!("tddns_{body}")
 }
 
-fn render(username: &str, max: Level, keys: &[api_key::Model], newly: Option<&str>) -> String {
-    let banner = match newly {
-        Some(raw) => format!(
-            r#"<div class="alert alert-success"><strong>New key (shown once — copy it now):</strong>
-<pre class="mb-0 mt-2"><code>{}</code></pre></div>"#,
-            html_escape(raw)
-        ),
-        None => String::new(),
-    };
+/// The card fragment (no page shell) — embedded on the profile page.
+fn render_card(max: Level, keys: &[api_key::Model]) -> String {
     let mut rows = String::new();
     for k in keys {
         let exp = k.expires_at.map(|e| e.to_string()).unwrap_or_else(|| "never".into());
@@ -155,19 +150,15 @@ fn render(username: &str, max: Level, keys: &[api_key::Model], newly: Option<&st
         )
     };
 
-    let body = format!(
-        r#"<div class="card shadow-sm"><div class="card-body">
-<h1 class="h5">API keys</h1>
-<p class="text-muted">Bearer tokens for the DDNS endpoint and the management APIs. The raw key is shown once.</p>
-{banner}
+    format!(
+        r#"<hr class="my-4">
+<h2 class="h5">API keys</h2>
+<p class="text-muted">Bearer tokens for the DDNS endpoint and the management APIs. The raw key is shown once, when created.</p>
 {mint_form}
-<hr>
-<table class="table table-sm align-middle"><thead><tr>
+<table class="table table-sm align-middle mt-3"><thead><tr>
 <th>Name</th><th>Prefix</th><th>Level</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
-<tbody>{rows}</tbody></table>
-<a href="/">&larr; Back to admin</a></div></div>"#
-    );
-    crate::web::shell("API keys — teleddns", username, &body)
+<tbody>{rows}</tbody></table>"#
+    )
 }
 
 /// Minimal HTML escaping for user-controlled strings rendered into the page.
