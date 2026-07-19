@@ -51,7 +51,7 @@ config is parsed today. See §11 for the per-milestone detail and §12 for gaps.
 
 **From `relativelylight` (reuse, no per-model code):**
 
-- `auth`: `rl_user` / `rl_group` / `rl_user_group` / `rl_session` tables, argon2id
+- `auth`: `auth_user` / `auth_group` / `auth_user_group` / `auth_session` tables, argon2id
   hashing, `Auth::identify(&headers) -> Option<Identity>`, login/logout/profile
   routes (incl. TOTP 2FA), `admin_group`, the `Authz` gate trait + presets.
 - `crud`: `MetaModel::new(entity)` introspection, JSON CRUD engine, metadata,
@@ -141,12 +141,12 @@ library's requirement, so each registers for the admin UI with `MetaModel::new`.
   `zone_id` (FK), `label`, `ttl`; then the type-specific rdata columns. A shared
   Rust trait `Rr` provides `type_tag()`, `render_bind(origin)`, `validate()`, and
   conversion to/from the unified API view. The DDNS path only touches `a` / `aaaa`.
-- **`api_key`** — `id`, `user_id` (FK → `rl_user`), `name`, `hashed_key`
+- **`api_key`** — `id`, `user_id` (FK → `auth_user`), `name`, `hashed_key`
   (sha256 hex), `prefix`, `level` (1–3), `expires_at` (nullable), `last_used_at`
   (nullable), `disabled`.
-- **`zone_role`** — `id`, `group_id` (FK → `rl_group`), `zone_id` (FK → `zone`);
+- **`zone_role`** — `id`, `group_id` (FK → `auth_group`), `zone_id` (FK → `zone`);
   unique `(group_id, zone_id)`. L2.
-- **`rr_role`** — `id`, `group_id` (FK → `rl_group`), `zone_id` (FK → `zone`),
+- **`rr_role`** — `id`, `group_id` (FK → `auth_group`), `zone_id` (FK → `zone`),
   `label`; unique `(group_id, zone_id, label)`. L1.
 - **`sync_task`** — `id`, `origin`, `kind` (`zone` | `zone-remove`), `state`
   (`pending` | `in_flight` | `done` | `failed`), `attempts`, `available_at`,
@@ -154,11 +154,11 @@ library's requirement, so each registers for the admin UI with `MetaModel::new`.
 - **`api_idempotency`** — `key`, `user_id`, `request_hash`, `status`,
   `response_body`, `created_at`. TTL-swept at 24 h.
 
-Auth tables (`rl_user`, `rl_group`, `rl_user_group`, `rl_session`) are owned by
+Auth tables (`auth_user`, `auth_group`, `auth_user_group`, `auth_session`) are owned by
 `relativelylight::auth` — we run its migrator and never redefine them. The
-`rl_user` model already carries `totp_secret` / `totp_pending` (2FA) and
-`is_active`. Cross-entity SeaORM relations (`api_key` → `rl_user`, `zone_role` →
-`rl_group`, etc.) are declared so the admin UI shows group/user pickers.
+`auth_user` model already carries `totp_secret` / `totp_pending` (2FA) and
+`is_active`. Cross-entity SeaORM relations (`api_key` → `auth_user`, `zone_role` →
+`auth_group`, etc.) are declared so the admin UI shows group/user pickers.
 
 **Migrations.** A startup migrator: run `auth::migrate` for the library tables,
 then our own migrations (SeaORM `migration` crate or `create_table_from_entity`
@@ -249,7 +249,7 @@ path. `source=cfapi`.
 
 ### 7.4 Operator UI (`admin_ui.rs`)
 Compose `crud::ui::Admin` over: `zone`, each RR type, `api_key`, `zone_role`,
-`rr_role`, and (manager-only) `rl_user` / `rl_group`. Gate L3. The app owns the
+`rr_role`, and (manager-only) `auth_user` / `auth_group`. Gate L3. The app owns the
 shell (askama) + navbar + login/profile wrapping (`login_shell` / `profile_shell`)
 exactly as the adminpanel example does. API-key minting lives on the profile page
 (self-service, level-capped) — implemented as an app page since the library's
@@ -340,5 +340,5 @@ after the real-IP rewrite.
   adapt if its API shifts; the composition surface we depend on (`Auth`, `Crud`,
   `Engine`, `crud::ui::Admin`, `crud::openapi`) is documented and stable enough.
 - **2FA/passkey** enforcement on DDNS Basic auth depends on reading the library's
-  `rl_user` 2FA columns; passkeys aren't in the library yet, so "has passkey" is a
+  `auth_user` 2FA columns; passkeys aren't in the library yet, so "has passkey" is a
   future check (TOTP is present today).

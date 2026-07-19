@@ -257,7 +257,7 @@ zone "catalog.example." {
 
 ```sh
 # 1. Log in at https://ddns.example.com/ (admin + the seeded password), mint an
-#    L3 API key at /keys, then:
+#    L3 API key on /profile (the API-keys card below password + 2FA), then:
 KEY=…; URL=https://ddns.example.com
 curl -X POST $URL/api/zones -H "Authorization: Bearer $KEY" \
      -H 'Content-Type: application/json' -d '{"origin":"example.com."}'

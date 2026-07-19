@@ -28,7 +28,8 @@ cargo run -- serve         # http://127.0.0.1:8080/  (logs the seeded admin pass
 `backend: log` is a no-op that logs the rendered zone — safe for dev with no
 Knot. Quick manual loop: `TELEDDNS_DB_DSN=sqlite::memory:
 TELEDDNS_LISTEN_ADDR=127.0.0.1:8080 cargo run -- serve`, grab the logged admin
-password, log in at `/`, mint a key at `/keys`, then exercise `/api/...`.
+password, log in at `/`, mint a key on `/profile` (the API-keys card below
+password + 2FA), then exercise `/api/...`.
 
 ## Module map (`src/`)
 
@@ -41,7 +42,7 @@ password, log in at `/`, mint a key at `/keys`, then exercise `/api/...`.
 | `model/` | SeaORM entities: `zone` (SOA inline), `rr` (one table per type, macro), `api_key`, `roles` (zone_role/rr_role), `sync_task`, `idempotency`; `migrate()` |
 | `authz.rs` | `Level` algebra, the `min()` cap, `effective_level`, `user_groups` |
 | `principal.rs` | resolve session / HTTP Basic / bearer → `Principal` (with a token level) |
-| `keys.rs` | self-service API-key page (level-capped mint/revoke) |
+| `keys.rs` | self-service API-key component (`section()` composed onto `/profile` via `Auth::profile_extra`; level-capped mint/revoke) |
 | `sync.rs` | serial bump + push enqueue (called from RR/zone `after_save` hooks and write paths) |
 | `ddns.rs` | dyndns2 endpoint |
 | `api/` | native JSON API: `record_view` (unified type-discriminated mapping), `zones`, `records`, `idempotency`, `openapi` (paths supplement) |
@@ -51,7 +52,7 @@ password, log in at `/`, mint a key at `/keys`, then exercise `/api/...`.
 | `net.rs` | client-IP resolution + CIDR allow-list middleware |
 | `metrics.rs` | Prometheus registry + instruments |
 | `ratelimit.rs` | in-memory per-record / per-token limiter |
-| `web.rs` | admin console (crud::ui::Admin), page shell, login/profile styling |
+| `web.rs` | admin console (crud::ui::Admin), page shell (header username→`/profile`, footer docs/GitHub/copyright), login/profile styling |
 | `zoneimport.rs` | BIND zone-file parser for `admin import` |
 
 ## Design invariants — keep these

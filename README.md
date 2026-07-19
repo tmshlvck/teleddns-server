@@ -69,7 +69,7 @@ Then:
 - Web UI / admin: `http://127.0.0.1:8080/` (login required)
 - API docs: `/docs` (Swagger UI), spec at `/openapi.json`
 - Management API: `/api/zones` + `/api/zones/{id}/rr` (see below)
-- Self-service API keys: `/keys` · Profile / password / 2FA: `/profile`
+- Profile — password, 2FA, and self-service API keys: `/profile` (also reached by clicking your username in the header)
 - Health: `/healthcheck` · Metrics: `/metrics`
 - DDNS: `GET /nic/update|/ddns/update|/update?hostname=…&myip=…` (HTTP Basic or `Authorization: Bearer <api-key>`)
 
@@ -89,7 +89,8 @@ L1 = an **rr-role** grant (group ↔ zone+label). A user gets the union of their
 groups' grants. Users, groups, and grants are managed **only** in the operator
 console (or via SSO), never on the API.
 
-**API keys (bearer tokens)** are self-service on `/keys`: a user mints/revokes
+**API keys (bearer tokens)** are self-service on the profile page (`/profile`,
+below password + 2FA): a user mints/revokes
 their own keys, with the level picker capped at their max level and re-capped
 server-side (so an L2 user can mint an L1 key for a router). Only the key's hash
 is stored; the raw key is shown once.
