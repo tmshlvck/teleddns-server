@@ -8,7 +8,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
-    /// Owner (FK → relativelylight auth `rl_user`).
+    /// Owner (FK → relativelylight auth `auth_user`).
     pub user_id: i32,
     /// Human-readable label.
     pub name: String,

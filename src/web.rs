@@ -239,13 +239,13 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
         })
         .separator()
         .group("Accounts")
-        .entity_with("rl_user", |t| {
+        .entity_with("auth_user", |t| {
             t.title("Users").description(
                 "Login accounts. Set an SSO provider on an account to make it external (no local \
                  password / 2FA).",
             )
         })
-        .entity_with("rl_group", |t| {
+        .entity_with("auth_group", |t| {
             t.title("Groups").description("Groups drive access grants and the admin gate.")
         })
     // (API docs, profile, and log out now live in the page header/footer — see `shell`.)

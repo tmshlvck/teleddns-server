@@ -10,7 +10,7 @@ pub mod zone_role {
     pub struct Model {
         #[sea_orm(primary_key)]
         pub id: i32,
-        /// FK → relativelylight auth `rl_group`.
+        /// FK → relativelylight auth `auth_group`.
         pub group_id: i32,
         /// FK → `zone`.
         pub zone_id: i32,
@@ -54,7 +54,7 @@ pub mod rr_role {
     pub struct Model {
         #[sea_orm(primary_key)]
         pub id: i32,
-        /// FK → relativelylight auth `rl_group`.
+        /// FK → relativelylight auth `auth_group`.
         pub group_id: i32,
         /// FK → `zone`.
         pub zone_id: i32,

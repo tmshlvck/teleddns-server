@@ -36,7 +36,7 @@ mod m0001_init {
         async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
             let backend = m.get_database_backend();
 
-            // relativelylight auth tables: rl_user, rl_group, rl_user_group, rl_session.
+            // relativelylight auth tables: auth_user, auth_group, auth_user_group, auth_session.
             for stmt in relativelylight::auth::table_create_statements(backend) {
                 m.create_table(stmt).await?;
             }
@@ -112,10 +112,10 @@ mod m0001_init {
                 "rr_aaaa",
                 "rr_a",
                 "zone",
-                "rl_session",
-                "rl_user_group",
-                "rl_group",
-                "rl_user",
+                "auth_session",
+                "auth_user_group",
+                "auth_group",
+                "auth_user",
             ] {
                 m.drop_table(Table::drop().table(Alias::new(table)).if_exists().to_owned()).await?;
             }
