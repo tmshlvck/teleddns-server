@@ -313,11 +313,11 @@ pub async fn docs() -> Html<&'static str> {
     )
 }
 
-/// App chrome around the library's login form.
-pub fn login_shell(form: &str) -> String {
+/// App chrome around the library's login form, with any configured SSO buttons appended below it.
+pub fn login_shell(form: &str, sso_buttons: &str) -> String {
     let body = format!(
         r#"<div class="card shadow-sm mx-auto mt-5" style="max-width:24rem"><div class="card-body">
-<h1 class="h5 mb-3">Log in</h1>{form}</div></div>"#
+<h1 class="h5 mb-3">Log in</h1>{form}{sso_buttons}</div></div>"#
     );
     shell("Log in — teleddns", "", &body)
 }

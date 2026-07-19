@@ -34,14 +34,17 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     seed_admin(&db).await?;
 
     let secure = cfg.public_url.starts_with("https://");
+    // SSO login buttons for the login page (empty when no providers are configured).
+    let sso_buttons = crate::sso::buttons_html(&cfg);
     // The profile page (password + 2FA) is owned by relativelylight; teleddns composes its
     // API-key/bearer-token component in below it via `profile_extra`.
     let extra_db = db.clone();
     let auth = Auth::new(db.clone())
         .secure_cookies(secure)
         .admin_group("admin")
+        .cookie_name("teleddns_session")
         .totp_issuer("teleddns")
-        .login_shell(crate::web::login_shell)
+        .login_shell(move |form| crate::web::login_shell(form, &sso_buttons))
         .profile_shell(crate::web::profile_shell)
         .profile_extra(move |who| {
             let db = extra_db.clone();
@@ -50,6 +53,12 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
                 crate::keys::section(&db, uid).await
             }
         });
+
+    // OIDC single sign-on (optional): built from config, routes merged below.
+    let sso = crate::sso::build(&cfg, &auth);
+    if let Some(s) = &sso {
+        tracing::info!(providers = s.buttons().len(), "OIDC SSO enabled");
+    }
 
     let engine = Arc::new(crate::web::build_engine(db.clone(), &auth));
 
@@ -114,8 +123,14 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .merge(crate::cfapi::router())
         .with_state(state.clone())
         .merge(auth.routes())
-        .merge(engine.router())
-        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::allow_list));
+        .merge(engine.router());
+    // Merge the SSO login/callback routes (their own state) when configured.
+    let app = match &sso {
+        Some(s) => app.merge(s.routes()),
+        None => app,
+    };
+    let app =
+        app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::allow_list));
 
     let addr = state.cfg.bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;

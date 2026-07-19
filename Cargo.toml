@@ -11,7 +11,7 @@ name = "teleddns-server"
 path = "src/main.rs"
 
 [dependencies]
-relativelylight = { path = "../relativelylight/relativelylight", features = ["crud", "axum", "ui", "openapi", "csv", "auth"] }
+relativelylight = { path = "../relativelylight/relativelylight", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso"] }
 
 sea-orm = { version = "1.1", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
@@ -38,6 +38,7 @@ hex = "0.4"
 rand = "0.8"
 ipnet = "2"
 prometheus = "0.13"
+regex = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -9,8 +9,10 @@ sequence. It supersedes the Go implementation, which is removed on this branch.
 **Status:** M0–M8 are **done** (scaffold, model + admin UI, authz + API keys,
 backend + worker + zonefile, DDNS, native API, CF facade, operability, docs) and
 verified end-to-end against the `log` backend; the `knot` backend is implemented
-and documented in [`DEPLOY.md`](DEPLOY.md). M9 (OIDC SSO login) is deferred — its
-config is parsed today. See §11 for the per-milestone detail and §12 for gaps.
+and documented in [`DEPLOY.md`](DEPLOY.md). **M9 (OIDC SSO login) is now done too**
+— wired via relativelylight's `sso` module (`src/sso.rs`), with per-provider login
+buttons and rule-based group reconciliation. See §11 for per-milestone detail and
+§12 for remaining gaps.
 
 ## 1. Goals & constraints
 
@@ -45,7 +47,7 @@ config is parsed today. See §11 for the per-milestone detail and §12 for gaps.
 | Metrics | `prometheus` (or `metrics` + exporter) — text exposition |
 | Passwords / tokens | argon2id via `relativelylight::auth`; SHA-256 (`sha2`) for API-key hashing |
 | Logging | `tracing` + `tracing-subscriber` (structured lines, one per request + audit) |
-| OIDC (SSO) | `openidconnect` crate — **deferred** to a later milestone (see §11) |
+| OIDC (SSO) | relativelylight `sso` feature (`openidconnect` inside the library) |
 
 ## 3. What the library gives us vs. what we build
 
@@ -124,7 +126,7 @@ src/
   ops.rs             /healthcheck + /metrics
   metrics.rs         counters/gauges/histograms
   ratelimit.rs       per-token / per-(user,hostname) limiter
-  sso.rs             OIDC (deferred; stub + config parsing first)
+  sso.rs             OIDC: build relativelylight::auth::sso::Sso from config
   ratelimit.rs
 migrations/          SeaORM migration crate or inline migrator
 ```
@@ -321,16 +323,17 @@ after the real-IP rewrite.
    `ops_allowed_ips` / `trust_proxy`, zone-file import CLI, `--version`. ✅ commit.
 9. **M8 — docs.** README.md, AGENTS.md/CLAUDE.md, then DEPLOY.md once verified
    against Knot. ✅ commit.
-10. **M9 (deferred) — OIDC SSO.** `public_url` + `sso_providers`, rule-based group
-    provisioning. Config parsing lands earlier (M1) as inert; the callback + rule
-    engine land here. Depends on `relativelylight` OIDC support or an app-local
-    `openidconnect` integration.
+10. **M9 — OIDC SSO. ✅** `public_url` + `sso_providers` build a
+    `relativelylight::auth::sso::Sso` (`src/sso.rs`): per-provider login buttons,
+    Authorization-Code+PKCE flow, ID-token verification, auto-registration, and
+    on-login group reconciliation. The session cookie is `teleddns_session`.
 
 ## 12. Known gaps & risks
 
-- **OIDC SSO** is not yet in `relativelylight` (planned there). We parse its config
-  from the start but implement the flow app-side (M9) or wait for library support.
-  Until then, local login + tokens cover all surfaces.
+- **SSO group mapping is a subset** of the original PRD's arbitrary claim+regex
+  model: relativelylight matches the *username* claim by regex/equals (global) and
+  *other* claims by exact value only. A regex on a non-username claim is ignored
+  (logged). Adjust rules accordingly (see `src/sso.rs`).
 - **Row-level authz** is explicitly out of scope in the library's gate; our L1/L2
   checks live in app code on each surface, not in the library gate (the admin
   console stays L3-only, as in the original).

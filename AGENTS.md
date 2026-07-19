@@ -52,6 +52,7 @@ password + 2FA), then exercise `/api/...`.
 | `net.rs` | client-IP resolution + CIDR allow-list middleware |
 | `metrics.rs` | Prometheus registry + instruments |
 | `ratelimit.rs` | in-memory per-record / per-token limiter |
+| `sso.rs` | build relativelylight `Sso` (OIDC) from config; login-page buttons |
 | `web.rs` | admin console (crud::ui::Admin), page shell (header username→`/profile`, footer docs/GitHub/copyright), login/profile styling |
 | `zoneimport.rs` | BIND zone-file parser for `admin import` |
 
@@ -81,8 +82,11 @@ password + 2FA), then exercise `/api/...`.
 
 ## Known gaps / deferred
 
-- **SSO login flow** is not implemented (config is parsed). Local login + API
-  keys cover all surfaces. See [`RUSTREWRITE.md`](RUSTREWRITE.md) §12.
+- **SSO** is wired via relativelylight's `sso` module (`src/sso.rs` builds
+  `relativelylight::auth::sso::Sso` from config; routes merged in `app.rs`). The
+  config→library group-rule mapping is a subset: username-claim rules become
+  global regex/equals username rules; other claims become exact-value rules
+  (regex on a non-username claim is ignored). See `src/sso.rs`.
 - **Admin-UI record/zone *deletes*** go through the library's bulk delete, which
   bypasses the `after_save` hook — a UI delete does not auto-enqueue a push
   (create/edit do). Delete via the API/DDNS, or re-save the zone, to force a push.

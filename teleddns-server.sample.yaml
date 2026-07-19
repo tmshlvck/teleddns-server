@@ -51,16 +51,29 @@ backend: "log"
 # knotc_path: "knotc"
 # knot_template: "master"
 
-# Single sign-on (OpenID Connect). Optional; the callback URL is derived as
-# <public_url>/login/sso/<name>/callback. group_rules provision local groups on
-# every login (see README §SSO). (SSO wiring is planned; config is parsed now.)
+# Single sign-on (OpenID Connect). Optional. A "Sign in with …" button appears on
+# the login page per provider; the callback URL is <public_url>/login/sso/<name>/
+# callback (register it at the IdP). group_rules run on every login and are
+# reconciled onto the user; a rule on the username_claim (default email) matches
+# the username by regex/equals, any other claim matches its value by equals. See
+# README §SSO.
 # public_url: "https://ddns.example.com"
 # sso_providers:
-#   - name: google
+#   - name: google                      # → /login/sso/google/callback
 #     display_name: "Google"
 #     issuer: "https://accounts.google.com"
 #     client_id: "…"
 #     client_secret: "…"
+#     # username_claim: "email"         # default; the claim used as the local username
+#     # auto_register: true             # default; create unknown users on first login
 #     group_rules:
-#       - regex: "@example\\.com$"
+#       - regex: "@example\\.com$"       # matched against the username (email)
 #         groups: ["example-users"]
+#   - name: okta                        # → /login/sso/okta/callback
+#     display_name: "Okta"
+#     issuer: "https://dev-123.okta.com"
+#     client_id: "…"
+#     client_secret: "…"
+#     scopes: ["email", "profile", "groups"]   # request the groups claim
+#     group_rules:
+#       - {claim: "groups", equals: "dns-operators", groups: ["example-ops"]}

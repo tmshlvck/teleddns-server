@@ -155,14 +155,49 @@ it can touch, same as the native API.
 
 ## Single sign-on (SSO)
 
-Optional OpenID Connect login. Configure a `public_url` and one entry per IdP
-under `sso_providers`; the callback URL is derived as
-`<public_url>/login/sso/<name>/callback`. Declarative `group_rules` provision
-local groups on every login (match a claim by `equals`/`regex`, contribute
-groups, reconcile membership), and those groups carry L1/L2/L3 via the grants.
-**Note:** the SSO login flow is planned; the config is parsed today and local
-login + API keys cover all surfaces in the meantime (see
-[`RUSTREWRITE.md`](RUSTREWRITE.md) §12).
+Optional OpenID Connect login (Authorization Code + PKCE), via relativelylight's
+`sso` module. Configure a `public_url` and one entry per IdP under
+`sso_providers`; a **"Sign in with …"** button then appears on the login page and
+the callback URL is `<public_url>/login/sso/<name>/callback` (register that at the
+IdP). On first login an SSO user is created (`auto_register: true` by default;
+turn it off to require an admin to pre-create the account) as an external account
+— no local password/2FA.
+
+**Group mapping.** Declarative `group_rules` run on **every** login and their
+result is *reconciled* onto the user (groups added/removed to match), and those
+groups carry L1/L2/L3 via the zone/rr grants. Each rule keys off a `claim`
+(default `email`):
+
+- a rule whose `claim` is the provider's **`username_claim`** (default `email`) is
+  matched against the username by `regex` (or `equals`, anchored) — the fallback
+  for IdPs with no group claim (e.g. plain Google);
+- any other `claim` (e.g. `groups` from Okta/a corporate IdP, requiring that scope)
+  contributes groups when the claim **exactly equals** the rule's `equals` value.
+  (Regex on a non-username claim isn't supported and is ignored with a warning.)
+
+Rule-named groups are created automatically. There is no admin special-casing — a
+rule that names the `admin` group grants L3, so scope rules carefully.
+
+```yaml
+public_url: "https://ddns.example.com"
+sso_providers:
+  - name: google                       # → /login/sso/google/callback
+    display_name: "Google"
+    issuer: "https://accounts.google.com"
+    client_id: "…"
+    client_secret: "…"
+    group_rules:
+      - regex: "@example\\.com$"        # claim defaults to email (= username_claim)
+        groups: ["example-users"]
+  - name: okta
+    display_name: "Okta"
+    issuer: "https://dev-123.okta.com"
+    client_id: "…"
+    client_secret: "…"
+    scopes: ["email", "profile", "groups"]   # request the groups claim
+    group_rules:
+      - {claim: "groups", equals: "dns-operators", groups: ["example-ops"]}
+```
 
 ## Monitoring
 

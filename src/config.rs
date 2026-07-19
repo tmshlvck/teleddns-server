@@ -52,16 +52,28 @@ pub struct Config {
     pub sso_providers: Vec<SsoProvider>,
 }
 
-/// One OpenID Connect provider. (Config is parsed now; the flow lands in a later milestone.)
+/// One OpenID Connect provider.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct SsoProvider {
+    /// URL-safe key: the `/login/sso/<name>/…` segment and the account's `sso_provider` value.
     pub name: String,
+    /// Button label on the login page.
     pub display_name: String,
+    /// OIDC issuer URL (metadata is discovered at `<issuer>/.well-known/openid-configuration`).
     pub issuer: String,
     pub client_id: String,
     pub client_secret: String,
+    /// Extra scopes (besides `openid`, which is always requested). Default `email profile`.
     pub scopes: Vec<String>,
+    /// ID-token claim used as the local username. Default `email`; a corporate IdP may use
+    /// `preferred_username`. `group_rules` whose `claim` equals this become username-pattern rules.
+    pub username_claim: String,
+    /// Create unknown users on first login (default true). Off → an admin must pre-create the account
+    /// and set its `sso_provider` to this name first.
+    pub auto_register: bool,
+    /// Whether to auto-create rule-named groups. (Groups are always ensured on reconcile, so this is
+    /// accepted for compatibility but has no effect.)
     pub create_groups: bool,
     pub group_rules: Vec<GroupRule>,
 }
@@ -113,6 +125,8 @@ impl Default for SsoProvider {
             client_id: String::new(),
             client_secret: String::new(),
             scopes: vec!["openid".into(), "email".into(), "profile".into()],
+            username_claim: "email".into(),
+            auto_register: true,
             create_groups: false,
             group_rules: vec![],
         }

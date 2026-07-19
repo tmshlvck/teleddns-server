@@ -18,6 +18,7 @@ mod net;
 mod ops;
 mod principal;
 mod ratelimit;
+mod sso;
 mod sync;
 mod web;
 mod zoneimport;
