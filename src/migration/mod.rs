@@ -62,6 +62,30 @@ mod m0001_init {
                 sync_task::Entity,
                 idempotency::Entity,
             );
+
+            // Uniqueness for the access grants (enforced in the DB, not just app code):
+            // one zone grant per (group, zone); one record grant per (group, zone, label).
+            m.create_index(
+                Index::create()
+                    .name("ux_zone_role_group_zone")
+                    .table(Alias::new("zone_role"))
+                    .col(Alias::new("group_id"))
+                    .col(Alias::new("zone_id"))
+                    .unique()
+                    .to_owned(),
+            )
+            .await?;
+            m.create_index(
+                Index::create()
+                    .name("ux_rr_role_group_zone_label")
+                    .table(Alias::new("rr_role"))
+                    .col(Alias::new("group_id"))
+                    .col(Alias::new("zone_id"))
+                    .col(Alias::new("label"))
+                    .unique()
+                    .to_owned(),
+            )
+            .await?;
             Ok(())
         }
 
