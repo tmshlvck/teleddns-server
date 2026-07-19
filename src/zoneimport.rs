@@ -26,8 +26,10 @@ pub async fn import(
     };
 
     let db = crate::db::connect(&cfg.db_dsn).await?;
-    relativelylight::auth::migrate(&db).await?;
-    crate::model::migrate(&db).await?;
+    {
+        use sea_orm_migration::MigratorTrait;
+        crate::migration::Migrator::up(&db, None).await?; // ensure the schema exists
+    }
 
     let parsed = parse(&text, origin_override)?;
     let origin = parsed.origin;

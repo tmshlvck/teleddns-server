@@ -12,6 +12,7 @@ mod ddns;
 mod dns;
 mod keys;
 mod metrics;
+mod migration;
 mod model;
 mod net;
 mod ops;

@@ -3,9 +3,11 @@
 use crate::config::Config;
 use axum::routing::get;
 use axum::Router;
+use crate::migration::Migrator;
 use relativelylight::auth::{self, Auth};
 use relativelylight::crud::engine::Engine;
 use sea_orm::{DatabaseConnection, EntityTrait, PaginatorTrait};
+use sea_orm_migration::MigratorTrait;
 use std::sync::Arc;
 
 /// Shared, cheaply-cloneable application state.
@@ -28,8 +30,7 @@ pub struct AppState {
 /// Run the HTTP server.
 pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let db = crate::db::connect(&cfg.db_dsn).await?;
-    auth::migrate(&db).await?;
-    crate::model::migrate(&db).await?;
+    Migrator::up(&db, None).await?; // versioned schema (auth + app tables), applied once
     seed_admin(&db).await?;
 
     let secure = cfg.public_url.starts_with("https://");
@@ -139,7 +140,7 @@ fn random_password() -> String {
 /// `admin reset-password` — set a new random password for a user and print it.
 pub async fn reset_password(cfg: Config, username: &str) -> Result<(), Box<dyn std::error::Error>> {
     let db = crate::db::connect(&cfg.db_dsn).await?;
-    auth::migrate(&db).await?;
+    Migrator::up(&db, None).await?;
     let pw = random_password();
     auth::set_password(&db, username, &pw).await?;
     println!("password for {username} set to: {pw}");
