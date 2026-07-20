@@ -27,26 +27,44 @@ impl KnotBackend {
         }
     }
 
-    /// Run `knotc` with args; error carries stderr on non-zero exit.
+    /// Run `knotc` with args. On failure the error carries the command, the exit code, and both
+    /// stderr and stdout (knotc prints some errors to stdout, e.g. `error: (duplicate identifier)`).
     async fn knotc(&self, args: &[&str]) -> Result<String, String> {
         let out = Command::new(&self.knotc)
             .args(args)
             .output()
             .await
-            .map_err(|e| format!("spawn {}: {e}", self.knotc))?;
+            .map_err(|e| format!("spawn {} {:?}: {e}", self.knotc, args))?;
         if !out.status.success() {
-            return Err(format!(
-                "knotc {:?} failed: {}",
-                args,
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
+            let code = out
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into());
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let detail = format!("{} {}", stderr.trim(), stdout.trim());
+            return Err(format!("knotc {:?} exited {code}: {}", args, detail.trim()));
         }
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
-    /// Declare the zone as a member of the configured template (once per process).
+    /// Whether the zone is already declared in Knot's committed configuration. `conf-read` reads the
+    /// committed config (no transaction), unlike `conf-get` which needs an open transaction.
+    async fn already_declared(&self, origin: &str) -> bool {
+        self.knotc(&["conf-read", &format!("zone[{origin}]")]).await.is_ok()
+    }
+
+    /// Ensure the zone is declared as a member of the configured template. Idempotent across process
+    /// restarts: if the zone is already in Knot's config we do nothing (Knot rejects re-declaring an
+    /// existing `zone[...]` with a "duplicate identifier" error), so a restart doesn't wedge pushes.
     async fn ensure_declared(&self, origin: &str) -> Result<(), String> {
         if self.declared.lock().unwrap().contains(origin) {
+            return Ok(());
+        }
+        // Already in the running config (e.g. declared before a restart) → just cache and move on.
+        if self.already_declared(origin).await {
+            self.declared.lock().unwrap().insert(origin.to_string());
             return Ok(());
         }
         // conf-begin; conf-set zone[o]; conf-set zone[o].template T; conf-commit
