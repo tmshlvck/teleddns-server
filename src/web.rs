@@ -273,6 +273,9 @@ pub fn shell(title: &str, user: &str, body: &str) -> String {
         r#"<!doctype html><html lang="en" data-bs-theme="light"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<!-- Required by the relativelylight crud::ui fragments: hides x-cloak'd elements (the admin panels
+     and the create/edit modal) until Alpine initializes, so no incomplete markup flashes on load. -->
+<style>[x-cloak] {{ display: none !important; }}</style>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </head><body class="bg-body-tertiary d-flex flex-column min-vh-100">
