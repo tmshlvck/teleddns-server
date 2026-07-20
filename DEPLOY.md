@@ -41,7 +41,7 @@ server:
     listen: ::@53
 
 control:
-    # teleddns runs knotc against this socket; the teleddns user needs access.
+    # teleddns runs knotc against this socket (it runs as the knot user).
     listen: /run/knot/knot.sock
 
 key:
@@ -135,23 +135,26 @@ the templates/keys later, edit `knot.conf` and re-run `knotc conf-import` (or us
 
 ## 2. Install teleddns-server
 
+teleddns runs **as the `knot` user** — it writes Knot's zone files and drives
+`knotc`, so sharing knot's identity keeps file ownership and control-socket
+access trivial (no group/permission juggling). It's a small, single-purpose
+control plane co-located with knotd; if you'd rather isolate it under its own
+user, that's possible too but needs a group-writable/setgid zone dir and
+`zonefile-sync: -1` — running as `knot` avoids all of that.
+
 ```sh
 cargo build --release
 install -m0755 target/release/teleddns-server /usr/local/bin/teleddns-server
 
-useradd --system --home /var/lib/teleddns --shell /usr/sbin/nologin teleddns
-install -d -o teleddns -g teleddns /var/lib/teleddns /etc/teleddns
-
-# Let teleddns reach the Knot control socket and write zone files.
-usermod -aG knot teleddns
-# Ensure the zone dir is group-writable by knot's group:
-chmod 0775 /var/lib/knot/zones
+# State + config, owned by knot (the user teleddns runs as).
+install -d -o knot -g knot /var/lib/teleddns
+install -d -o knot -g knot /etc/teleddns
 ```
 
 `/etc/teleddns/teleddns-server.yaml`:
 
 ```yaml
-db_dsn: "sqlite:///var/lib/teleddns/db.sqlite"   # or postgres://…
+db_dsn: "sqlite:///var/lib/teleddns/teleddns.sqlite"   # or postgres://…
 listen_addr: "127.0.0.1:8080"                     # behind the reverse proxy
 trust_proxy: true                                 # honor X-Forwarded-For from Caddy
 
@@ -176,16 +179,15 @@ After=network-online.target knot.service
 Wants=network-online.target
 
 [Service]
-User=teleddns
-Group=teleddns
-SupplementaryGroups=knot
+User=knot
+Group=knot
 ExecStart=/usr/local/bin/teleddns-server -c /etc/teleddns/teleddns-server.yaml
 Restart=on-failure
 RestartSec=2
 # Hardening (relax if it blocks the knot socket / zone dir):
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/teleddns /var/lib/knot/zones /run/knot
+ReadWritePaths=/var/lib/teleddns /var/lib/knot /run/knot
 ProtectHome=true
 PrivateTmp=true
 
@@ -202,7 +204,7 @@ journalctl -u teleddns-server | grep "seeded initial admin user"   # note the on
 Reset the admin password whenever you like:
 
 ```sh
-sudo -u teleddns teleddns-server -c /etc/teleddns/teleddns-server.yaml admin reset-password admin
+sudo -u knot teleddns-server -c /etc/teleddns/teleddns-server.yaml admin reset-password admin
 ```
 
 ## 4. Reverse proxy + TLS (Caddy)
@@ -335,7 +337,7 @@ Also poll `/healthcheck` (HTTP 200 always; alert on a `WARN` first token).
 
 | Symptom | Check |
 |---|---|
-| `knot=down` in `/healthcheck` | teleddns can run `knotc status` (socket perms, `knotc_path`, `SupplementaryGroups=knot`). |
+| `knot=down` in `/healthcheck` | teleddns can run `knotc status` (`knotc_path`; runs as the `knot` user so the control socket is reachable). |
 | Pushes fail / dead-letter | `journalctl -u teleddns-server` (the error now includes the knotc command, exit code, and stderr+stdout); `knot_zone_dir` writable; `knotc conf-check` on the master. |
 | `conf-set zone[...]` fails | Knot must run from the **confdb** (§1a) — `conf-set` on a file-configured `knotd` fails. Confirm `knotd` was started with `-C …/confdb` and the base config was `conf-import`ed. |
 | Zone served but secondary empty | catalog wiring: `knotc zone-status catalog.example.`; TSIG secret matches; ACL/notify. |
