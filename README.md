@@ -8,7 +8,7 @@ local Knot via `knotc`. Secondaries replicate natively over **AXFR/TSIG** and
 auto-provision from a **catalog zone (RFC 9432)** — teleddns never talks to other
 teleddns instances.
 
-It is a Rust rewrite built on the [`relativelylight`](../relativelylight)
+It is a Rust rewrite built on the [`relativelylight`](https://github.com/tmshlvck/relativelylight)
 back-office library (SeaORM CRUD engine, auto-generated admin UI, auth). The
 product spec is in [`PRD.md`](PRD.md); the rewrite plan and architecture are in
 [`RUSTREWRITE.md`](RUSTREWRITE.md); the production runbook is in

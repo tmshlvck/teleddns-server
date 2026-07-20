@@ -1,8 +1,9 @@
 # teleddns-server — Rust rewrite plan
 
 Re-implement [`PRD.md`](PRD.md) in **Rust**, built on the
-[`relativelylight`](../relativelylight) back-office library (path dependency to the
-in-tree development copy). This document is the working plan: architecture,
+[`relativelylight`](https://github.com/tmshlvck/relativelylight) back-office
+library (a git dependency pinned to a commit; a crates.io `version` once it's
+published). This document is the working plan: architecture,
 module layout, what the library gives us vs. what we build, and the milestone
 sequence. It supersedes the Go implementation, which is removed on this branch.
 
@@ -39,7 +40,7 @@ buttons and rule-based group reconciliation. See §11 for per-milestone detail a
 | Language / async | Rust 2021, `tokio` multi-thread |
 | HTTP | `axum` 0.8 (matches the library) |
 | ORM | `SeaORM` 1.1 (`sqlx-sqlite` + `sqlx-postgres`, `runtime-tokio-rustls`) |
-| Back-office | `relativelylight` (path `../relativelylight/relativelylight`), features `crud, axum, ui, openapi, csv, auth` |
+| Back-office | `relativelylight` (git dep, pinned rev), features `crud, axum, ui, openapi, csv, auth, sso` |
 | OpenAPI | `utoipa` 5 (our own paths + `crud::openapi::merge_into`) |
 | Templates (shell only) | `askama` 0.13 |
 | Config | `serde` + `serde_yaml`, layered defaults→file→env→flags (`clap` for flags/subcommands) |
@@ -339,7 +340,8 @@ after the real-IP rewrite.
   console stays L3-only, as in the original).
 - **The native API is hand-written**, not generated — the one place we duplicate
   CRUD-ish plumbing, justified by the unified type-discriminated shape.
-- **`relativelylight` is v0.0.0** (in-tree dev copy). We pin the path dependency and
+- **`relativelylight` is v0.1.0**, consumed as a git dependency pinned to a commit
+  (crates.io `version` once published). We pin the dependency and
   adapt if its API shifts; the composition surface we depend on (`Auth`, `Crud`,
   `Engine`, `crud::ui::Admin`, `crud::openapi`) is documented and stable enough.
 - **2FA/passkey** enforcement on DDNS Basic auth depends on reading the library's

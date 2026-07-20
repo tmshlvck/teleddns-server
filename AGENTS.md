@@ -9,8 +9,9 @@ usage is [`README.md`](README.md); the deployment runbook is
 ## What this is
 
 A Rust rewrite of a co-located DNS + Dynamic-DNS control-plane for a Knot DNS
-master, built on the [`relativelylight`](../relativelylight) back-office library
-(a **path dependency** to the in-tree dev copy — see `Cargo.toml`). The library
+master, built on the [`relativelylight`](https://github.com/tmshlvck/relativelylight)
+back-office library (a **git dependency pinned to a commit** in `Cargo.toml`; move
+to a `version = "…"` crates.io pin once it's published). The library
 provides the SeaORM CRUD engine + metadata, the auto-generated admin UI
 (`crud::ui::Admin`), OpenAPI generation, and `auth` (users/groups/sessions/login/
 profile, argon2id, TOTP, the `Authz` gate). Everything DNS-specific is app code.
@@ -94,8 +95,9 @@ password + 2FA), then exercise `/api/...`.
   (correct; a DB-level cross-table optimization is deferred).
 - **CSRF/CORS/real-ip layers** beyond the IP allow-list are not added (the
   library's are planned); cookie-auth forms have no CSRF token yet.
-- `relativelylight` is `v0.0.0` (in-tree dev copy) — pin the path dep and adapt
-  if its API shifts.
+- `relativelylight` is a **git dependency pinned to a commit** (`Cargo.toml`).
+  Bump the `rev` to adopt library changes; switch to a crates.io `version` once
+  it's published. It's `v0.1.0`.
 
 ## Conventions
 
