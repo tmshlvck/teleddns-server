@@ -104,6 +104,35 @@ systemctl enable --now knot
 knotc conf-check && knotc status
 ```
 
+### 1a. Run Knot from the configuration database (required)
+
+teleddns declares each managed zone at runtime with `knotc conf-begin / conf-set
+zone[<origin>] / conf-commit`. **That transactional API operates on Knot's
+configuration *database* (confdb), not the text file** — so `knotd` must run from
+the confdb, with the base config above (templates, keys, ACL, catalog zone)
+imported into it. If `knotd` runs from the plain `knot.conf`, every `conf-set`
+fails and no zones get declared.
+
+Import the base config and point `knotd` at the confdb:
+
+```sh
+systemctl stop knot
+knotc conf-import /etc/knot/knot.conf          # load templates/keys/acl/catalog into the confdb
+# Start knotd against the confdb. Distro units read a drop-in env var (KNOTD_ARGS
+# on RHEL/Fedora, KNOTD_OPTS/knot.conf on Debian); set it to include -C:
+mkdir -p /etc/systemd/system/knot.service.d
+printf '[Service]\nEnvironment=KNOTD_ARGS=-C /var/lib/knot/confdb\n' \
+    > /etc/systemd/system/knot.service.d/confdb.conf
+systemctl daemon-reload && systemctl start knot
+knotc conf-read 'zone[catalog.]'               # sanity: reads the committed confdb
+```
+
+Keep the base config's `zone:` blocks to just the **catalog zone** — teleddns
+adds and removes the per-domain `zone[...]` entries itself, idempotently (it skips
+re-declaring a zone that already exists, so a teleddns restart is safe). To change
+the templates/keys later, edit `knot.conf` and re-run `knotc conf-import` (or use
+`knotc conf-set` directly).
+
 ## 2. Install teleddns-server
 
 ```sh
@@ -307,7 +336,8 @@ Also poll `/healthcheck` (HTTP 200 always; alert on a `WARN` first token).
 | Symptom | Check |
 |---|---|
 | `knot=down` in `/healthcheck` | teleddns can run `knotc status` (socket perms, `knotc_path`, `SupplementaryGroups=knot`). |
-| Pushes fail / dead-letter | `journalctl -u teleddns-server`; `knot_zone_dir` writable; `knotc conf-check` on the master. |
+| Pushes fail / dead-letter | `journalctl -u teleddns-server` (the error now includes the knotc command, exit code, and stderr+stdout); `knot_zone_dir` writable; `knotc conf-check` on the master. |
+| `conf-set zone[...]` fails | Knot must run from the **confdb** (§1a) — `conf-set` on a file-configured `knotd` fails. Confirm `knotd` was started with `-C …/confdb` and the base config was `conf-import`ed. |
 | Zone served but secondary empty | catalog wiring: `knotc zone-status catalog.example.`; TSIG secret matches; ACL/notify. |
 | DDNS `!yours` for a valid user | the token's level + the group's zone/rr grant (see README "Authorization model"). |
 | Real client IP wrong in logs/limits | `trust_proxy: true` and the proxy sets `X-Forwarded-For`. |
