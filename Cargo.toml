@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 # relativelylight is consumed from GitHub, pinned to a commit for reproducibility.
 # Once it is published to crates.io, replace this with: relativelylight = { version = "0.1", features = [...] }
-relativelylight = { git = "https://github.com/tmshlvck/relativelylight", rev = "1ba380fb8d976d6bee5cffaeb28eaa3e36183dd5", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso"] }
+relativelylight = { git = "https://github.com/tmshlvck/relativelylight", rev = "5dbfaafaa9458cf5374eb56b6f6f7bde200f2de6", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso"] }
 
 sea-orm = { version = "1.1", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }

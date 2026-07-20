@@ -185,8 +185,19 @@ pub fn build_engine(db: DatabaseConnection, auth: &Auth) -> Engine {
          password or 2FA. Leave empty for a local password account."
             .into(),
     );
+    let mut group = MetaModel::new(relativelylight::auth::group::Entity);
+    // Expose the user↔group membership (N:M) on both forms so admins can assign groups from either
+    // the user or the group. (SSO users' groups are reconciled on login — see sso.rs — so manual
+    // edits to an SSO account's groups are overwritten on their next login.)
+    user.relate(&group);
+    group.relate(&user);
+    // The relation's name is the target model's slug (auth_group / auth_user).
+    user.relation("auth_group").label = Some("Groups".into());
+    user.relation("auth_group").description =
+        Some("Group memberships — these drive the L1/L2/L3 access grants.".into());
+    group.relation("auth_user").label = Some("Members".into());
     crud.register(user, gate.clone());
-    crud.register(MetaModel::new(relativelylight::auth::group::Entity), gate.clone());
+    crud.register(group, gate.clone());
 
     crud.into_engine()
 }
