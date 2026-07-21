@@ -46,7 +46,3 @@ regex = "1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 
-# TEMPORARY: build against the local relativelylight (phase-a audit/observer work not yet pushed).
-# Remove this and bump the git `rev` above once relativelylight is pushed.
-[patch."https://github.com/tmshlvck/relativelylight"]
-relativelylight = { path = "../relativelylight/relativelylight" }
