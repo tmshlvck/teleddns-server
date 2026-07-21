@@ -265,23 +265,36 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
 /// The repository, shown in the footer.
 const REPO_URL: &str = "https://github.com/tmshlvck/teleddns-server";
 
+/// Sets the initial Bootstrap color mode before first paint (so there's no flash): a remembered
+/// choice from `localStorage`, else the browser's `prefers-color-scheme`. Runs first in `<head>`.
+const THEME_HEAD: &str = r#"<script>(function(){try{var s=localStorage.getItem('theme');}catch(e){}var t=s||((window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light');document.documentElement.setAttribute('data-bs-theme',t);})();</script>"#;
+
+/// The light/dark toggle behavior: the top-right button shows a sun in dark mode (→ switch to light)
+/// and a moon in light mode (→ switch to dark); the choice is remembered in `localStorage`.
+const THEME_JS: &str = r#"<script>
+function ruTheme(){return document.documentElement.getAttribute('data-bs-theme')||'light';}
+function ruThemeIcon(){var b=document.getElementById('theme-toggle');if(b){var d=ruTheme()==='dark';b.textContent=d?'☀':'☾';b.title=d?'Switch to light mode':'Switch to dark mode';}}
+function ruToggleTheme(){var n=ruTheme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-bs-theme',n);try{localStorage.setItem('theme',n);}catch(e){}ruThemeIcon();}
+document.addEventListener('DOMContentLoaded',ruThemeIcon);
+</script>"#;
+
 /// The app's HTML page shell (Bootstrap + Alpine — required by the crud::ui fragments). The header
-/// shows the signed-in username as a link to their profile (+ log out); the footer carries the API
-/// docs link, the source link, and the copyright.
+/// shows the signed-in username as a link to their profile (+ log out) and a light/dark toggle; the
+/// footer carries the API docs link, the source link, and the copyright.
 pub fn shell(title: &str, user: &str, body: &str) -> String {
     let nav_user = if user.is_empty() {
         String::new()
     } else {
         // Clicking the username opens the profile page.
         format!(
-            r#"<span class="navbar-text ms-auto">
+            r#"<span class="navbar-text">
 <a href="/profile" class="link-body-emphasis text-decoration-none fw-medium">{user}</a>
  · <a href="/logout" class="link-secondary text-decoration-none">log out</a></span>"#,
             user = crate::keys::html_escape(user)
         )
     };
     format!(
-        r#"<!doctype html><html lang="en" data-bs-theme="light"><head><meta charset="utf-8">
+        r#"<!doctype html><html lang="en"><head>{THEME_HEAD}<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <!-- Required by the relativelylight crud::ui fragments: hides x-cloak'd elements (the admin panels
@@ -290,13 +303,16 @@ pub fn shell(title: &str, user: &str, body: &str) -> String {
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </head><body class="bg-body-tertiary d-flex flex-column min-vh-100">
-<nav class="navbar bg-body border-bottom px-3"><a class="navbar-brand" href="/">teleddns</a>{nav_user}</nav>
+<nav class="navbar bg-body border-bottom px-3"><a class="navbar-brand" href="/">teleddns</a>
+<div class="d-flex align-items-center gap-3 ms-auto">{nav_user}<button id="theme-toggle" type="button"
+ class="btn btn-sm btn-outline-secondary border-0 px-2" onclick="ruToggleTheme()"
+ aria-label="Toggle light / dark mode">&#9790;</button></div></nav>
 <main class="container-fluid py-3 flex-grow-1">{body}</main>
 <footer class="border-top py-3 mt-auto"><div class="container-fluid text-center small text-muted">
 <a href="/docs" class="link-secondary text-decoration-none">API docs</a>
  · <a href="{REPO_URL}" class="link-secondary text-decoration-none" target="_blank" rel="noopener">GitHub</a>
  · © 2026 Tomas Hlavacek · <span>GPL-3.0-or-later</span></div></footer>
-</body></html>"#
+{THEME_JS}</body></html>"#
     )
 }
 
