@@ -10,6 +10,9 @@ use sea_orm::{DatabaseConnection, EntityTrait, PaginatorTrait};
 use sea_orm_migration::MigratorTrait;
 use std::sync::Arc;
 
+/// The session-cookie name (shared by `Auth` and the audit sink's session resolution).
+const SESSION_COOKIE: &str = "teleddns_session";
+
 /// Shared, cheaply-cloneable application state.
 #[derive(Clone)]
 pub struct AppState {
@@ -22,6 +25,7 @@ pub struct AppState {
     pub worker: crate::backend::worker::WorkerHandle,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
+    pub audit: Arc<crate::audit::Audit>,
     pub started_at: i64,
     pub allowed_nets: Arc<Vec<ipnet::IpNet>>,
     pub ops_nets: Arc<Vec<ipnet::IpNet>>,
@@ -32,8 +36,13 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let db = crate::db::connect(&cfg.db_dsn).await?;
     Migrator::up(&db, None).await?; // versioned schema (auth + app tables), applied once
     seed_admin(&db).await?;
+    crate::audit::prune(&db, cfg.audit_retention_days).await; // drop rows past the retention window
 
     let secure = cfg.public_url.starts_with("https://");
+    // The audit sink persists a row per write; shared as the WriteObserver for the admin auto-CRUD
+    // and the auth handlers, and used directly by the DDNS/API/CF handlers.
+    let audit: Arc<crate::audit::Audit> =
+        Arc::new(crate::audit::Audit::new(db.clone(), SESSION_COOKIE, cfg.trust_proxy));
     // SSO login buttons for the login page (empty when no providers are configured).
     let sso_buttons = crate::sso::buttons_html(&cfg);
     // The profile page (password + 2FA) is owned by relativelylight; teleddns composes its
@@ -42,8 +51,9 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let auth = Auth::new(db.clone())
         .secure_cookies(secure)
         .admin_group("admin")
-        .cookie_name("teleddns_session")
+        .cookie_name(SESSION_COOKIE)
         .totp_issuer("teleddns")
+        .on_write(audit.clone()) // audit auth-table changes (password change, manager reset)
         .login_shell(move |form| crate::web::login_shell(form, &sso_buttons))
         .profile_shell(crate::web::profile_shell)
         .profile_extra(move |who| {
@@ -60,7 +70,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(providers = s.buttons().len(), "OIDC SSO enabled");
     }
 
-    let engine = Arc::new(crate::web::build_engine(db.clone(), &auth));
+    let engine = Arc::new(crate::web::build_engine(db.clone(), &auth, audit.clone()));
 
     // The app owns the OpenAPI root; the admin CRUD entity endpoints + schemas are merged in.
     let app_doc = utoipa::openapi::OpenApiBuilder::new()
@@ -102,6 +112,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         worker,
         metrics,
         ratelimit: Arc::new(crate::ratelimit::RateLimiter::new()),
+        audit,
         started_at: crate::model::now(),
         allowed_nets,
         ops_nets,

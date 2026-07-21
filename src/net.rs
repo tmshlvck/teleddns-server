@@ -29,17 +29,28 @@ fn in_any(nets: &[IpNet], ip: IpAddr) -> bool {
 
 /// Resolve the real client IP for a request.
 pub fn client_ip(app: &AppState, headers: &axum::http::HeaderMap, peer: IpAddr) -> IpAddr {
-    if app.cfg.trust_proxy {
+    resolve_ip(app.cfg.trust_proxy, headers, Some(peer)).unwrap_or(peer)
+}
+
+/// Resolve the real client IP without needing `AppState` (used by the audit sink, which must not hold
+/// a back-reference to it): the left-most `X-Forwarded-For`/`X-Real-IP` hop when `trust_proxy`, else
+/// the socket `peer`. `None` only when there is neither a trusted header nor a peer.
+pub fn resolve_ip(
+    trust_proxy: bool,
+    headers: &axum::http::HeaderMap,
+    peer: Option<IpAddr>,
+) -> Option<IpAddr> {
+    if trust_proxy {
         if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
             if let Some(first) = xff.split(',').next() {
                 if let Ok(ip) = first.trim().parse::<IpAddr>() {
-                    return ip;
+                    return Some(ip);
                 }
             }
         }
         if let Some(xr) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
             if let Ok(ip) = xr.trim().parse::<IpAddr>() {
-                return ip;
+                return Some(ip);
             }
         }
     }

@@ -1,13 +1,14 @@
 //! Native API zone endpoints. Read/update need L2 in-scope; create/delete need L3. Create
 //! auto-generates the SOA + apex NS; delete removes the zone, its records, and enqueues a Knot removal.
 
-use super::{err, require_bearer, Page};
+use super::{err, req_ip, require_bearer, Page};
 use crate::app::AppState;
 use crate::authz::{self, Level};
 use crate::dns;
 use crate::model::{now, rr, zone};
 use crate::principal::Principal;
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
+use std::net::SocketAddr;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -78,6 +79,7 @@ pub async fn get_one(State(app): State<AppState>, headers: HeaderMap, Path(id): 
 pub async fn create(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(body): Json<Value>,
 ) -> Response {
     let who = match require_bearer(&app, &headers).await {
@@ -126,6 +128,10 @@ pub async fn create(
 
     tracing::info!(actor = %who.username, source = "api", origin = %origin, "zone created");
     let view = zone_view(&z);
+    app.audit
+        .record("api", "create", format!("zone/{}", z.id), &who, "bearer",
+                req_ip(&app, &headers, peer), None, Some(view.clone()))
+        .await;
     let resp = super::idempotency::Stored { status: 201, body: view.clone() };
     super::idempotency::finish(&app, &who, &headers, &body, &resp).await;
     (StatusCode::CREATED, Json(view)).into_response()
@@ -135,6 +141,7 @@ pub async fn create(
 pub async fn update(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(id): Path<i32>,
     Json(body): Json<Value>,
 ) -> Response {
@@ -177,15 +184,26 @@ pub async fn update(
     }
     // A zone SOA edit bumps the serial (content changed); the zone after_save hook enqueues a push.
     am.serial = Set(z.serial + 1);
+    let before = zone_view(&z);
     let updated = match am.update(&app.db).await {
         Ok(z) => z,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
-    Json(zone_view(&updated)).into_response()
+    let view = zone_view(&updated);
+    app.audit
+        .record("api", "update", format!("zone/{id}"), &who, "bearer",
+                req_ip(&app, &headers, peer), Some(before), Some(view.clone()))
+        .await;
+    Json(view).into_response()
 }
 
 /// DELETE /api/zones/{id} — needs L3. Removes the zone + all its records and enqueues a Knot removal.
-pub async fn delete(State(app): State<AppState>, headers: HeaderMap, Path(id): Path<i32>) -> Response {
+pub async fn delete(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(id): Path<i32>,
+) -> Response {
     let who = match require_bearer(&app, &headers).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -203,7 +221,12 @@ pub async fn delete(State(app): State<AppState>, headers: HeaderMap, Path(id): P
     let _ = zone::Entity::delete_by_id(id).exec(&app.db).await;
     let _ = crate::sync::enqueue_remove(&app.db, &z.origin).await;
     tracing::info!(actor = %who.username, source = "api", origin = %z.origin, "zone deleted");
-    Json(zone_view(&z)).into_response()
+    let view = zone_view(&z);
+    app.audit
+        .record("api", "delete", format!("zone/{id}"), &who, "bearer",
+                req_ip(&app, &headers, peer), Some(view.clone()), None)
+        .await;
+    Json(view).into_response()
 }
 
 // --- helpers ---

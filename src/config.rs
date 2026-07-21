@@ -46,6 +46,9 @@ pub struct Config {
     /// The knot.conf template assigned to each managed zone.
     pub knot_template: String,
 
+    /// Days to keep audit-log rows; older rows are pruned at startup. `0` = keep forever.
+    pub audit_retention_days: u32,
+
     /// Externally reachable base URL (scheme + host), used to derive SSO redirect URLs.
     pub public_url: String,
     /// OIDC single sign-on providers.
@@ -110,6 +113,7 @@ impl Default for Config {
             knot_zone_dir: "/var/lib/knot/zones".into(),
             knotc_path: "knotc".into(),
             knot_template: "master".into(),
+            audit_retention_days: 365,
             public_url: String::new(),
             sso_providers: vec![],
         }

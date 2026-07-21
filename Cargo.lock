@@ -2483,7 +2483,6 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "relativelylight"
 version = "0.1.0"
-source = "git+https://github.com/tmshlvck/relativelylight?rev=3fe8127b960e0e78b111b72dde0a17e394dd3d6c#3fe8127b960e0e78b111b72dde0a17e394dd3d6c"
 dependencies = [
  "argon2",
  "askama",

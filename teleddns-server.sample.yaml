@@ -42,6 +42,10 @@ backend_sync_delay:  "10s"    # worker tick / debounce before a push     ["10s"]
 backend_sync_period: "300s"   # worker-liveness window for healthcheck   ["300s"]
 warn_on_nopush:      "3600s"  # WARN if the oldest unfinished push is older ["3600s"]
 
+# Audit log: every state-changing request is recorded in the (read-only) audit table.
+# Rows older than this are pruned at startup; 0 = keep forever.   [365]
+audit_retention_days: 365
+
 # Backend. "log" (default) just logs what it would push — safe for first boot
 # and dev. "knot" writes <knot_zone_dir>/<origin>.zone, declares the zone in
 # Knot's config DB as a member of <knot_template>, and runs `knotc zone-reload`.

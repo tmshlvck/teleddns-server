@@ -2,6 +2,7 @@
 //! migrator in [`crate::migration`], run at startup.
 
 pub mod api_key;
+pub mod audit;
 pub mod idempotency;
 pub mod roles;
 pub mod rr;

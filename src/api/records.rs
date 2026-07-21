@@ -4,12 +4,13 @@
 
 use super::record_view;
 use super::zones::zone_allowed;
-use super::{err, map_api_error, require_bearer, Page};
+use super::{err, map_api_error, req_ip, require_bearer, Page};
 use crate::app::AppState;
 use crate::authz::{self, Level};
 use crate::model::zone;
 use crate::principal::Principal;
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
+use std::net::SocketAddr;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -86,6 +87,7 @@ pub async fn get_one(
 pub async fn create(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(id): Path<i32>,
     Json(body): Json<Value>,
 ) -> Response {
@@ -112,6 +114,11 @@ pub async fn create(
         Err(e) => return map_api_error(e),
     };
     tracing::info!(actor = %who.username, source = "api", zone_id = id, "record created");
+    let target = format!("rr/{}", view.get("id").and_then(|v| v.as_str()).unwrap_or(""));
+    app.audit
+        .record("api", "create", target, &who, "bearer",
+                req_ip(&app, &headers, peer), None, Some(view.clone()))
+        .await;
     let stored = super::idempotency::Stored { status: 201, body: view.clone() };
     super::idempotency::finish(&app, &who, &headers, &body, &stored).await;
     (StatusCode::CREATED, Json(view)).into_response()
@@ -121,6 +128,7 @@ pub async fn create(
 pub async fn update(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((id, rrid)): Path<(i32, String)>,
     Json(body): Json<Value>,
 ) -> Response {
@@ -145,6 +153,10 @@ pub async fn update(
         Ok(v) => v,
         Err(e) => return map_api_error(e),
     };
+    app.audit
+        .record("api", "update", format!("rr/{rrid}"), &who, "bearer",
+                req_ip(&app, &headers, peer), Some(existing), Some(view.clone()))
+        .await;
     Json(view).into_response()
 }
 
@@ -152,6 +164,7 @@ pub async fn update(
 pub async fn delete(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((id, rrid)): Path<(i32, String)>,
 ) -> Response {
     let who = match require_bearer(&app, &headers).await {
@@ -165,7 +178,13 @@ pub async fn delete(
         return err(StatusCode::FORBIDDEN, "record delete requires L2 on the zone");
     }
     match record_view::delete_record(&app.db, id, &rrid).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => {
+            app.audit
+                .record("api", "delete", format!("rr/{rrid}"), &who, "bearer",
+                        req_ip(&app, &headers, peer), Some(v.clone()), None)
+                .await;
+            Json(v).into_response()
+        }
         Err(e) => map_api_error(e),
     }
 }

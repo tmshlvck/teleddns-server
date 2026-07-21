@@ -14,7 +14,7 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(m0001_init::Migration)]
+        vec![Box::new(m0001_init::Migration), Box::new(m0002_audit::Migration)]
     }
 }
 
@@ -119,6 +119,52 @@ mod m0001_init {
             ] {
                 m.drop_table(Table::drop().table(Alias::new(table)).if_exists().to_owned()).await?;
             }
+            Ok(())
+        }
+    }
+}
+
+mod m0002_audit {
+    use sea_orm::{ConnectionTrait, Schema};
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0002_audit"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            // The audit log table (new for every deployment).
+            let schema = Schema::new(m.get_database_backend());
+            let mut stmt = schema.create_table_from_entity(crate::model::audit::Entity);
+            stmt.if_not_exists();
+            m.create_table(stmt).await?;
+
+            // Auth lifecycle timestamps (added to relativelylight alongside the audit hook). On a DB
+            // whose auth tables were created *before* those columns existed (an upgrade), add them; on
+            // a fresh DB the columns already exist (created by m0001's table_create_statements), so the
+            // "duplicate column" error is expected and ignored.
+            let db = m.get_connection();
+            for sql in [
+                "ALTER TABLE auth_user ADD COLUMN created_at bigint NOT NULL DEFAULT 0",
+                "ALTER TABLE auth_user ADD COLUMN updated_at bigint NOT NULL DEFAULT 0",
+                "ALTER TABLE auth_user ADD COLUMN last_login_at bigint",
+                "ALTER TABLE auth_group ADD COLUMN created_at bigint NOT NULL DEFAULT 0",
+                "ALTER TABLE auth_group ADD COLUMN updated_at bigint NOT NULL DEFAULT 0",
+            ] {
+                let _ = db.execute_unprepared(sql).await;
+            }
+            Ok(())
+        }
+
+        async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            m.drop_table(Table::drop().table(Alias::new("audit")).if_exists().to_owned()).await?;
+            // The auth columns are left in place (per-engine column drops aren't worth it).
             Ok(())
         }
     }

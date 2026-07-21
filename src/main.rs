@@ -3,6 +3,7 @@
 
 mod api;
 mod app;
+mod audit;
 mod authz;
 mod backend;
 mod cfapi;

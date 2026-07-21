@@ -71,8 +71,12 @@ impl Outcome {
 pub async fn update(
     State(app): State<AppState>,
     headers: HeaderMap,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
+    // Real client IP (post proxy rewrite) for the audit log + the request log line.
+    let ip = crate::net::resolve_ip(app.cfg.trust_proxy, &headers, Some(peer.ip()));
+    let ip_s = ip.map(|i| i.to_string()).unwrap_or_else(|| "-".into());
     let ua = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -119,11 +123,12 @@ pub async fn update(
         Err(_) => return finish(&app, &[Outcome::Error], &principal.username, &ua),
     };
 
+    let auth_type = if principal.key_id.is_some() { "bearer" } else { "basic" };
     let mut outcomes = Vec::new();
     for (family, addr) in families {
-        let o = update_one(&app, &principal, &zone, &label, family, &addr).await;
+        let o = update_one(&app, &principal, &zone, &label, family, &addr, ip, auth_type).await;
         tracing::info!(
-            actor = %principal.username, source = principal.source.as_str(), ua = %ua,
+            actor = %principal.username, source = principal.source.as_str(), src = %ip_s, ua = %ua,
             zone = %zone.origin, label = %label, family = ?family, addr = %addr,
             result = o.label(), "ddns update"
         );
@@ -156,6 +161,7 @@ async fn authenticate(app: &AppState, headers: &HeaderMap) -> Result<Principal, 
 }
 
 /// Update one address family for `(zone, label)`.
+#[allow(clippy::too_many_arguments)]
 async fn update_one(
     app: &AppState,
     principal: &Principal,
@@ -163,6 +169,8 @@ async fn update_one(
     label: &str,
     family: Family,
     addr: &str,
+    ip: Option<std::net::IpAddr>,
+    auth_type: &str,
 ) -> Outcome {
     // Authorize: L1 on this exact (zone, label).
     let eff = match authz::effective_level(
@@ -195,28 +203,48 @@ async fn update_one(
         Family::V6 => set_aaaa(&app.db, zone.id, label, addr, ttl).await,
     };
     match res {
-        Ok(true) => Outcome::Good(addr.to_string()),
-        Ok(false) => Outcome::Nochg(addr.to_string()),
+        Ok((true, old)) => {
+            let typ = match family {
+                Family::V4 => "A",
+                Family::V6 => "AAAA",
+            };
+            app.audit
+                .record(
+                    "ddns",
+                    if old.is_none() { "create" } else { "update" },
+                    format!("{} {}", typ, dns::fqdn_of(label, &zone.origin)),
+                    principal,
+                    auth_type,
+                    ip,
+                    old.map(|v| serde_json::json!({ "value": v })),
+                    Some(serde_json::json!({ "value": addr })),
+                )
+                .await;
+            Outcome::Good(addr.to_string())
+        }
+        Ok((false, _)) => Outcome::Nochg(addr.to_string()),
         Err(_) => Outcome::Error,
     }
 }
 
-/// Set the A set at `(zone,label)` to exactly `[addr]`. Returns Ok(true) on change, Ok(false) if
-/// already at the requested value. The insert fires the after_save hook (serial bump + enqueue).
+/// Set the A set at `(zone,label)` to exactly `[addr]`. Returns `(changed, old_value)` — `changed` is
+/// false if already at the requested value; `old_value` is the prior single value (for the audit
+/// before-state). The insert fires the after_save hook (serial bump + enqueue).
 async fn set_a(
     db: &sea_orm::DatabaseConnection,
     zone_id: i32,
     label: &str,
     addr: &str,
     ttl: i32,
-) -> Result<bool, sea_orm::DbErr> {
+) -> Result<(bool, Option<String>), sea_orm::DbErr> {
     let existing = rr::a::Entity::find()
         .filter(rr::a::Column::ZoneId.eq(zone_id))
         .filter(rr::a::Column::Label.eq(label))
         .all(db)
         .await?;
+    let old = existing.first().map(|e| e.value.clone());
     if existing.len() == 1 && existing[0].value == addr {
-        return Ok(false);
+        return Ok((false, old));
     }
     for e in &existing {
         rr::a::Entity::delete_by_id(e.id).exec(db).await?;
@@ -230,7 +258,7 @@ async fn set_a(
     }
     .insert(db)
     .await?;
-    Ok(true)
+    Ok((true, old))
 }
 
 async fn set_aaaa(
@@ -239,14 +267,15 @@ async fn set_aaaa(
     label: &str,
     addr: &str,
     ttl: i32,
-) -> Result<bool, sea_orm::DbErr> {
+) -> Result<(bool, Option<String>), sea_orm::DbErr> {
     let existing = rr::aaaa::Entity::find()
         .filter(rr::aaaa::Column::ZoneId.eq(zone_id))
         .filter(rr::aaaa::Column::Label.eq(label))
         .all(db)
         .await?;
+    let old = existing.first().map(|e| e.value.clone());
     if existing.len() == 1 && existing[0].value == addr {
-        return Ok(false);
+        return Ok((false, old));
     }
     for e in &existing {
         rr::aaaa::Entity::delete_by_id(e.id).exec(db).await?;
@@ -260,7 +289,7 @@ async fn set_aaaa(
     }
     .insert(db)
     .await?;
-    Ok(true)
+    Ok((true, old))
 }
 
 /// Combine per-family outcomes into a response: worst HTTP status, `\n`-joined body.

@@ -52,6 +52,15 @@ pub fn err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({ "error": msg }))).into_response()
 }
 
+/// Resolve the client IP for an API/CF request (peer + trust_proxy/XFF), for the audit log.
+pub fn req_ip(
+    app: &AppState,
+    headers: &HeaderMap,
+    peer: std::net::SocketAddr,
+) -> Option<std::net::IpAddr> {
+    crate::net::resolve_ip(app.cfg.trust_proxy, headers, Some(peer.ip()))
+}
+
 /// Map a record_view::ApiError to an HTTP response.
 pub fn map_api_error(e: record_view::ApiError) -> Response {
     use record_view::ApiError::*;

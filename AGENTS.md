@@ -40,11 +40,13 @@ password + 2FA), then exercise `/api/...`.
 | `config.rs` | layered YAML config (defaults → file → env → flags) |
 | `db.rs` | connection; SQLite DSN normalization |
 | `app.rs` | `AppState`, router composition, server bootstrap, admin seed |
-| `model/` | SeaORM entities: `zone` (SOA inline), `rr` (one table per type, macro), `api_key`, `roles` (zone_role/rr_role), `sync_task`, `idempotency`; `migrate()` |
+| `model/` | SeaORM entities: `zone` (SOA inline), `rr` (one table per type, macro), `api_key`, `roles` (zone_role/rr_role), `sync_task`, `idempotency`, `audit` |
+| `migration/` | versioned `sea-orm-migration` steps (auth tables via the library + app tables + audit) |
 | `authz.rs` | `Level` algebra, the `min()` cap, `effective_level`, `user_groups` |
 | `principal.rs` | resolve session / HTTP Basic / bearer → `Principal` (with a token level) |
 | `keys.rs` | self-service API-key component (`section()` composed onto `/profile` via `Auth::profile_extra`; level-capped mint/revoke) |
 | `sync.rs` | serial bump + push enqueue (called from RR/zone `after_save` hooks and write paths) |
+| `audit.rs` | audit sink: `WriteObserver` for admin/auth writes + `record()` for DDNS/API/CF; writes the `audit` table |
 | `ddns.rs` | dyndns2 endpoint |
 | `api/` | native JSON API: `record_view` (unified type-discriminated mapping), `zones`, `records`, `idempotency`, `openapi` (paths supplement) |
 | `cfapi/` | Cloudflare facade (`/client/v4`) |
@@ -98,6 +100,14 @@ password + 2FA), then exercise `/api/...`.
 - `relativelylight` is a **git dependency pinned to a commit** (`Cargo.toml`).
   Bump the `rev` to adopt library changes; switch to a crates.io `version` once
   it's published. It's `v0.1.0`.
+- **Audit** is written by `audit.rs`: it's the `WriteObserver` relativelylight
+  fires for the admin auto-CRUD + auth handlers, and the DDNS/API/CF handlers call
+  `Audit::record` directly. Rows land in the read-only `audit` table; retention is
+  app-side (`audit_retention_days`, pruned at startup). A future `admin` CLI to
+  dump/clear the log is anticipated but not implemented.
+- **Temporary `[patch]`** in `Cargo.toml` points relativelylight at the local
+  checkout while the audit/observer work is unpushed — remove it and confirm the
+  `rev` once `relativelylight` is pushed.
 
 ## Conventions
 

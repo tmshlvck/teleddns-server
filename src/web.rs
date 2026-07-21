@@ -31,10 +31,16 @@ fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E
     mm.relation("zone").description = Some("The zone this record belongs to.".into());
 }
 
-/// Build the CRUD engine over every managed entity, all gated admin-only (L3).
-pub fn build_engine(db: DatabaseConnection, auth: &Auth) -> Engine {
+/// Build the CRUD engine over every managed entity, all gated admin-only (L3). `audit` is registered
+/// as the write observer so admin-UI edits are recorded.
+pub fn build_engine(
+    db: DatabaseConnection,
+    auth: &Auth,
+    audit: Arc<crate::audit::Audit>,
+) -> Engine {
     let gate = Arc::new(AdminOnly::new(auth, ["admin"]));
     let mut crud = Crud::new(db, "/admin/api");
+    crud.on_write(audit);
 
     // Zone (+ inline SOA). The SOA fields get plain-language labels + example values.
     let mut z = MetaModel::new(crate::model::zone::Entity);
@@ -185,7 +191,14 @@ pub fn build_engine(db: DatabaseConnection, auth: &Auth) -> Engine {
          password or 2FA. Leave empty for a local password account."
             .into(),
     );
+    // Lifecycle timestamps are maintained by relativelylight (hook / login flow) — show, don't edit.
+    for f in ["created_at", "updated_at", "last_login_at"] {
+        user.field(f).read_only = true;
+    }
     let mut group = MetaModel::new(relativelylight::auth::group::Entity);
+    for f in ["created_at", "updated_at"] {
+        group.field(f).read_only = true;
+    }
     // Expose the user↔group membership (N:M) on both forms so admins can assign groups from either
     // the user or the group. (SSO users' groups are reconciled on login — see sso.rs — so manual
     // edits to an SSO account's groups are overwritten on their next login.)
@@ -198,6 +211,22 @@ pub fn build_engine(db: DatabaseConnection, auth: &Auth) -> Engine {
     group.relation("auth_user").label = Some("Members".into());
     crud.register(user, gate.clone());
     crud.register(group, gate.clone());
+
+    // Audit log: read-only view (rows are written by the audit sink, never the CRUD API).
+    let mut a = MetaModel::new(crate::model::audit::Entity);
+    for f in ["id", "ts", "source", "operation", "target", "actor_user_id", "actor_username",
+              "auth_type", "client_ip", "before", "after"] {
+        a.field(f).read_only = true;
+    }
+    a.row_label = Box::new(|row| {
+        format!(
+            "{} {} {}",
+            row["ts"].as_i64().unwrap_or(0),
+            row["operation"].as_str().unwrap_or(""),
+            row["target"].as_str().unwrap_or("")
+        )
+    });
+    crud.register(a, gate.clone());
 
     crud.into_engine()
 }
@@ -258,6 +287,14 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
         })
         .entity_with("auth_group", |t| {
             t.title("Groups").description("Groups drive access grants and the admin gate.")
+        })
+        .separator()
+        .group("Audit")
+        .entity_with("audit", |t| {
+            t.read_only(true).per_page(50).title("Audit log").description(
+                "Append-only record of every state-changing request (DDNS, API, CF facade, admin, \
+                 auth). Read-only.",
+            )
         })
     // (API docs, profile, and log out now live in the page header/footer — see `shell`.)
 }
