@@ -123,6 +123,7 @@ pub async fn create(
         label: Set("@".into()),
         ttl: Set(z.ttl),
         value: Set(z.mname.clone()),
+        ..Default::default()
     };
     let _ = ns.insert(&app.db).await;
 

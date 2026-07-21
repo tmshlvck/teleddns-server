@@ -20,6 +20,9 @@ pub struct Model {
     pub expire: i32,
     pub minimum: i32,
     pub ttl: i32,
+    /// Row lifecycle timestamps — Unix seconds, UTC, maintained by `before_save`.
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -29,6 +32,18 @@ pub enum Relation {}
 // auto-bump the serial — the operator/API controls the serial on a zone edit; RR changes bump it.
 #[async_trait::async_trait]
 impl ActiveModelBehavior for ActiveModel {
+    // Stamp UTC lifecycle timestamps: created_at on insert, updated_at on every save.
+    async fn before_save<C>(mut self, _db: &C, insert: bool) -> Result<Self, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        let now = crate::model::now();
+        if insert {
+            self.created_at = sea_orm::ActiveValue::Set(now);
+        }
+        self.updated_at = sea_orm::ActiveValue::Set(now);
+        Ok(self)
+    }
     async fn after_save<C>(model: Model, db: &C, _insert: bool) -> Result<Model, DbErr>
     where
         C: ConnectionTrait,
@@ -54,6 +69,8 @@ impl Model {
             expire: Set(604800),
             minimum: Set(3600),
             ttl: Set(default_ttl),
+            // Stamped by before_save on insert.
+            ..Default::default()
         }
     }
 }

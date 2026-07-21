@@ -229,7 +229,9 @@ async fn update_one(
 
 /// Set the A set at `(zone,label)` to exactly `[addr]`. Returns `(changed, old_value)` — `changed` is
 /// false if already at the requested value; `old_value` is the prior single value (for the audit
-/// before-state). The insert fires the after_save hook (serial bump + enqueue).
+/// before-state). Updates the existing row **in place** (preserving `created_at`) rather than
+/// delete+recreate, so a router refreshing its IP doesn't reset the record's creation time. Both the
+/// insert and the update fire the after_save hook (serial bump + enqueue).
 async fn set_a(
     db: &sea_orm::DatabaseConnection,
     zone_id: i32,
@@ -246,18 +248,31 @@ async fn set_a(
     if existing.len() == 1 && existing[0].value == addr {
         return Ok((false, old));
     }
-    for e in &existing {
-        rr::a::Entity::delete_by_id(e.id).exec(db).await?;
+    match existing.split_first() {
+        // Keep the first row (update in place → preserves created_at); drop any extras.
+        Some((first, rest)) => {
+            for e in rest {
+                rr::a::Entity::delete_by_id(e.id).exec(db).await?;
+            }
+            let mut am: rr::a::ActiveModel = first.clone().into();
+            am.value = Set(addr.to_string());
+            am.ttl = Set(ttl);
+            am.update(db).await?;
+        }
+        // No existing record → create one.
+        None => {
+            rr::a::ActiveModel {
+                id: NotSet,
+                zone_id: Set(zone_id),
+                label: Set(label.to_string()),
+                ttl: Set(ttl),
+                value: Set(addr.to_string()),
+                ..Default::default() // created_at/updated_at stamped by before_save
+            }
+            .insert(db)
+            .await?;
+        }
     }
-    rr::a::ActiveModel {
-        id: NotSet,
-        zone_id: Set(zone_id),
-        label: Set(label.to_string()),
-        ttl: Set(ttl),
-        value: Set(addr.to_string()),
-    }
-    .insert(db)
-    .await?;
     Ok((true, old))
 }
 
@@ -277,18 +292,29 @@ async fn set_aaaa(
     if existing.len() == 1 && existing[0].value == addr {
         return Ok((false, old));
     }
-    for e in &existing {
-        rr::aaaa::Entity::delete_by_id(e.id).exec(db).await?;
+    match existing.split_first() {
+        Some((first, rest)) => {
+            for e in rest {
+                rr::aaaa::Entity::delete_by_id(e.id).exec(db).await?;
+            }
+            let mut am: rr::aaaa::ActiveModel = first.clone().into();
+            am.value = Set(addr.to_string());
+            am.ttl = Set(ttl);
+            am.update(db).await?;
+        }
+        None => {
+            rr::aaaa::ActiveModel {
+                id: NotSet,
+                zone_id: Set(zone_id),
+                label: Set(label.to_string()),
+                ttl: Set(ttl),
+                value: Set(addr.to_string()),
+                ..Default::default() // created_at/updated_at stamped by before_save
+            }
+            .insert(db)
+            .await?;
+        }
     }
-    rr::aaaa::ActiveModel {
-        id: NotSet,
-        zone_id: Set(zone_id),
-        label: Set(label.to_string()),
-        ttl: Set(ttl),
-        value: Set(addr.to_string()),
-    }
-    .insert(db)
-    .await?;
     Ok((true, old))
 }
 

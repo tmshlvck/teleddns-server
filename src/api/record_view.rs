@@ -178,6 +178,7 @@ pub async fn create_record(
                 label: Set(label.clone()),
                 ttl: Set(ttl),
                 $( $f: Set($val), )*
+                ..Default::default() // created_at/updated_at stamped by before_save
             };
             // ActiveModel::insert fires the after_save hook (serial bump + enqueue).
             let m = sea_orm::ActiveModelTrait::insert(am, db).await?;

@@ -14,7 +14,11 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(m0001_init::Migration), Box::new(m0002_audit::Migration)]
+        vec![
+            Box::new(m0001_init::Migration),
+            Box::new(m0002_audit::Migration),
+            Box::new(m0003_row_timestamps::Migration),
+        ]
     }
 }
 
@@ -166,6 +170,50 @@ mod m0002_audit {
             m.drop_table(Table::drop().table(Alias::new("audit")).if_exists().to_owned()).await?;
             // The auth columns are left in place (per-engine column drops aren't worth it).
             Ok(())
+        }
+    }
+}
+
+mod m0003_row_timestamps {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0003_row_timestamps"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            // Add created_at/updated_at (UTC Unix seconds) to the zone + every RR table. As with
+            // m0002's auth columns: an upgrade adds them; a fresh DB already has them (from m0001's
+            // create_table_from_entity), so the "duplicate column" error is expected and ignored.
+            let db = m.get_connection();
+            let tables = [
+                "zone", "rr_a", "rr_aaaa", "rr_ns", "rr_ptr", "rr_cname", "rr_txt", "rr_mx",
+                "rr_srv", "rr_caa", "rr_sshfp", "rr_tlsa", "rr_dnskey", "rr_ds", "rr_naptr",
+            ];
+            for t in tables {
+                let _ = db
+                    .execute_unprepared(&format!(
+                        "ALTER TABLE {t} ADD COLUMN created_at bigint NOT NULL DEFAULT 0"
+                    ))
+                    .await;
+                let _ = db
+                    .execute_unprepared(&format!(
+                        "ALTER TABLE {t} ADD COLUMN updated_at bigint NOT NULL DEFAULT 0"
+                    ))
+                    .await;
+            }
+            Ok(())
+        }
+
+        async fn down(&self, _m: &SchemaManager) -> Result<(), DbErr> {
+            Ok(()) // columns left in place
         }
     }
 }

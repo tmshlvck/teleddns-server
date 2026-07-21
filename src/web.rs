@@ -29,6 +29,10 @@ fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E
     );
     mm.relation("zone").label = Some("Zone".into());
     mm.relation("zone").description = Some("The zone this record belongs to.".into());
+    mm.field("created_at").label = Some("Created".into());
+    mm.field("created_at").read_only = true;
+    mm.field("updated_at").label = Some("Last changed".into());
+    mm.field("updated_at").read_only = true;
 }
 
 /// Build the CRUD engine over every managed entity, all gated admin-only (L3). `audit` is registered
@@ -81,6 +85,10 @@ pub fn build_engine(
     z.field("ttl").label = Some("Default TTL (seconds)".into());
     z.field("ttl").description =
         Some("Default cache lifetime for the zone's records, e.g. 3600 (=1h).".into());
+    z.field("created_at").label = Some("Created".into());
+    z.field("created_at").read_only = true;
+    z.field("updated_at").label = Some("Last changed".into());
+    z.field("updated_at").read_only = true;
     z.row_label = Box::new(|row| row["origin"].as_str().unwrap_or_default().to_string());
     crud.register(z, gate.clone());
 
