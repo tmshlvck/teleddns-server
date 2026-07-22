@@ -171,6 +171,7 @@ pub fn build_engine(
     apikey.field("expires_at").description = Some("Optional expiry (UTC). Empty = never.".into());
     apikey.field("expires_at").datetime();
     apikey.field("last_used_at").label = Some("Last used".into());
+    apikey.field("last_used_at").read_only = true; // maintained by the principal resolver, not admins
     apikey.field("last_used_at").datetime();
     apikey.field("disabled").label = Some("Disabled".into());
     apikey.relation("user").label = Some("Owner".into());
