@@ -97,6 +97,12 @@ password + 2FA), then exercise `/api/...`.
   (correct; a DB-level cross-table optimization is deferred).
 - **CSRF/CORS/real-ip layers** beyond the IP allow-list are not added (the
   library's are planned); cookie-auth forms have no CSRF token yet.
+- **Admin timezone display (TODO, low priority).** The DB/API are UTC and the admin
+  renders timestamps in UTC (relativelylight's `crud::ui::TIME_JS` + `TZ_PICKER_HTML`
+  support UTC/browser-local/named zones — see relativelylight `docs/TIME.md`, not yet
+  wired here). Consider a **server-timezone** option so the admin shows times in the
+  host's zone, matching the Knot logs / syslog. Would mean: expose the server TZ (config
+  or the host's `/etc/localtime`) via a tiny endpoint and set `$store.tz` from it on load.
 - `relativelylight` is a **git dependency pinned to a commit** (`Cargo.toml`).
   Bump the `rev` to adopt library changes; switch to a crates.io `version` once
   it's published. It's `v0.1.0`.
