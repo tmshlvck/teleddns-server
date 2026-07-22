@@ -163,6 +163,19 @@ pub async fn create_record(
     default_ttl: i32,
     body: &Value,
 ) -> Result<Value, ApiError> {
+    write_record(db, zone_id, default_ttl, body, None).await
+}
+
+/// Create (`update = None`) or update-in-place (`update = Some(pk)`) a record from a unified body.
+/// The same per-type parsing/validation drives both; an update sets the PK so it UPDATEs the existing
+/// row (preserving `created_at`) rather than inserting.
+async fn write_record(
+    db: &DatabaseConnection,
+    zone_id: i32,
+    default_ttl: i32,
+    body: &Value,
+    update: Option<i32>,
+) -> Result<Value, ApiError> {
     let obj = body.as_object().ok_or_else(|| ApiError::Validation("body must be an object".into()))?;
     let typ = rstr(obj, "type")?;
     let prefix = type_to_prefix(&typ).ok_or_else(|| ApiError::BadType(typ.clone()))?;
@@ -173,15 +186,19 @@ pub async fn create_record(
         ($m:path, { $($f:ident : $val:expr),* $(,)? }) => {{
             use $m as _m;
             let am = _m::ActiveModel {
-                id: NotSet,
+                id: match update { Some(i) => Set(i), None => NotSet },
                 zone_id: Set(zone_id),
                 label: Set(label.clone()),
                 ttl: Set(ttl),
                 $( $f: Set($val), )*
-                ..Default::default() // created_at/updated_at stamped by before_save
+                ..Default::default() // created_at/updated_at stamped by before_save (created_at kept on update)
             };
-            // ActiveModel::insert fires the after_save hook (serial bump + enqueue).
-            let m = sea_orm::ActiveModelTrait::insert(am, db).await?;
+            // insert/update both fire the after_save hook (serial bump + enqueue).
+            let m = if update.is_some() {
+                sea_orm::ActiveModelTrait::update(am, db).await?
+            } else {
+                sea_orm::ActiveModelTrait::insert(am, db).await?
+            };
             to_view(serde_json::to_value(&m).unwrap(), prefix, prefix_to_type(prefix).unwrap())
         }};
     }
@@ -294,15 +311,14 @@ pub async fn update_record(
 ) -> Result<Value, ApiError> {
     let (prefix, id) = split_id(rrid).ok_or(ApiError::NotFound)?;
     let typ = prefix_to_type(&prefix).ok_or(ApiError::NotFound)?;
-    // Confirm it exists in this zone first.
+    // Confirm it exists in this zone first (also guards the id against a foreign zone).
     let _ = get_record(db, zone_id, rrid).await?;
-    // Reuse create's validation by deleting + recreating with the same id? No — keep the id stable.
-    // Instead re-parse the body and build a fresh row, replacing the old one.
+    // Update the existing row in place: the id stays stable, `created_at` is preserved (only
+    // `updated_at` bumps), and the after_save hook still fires the serial bump + push. Type is
+    // immutable, so we pin it to the id's type regardless of the body.
     let mut merged = body.as_object().cloned().unwrap_or_default();
     merged.insert("type".into(), json!(typ));
-    // Delete the old row, create a new one (id changes, which is acceptable for the opaque id).
-    dispatch_delete(db, &prefix, id, zone_id).await?;
-    create_record(db, zone_id, default_ttl, &Value::Object(merged)).await
+    write_record(db, zone_id, default_ttl, &Value::Object(merged), Some(id)).await
 }
 
 // --- per-type dispatch for fetch/delete (find_by_id needs the concrete entity) ---

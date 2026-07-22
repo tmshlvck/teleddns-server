@@ -31,8 +31,10 @@ fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E
     mm.relation("zone").description = Some("The zone this record belongs to.".into());
     mm.field("created_at").label = Some("Created".into());
     mm.field("created_at").read_only = true;
+    mm.field("created_at").datetime();
     mm.field("updated_at").label = Some("Last changed".into());
     mm.field("updated_at").read_only = true;
+    mm.field("updated_at").datetime();
 }
 
 /// Build the CRUD engine over every managed entity, all gated admin-only (L3). `audit` is registered
@@ -87,8 +89,10 @@ pub fn build_engine(
         Some("Default cache lifetime for the zone's records, e.g. 3600 (=1h).".into());
     z.field("created_at").label = Some("Created".into());
     z.field("created_at").read_only = true;
+    z.field("created_at").datetime();
     z.field("updated_at").label = Some("Last changed".into());
     z.field("updated_at").read_only = true;
+    z.field("updated_at").datetime();
     z.row_label = Box::new(|row| row["origin"].as_str().unwrap_or_default().to_string());
     crud.register(z, gate.clone());
 
@@ -164,9 +168,10 @@ pub fn build_engine(
         "1 = one record set, 2 = a whole zone, 3 = admin. Capped by the owner's level.".into(),
     );
     apikey.field("expires_at").label = Some("Expires at".into());
-    apikey.field("expires_at").description =
-        Some("Optional expiry, unix seconds. Empty = never.".into());
+    apikey.field("expires_at").description = Some("Optional expiry (UTC). Empty = never.".into());
+    apikey.field("expires_at").datetime();
     apikey.field("last_used_at").label = Some("Last used".into());
+    apikey.field("last_used_at").datetime();
     apikey.field("disabled").label = Some("Disabled".into());
     apikey.relation("user").label = Some("Owner".into());
     crud.register(apikey, gate.clone());
@@ -202,10 +207,12 @@ pub fn build_engine(
     // Lifecycle timestamps are maintained by relativelylight (hook / login flow) — show, don't edit.
     for f in ["created_at", "updated_at", "last_login_at"] {
         user.field(f).read_only = true;
+        user.field(f).datetime();
     }
     let mut group = MetaModel::new(relativelylight::auth::group::Entity);
     for f in ["created_at", "updated_at"] {
         group.field(f).read_only = true;
+        group.field(f).datetime();
     }
     // Expose the user↔group membership (N:M) on both forms so admins can assign groups from either
     // the user or the group. (SSO users' groups are reconciled on login — see sso.rs — so manual
@@ -226,6 +233,7 @@ pub fn build_engine(
               "auth_type", "client_ip", "before", "after"] {
         a.field(f).read_only = true;
     }
+    a.field("ts").datetime();
     a.row_label = Box::new(|row| {
         format!(
             "{} {} {}",
