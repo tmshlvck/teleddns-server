@@ -6,7 +6,7 @@ use crate::app::AppState;
 use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use relativelylight::auth::{AdminOnly, Auth, Identity};
+use relativelylight::auth::{Auth, GroupReadWrite, Identity};
 use relativelylight::crud::engine::Engine;
 use relativelylight::crud::seaorm::{Crud, MetaModel};
 use relativelylight::crud::ui::Admin;
@@ -44,7 +44,7 @@ pub fn build_engine(
     auth: &Auth,
     audit: Arc<crate::audit::Audit>,
 ) -> Engine {
-    let gate = Arc::new(AdminOnly::new(auth, ["admin"]));
+    let gate = Arc::new(GroupReadWrite::new(auth, ["admin"]));
     let mut crud = Crud::new(db, "/admin/api");
     crud.on_write(audit);
 
