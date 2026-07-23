@@ -1,4 +1,4 @@
-# teleddns-server — Product Requirements Document
+# teleddns-server — design & requirements
 
 **teleddns-server** is a co-located DNS management and Dynamic DNS server. It runs
 **next to a Knot DNS master**, owns the zone data in its own small database, and
@@ -13,11 +13,19 @@ Secondary/authoritative DNS servers replicate **natively** (catalog zone + AXFR/
 TSIG) directly from Knot — teleddns never talks to another teleddns instance and
 is not in the DNS query path itself.
 
-This document describes **what the product does and the contracts it must honor**.
-It is deliberately implementation-agnostic: no language, ORM, web framework, or
-library is prescribed. (The current effort re-implements this PRD in Rust on top
-of the `relativelylight` back-office library; that plan lives in
-[`RUSTREWRITE.md`](RUSTREWRITE.md).)
+This is the **developer-facing** document: the behavioral contracts the server
+must honor (§1–§10) plus the high-level implementation decisions (§11) and current
+status (§12). Operator usage and the deployment runbook are in
+[`README.md`](README.md); a file-by-file module map and working conventions are in
+[`AGENTS.md`](AGENTS.md). Sections §1–§10 are written as contracts (exact status
+codes, wire shapes, invariants) and are language-agnostic; the current
+implementation is Rust on the [`relativelylight`](https://github.com/tmshlvck/relativelylight)
+back-office library (§11).
+
+> **Status:** all surfaces are **implemented and verified** (§12). The DDNS
+> endpoint, native + CF APIs, operator UI, per-type validation, Knot backend +
+> sync worker, operability endpoints, and OIDC SSO are done against both the `log`
+> and `knot` backends. Open items: passkeys, and the SSO group-mapping subset.
 
 ---
 
@@ -283,11 +291,15 @@ or UI.
 | `DS`     | `key_tag`, `algorithm`, `digest_type`, `digest`     | `<label> <ttl> IN DS <key_tag> <algorithm> <digest_type> <digest>` |
 | `NAPTR`  | `order`, `preference`, `flags`, `service`, `regexp`, `replacement` | `<label> <ttl> IN NAPTR <order> <preference> "<flags>" "<service>" "<regexp>" <replacement>` |
 
-**Validation is per type:** address literals for A/AAAA; enum sets for CAA `tag` /
-SSHFP / TLSA fields; `[0, 65535]` bounds on 16-bit integer fields; DNS-name grammar
-for name-valued rdata. The zone-file render must be byte-faithful and pass Knot's
-`kzonecheck` / `kzonecheck`-equivalent validation. `DNSKEY`/`DS` are stored as
-static data; **signing is Knot's job**.
+**Validation is per type and enforced on every write surface** (native API, DDNS,
+CF facade, and the admin forms) from one shared set of predicates (`dns::check`,
+built on `relativelylight::validate`): IP literals for A/AAAA; DNS-name grammar for
+name-valued rdata; the CAA `tag` enum; hex (SSHFP/TLSA/DS) and base64 (DNSKEY)
+rdata; TTL to the RFC 2181 `0..2³¹−1`; and numeric fields range-checked to their
+wire width (octet vs 16-bit). It is RFC-reasonable with a few corners cut for
+uncommon cases (numeric enums are range-checked to their width, not to the exact
+IANA-registered set). The zone-file render must be byte-faithful and pass Knot's
+`kzonecheck`. `DNSKEY`/`DS` are stored as static data; **signing is Knot's job**.
 
 Types not modelled (`HINFO`, `LOC`, `SVCB`, `HTTPS`, `NSEC*`, `RRSIG`, `URI`, …)
 are out of scope.
@@ -510,4 +522,87 @@ reset a user's password, and bulk-import a zone file (§7.3).
   control-plane component that feeds the authoritative master.
 
 The full production runbook (systemd unit, TLS/reverse proxy, Knot base config for
-the master and secondaries) is documented in `DEPLOY.md`.
+the master and secondaries) is in [`README.md`](README.md#production-deployment).
+
+---
+
+## 11. Implementation (Rust on `relativelylight`)
+
+§1–§10 are the contract; this section records the **decisions** behind the current
+implementation. The file-by-file map lives in [`AGENTS.md`](AGENTS.md) — not
+repeated here.
+
+### 11.1 Stack
+
+Rust 2021 / `tokio`; `axum` 0.8; `SeaORM` 1.1 (`sqlx-sqlite` + `sqlx-postgres`,
+`runtime-tokio-rustls`); `utoipa` 5 for OpenAPI; `askama` 0.13 for the page shell;
+`serde`/`serde_yaml` + `clap` for layered config; `prometheus` for metrics;
+`tracing` for structured logs. Passwords are argon2id (via the library); API keys
+are SHA-256-hashed. Built on
+[`relativelylight`](https://github.com/tmshlvck/relativelylight) — a git dependency
+pinned to a release tag (currently `v0.1.2`; move to a crates.io `version` once
+published), features `crud, axum, ui, openapi, csv, auth, sso, validate-base64`.
+
+### 11.2 Library boundary — reuse vs. build
+
+**From `relativelylight` (no per-model code):** the `auth` stack (`auth_user` /
+`auth_group` / `auth_user_group` / `auth_session`, argon2id, `Auth::identify`,
+login/logout/profile incl. TOTP, the OIDC `sso` module, the `Authz` gate + presets);
+the `crud` engine + `MetaModel` introspection driving the **operator admin console**
+over our entities; `crud::ui::Admin`/`Table` fragments; OpenAPI + CSV; and
+`validate` (the shared field-validator predicates — §5.2).
+
+**We build (app code):** the DNS domain model (`zone` + one entity per RR type); the
+bearer **API-key** entity + a principal resolver that attaches a *level* (the
+library's session identity has no level/token concept); the **L1/L2/L3
+authorization** module (row/scope-aware, beyond the library's header-only per-model
+gate), shared by all three request surfaces; the **DDNS** endpoint; the **native**
+and **Cloudflare** management APIs; the **Knot backend + sync worker + push
+journal**; and config, migrations, metrics, healthcheck, CLI, and zone-file import.
+
+### 11.3 Key decisions
+
+- **The app owns the roots.** Per the library's composition contract, the app owns
+  the axum router, the page shell (Bootstrap + Alpine, required by the crud
+  fragments), and the OpenAPI document; the library only contributes routes, HTML
+  fragments, and schemas.
+- **One authorization model, three surfaces.** DDNS, the native API, and the CF
+  facade all resolve a `Principal` (session / HTTP Basic / bearer) and run the same
+  `min(token_level, effective) ≥ required` check (§3). The operator console is
+  L3-only via the library's admin gate. There is never a second authz path.
+- **The native API is hand-written, not `crud`.** The library serves one flat
+  endpoint set per entity; the native API deliberately presents a *single* record
+  resource keyed by an opaque `type`-prefixed id over the many per-type tables,
+  with `Idempotency-Key` replay and DB-level `?type`/`?name` filters — so it is
+  hand-written. The **admin UI** does use the library's per-entity CRUD (one table
+  per RR type), the natural fit there.
+- **Every mutation bumps the serial + enqueues a push**, inside the mutation's
+  transaction; the request never waits on `knotc`. Bulk deletes bypass per-row ORM
+  hooks, so delete paths enqueue explicitly (§7.1).
+- **Records are one table per RR type** (a macro-generated entity each); a new type
+  means a new table plus arms in the unified record view, the zone-file renderer,
+  the importer, `dns::check`, and the admin panel.
+
+---
+
+## 12. Status & known gaps
+
+**Implemented and verified** end-to-end (admin UI, native API, CF facade, DDNS,
+`admin import`, `/metrics` + `/healthcheck`, the sync worker) against both the
+`log` and `knot` backends: §2 DDNS, §3 authorization + API keys, §4 operator UI +
+login + **OIDC SSO**, §5 data model + per-type validation, §6 management APIs, §7
+Knot backend + worker, §8 operability, §9 config + CLI.
+
+**Open items / TODO:**
+
+- **Passkeys** (§3.5, §4.1) are not implemented — TOTP 2FA is. "Has a strong
+  factor" (which disables DDNS HTTP Basic) currently means TOTP or SSO.
+- **SSO group mapping is a subset** of §4.2: the library matches the *username*
+  claim by regex/equals (global) and *other* claims by exact value only; a regex on
+  a non-username claim is ignored (logged). Scope rules accordingly.
+- **Row-level authz lives in app code**, not the library gate (which is
+  header-only by design); the admin console stays L3-only.
+- **Multi-process deployments** would need row-level locking on the push journal
+  (`SELECT … FOR UPDATE SKIP LOCKED`); the single co-located instance doesn't.
+- **Admin timezone display** — the DB/API are UTC and the admin renders UTC; a
+  server-timezone option (to match Knot/syslog) is deferred (see `AGENTS.md`).

@@ -1,5 +1,5 @@
 //! teleddns-server — co-located DNS management + Dynamic DNS server for a Knot DNS master.
-//! See PRD.md for the product spec and RUSTREWRITE.md for the implementation plan.
+//! See PRD.md for the design + requirements and README.md for operator usage / deployment.
 
 mod api;
 mod app;

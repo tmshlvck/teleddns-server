@@ -1,10 +1,9 @@
 # AGENTS.md — working on teleddns-server
 
 Orientation for developing **on** this codebase. Read this, then the docs it
-points to. The product spec is [`PRD.md`](PRD.md) (implementation-agnostic); the
-architecture + milestone history is [`RUSTREWRITE.md`](RUSTREWRITE.md); operator
-usage is [`README.md`](README.md); the deployment runbook is
-[`DEPLOY.md`](DEPLOY.md).
+points to. The design + requirements (behavioral contracts, high-level decisions,
+status) are in [`PRD.md`](PRD.md); operator usage and the deployment runbook are in
+[`README.md`](README.md).
 
 ## What this is
 
