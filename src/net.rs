@@ -8,10 +8,12 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{header, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use ipnet::IpNet;
+use ipnet::{IpNet, Ipv4Net};
 use std::net::{IpAddr, SocketAddr};
 
-/// Parse a list of CIDR strings (bare IPs are accepted as /32 or /128).
+/// Parse a list of CIDR strings (bare IPs are accepted as /32 or /128). IPv4-mapped IPv6 entries are
+/// canonicalized to IPv4 so they match unmapped IPv4 clients (matching the same normalization applied
+/// to the source IP — see [`canonical`]).
 pub fn parse_nets(cidrs: &[String]) -> Vec<IpNet> {
     cidrs
         .iter()
@@ -19,6 +21,7 @@ pub fn parse_nets(cidrs: &[String]) -> Vec<IpNet> {
             s.parse::<IpNet>()
                 .ok()
                 .or_else(|| s.parse::<IpAddr>().ok().map(IpNet::from))
+                .map(canonical_net)
         })
         .collect()
 }
@@ -27,9 +30,35 @@ fn in_any(nets: &[IpNet], ip: IpAddr) -> bool {
     nets.iter().any(|n| n.contains(&ip))
 }
 
-/// Resolve the real client IP for a request.
+/// Canonicalize an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) back to plain IPv4. A dual-stack
+/// (`::`-bound) listener reports IPv4 clients in this mapped form, which would otherwise not match an
+/// IPv4 CIDR in the allow-lists (and would read oddly in logs/audit).
+fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        v4 => v4,
+    }
+}
+
+/// The rule-side counterpart of [`canonical`]: an IPv4-mapped IPv6 network (`::ffff:a.b.c.d/N`, N≥96)
+/// becomes the equivalent IPv4 network (`/N-96`), so a rule written in mapped form still matches an
+/// unmapped IPv4 client. Genuine IPv6 networks are left untouched.
+fn canonical_net(net: IpNet) -> IpNet {
+    if let IpNet::V6(v6) = net {
+        if let Some(v4) = v6.addr().to_ipv4_mapped() {
+            if v6.prefix_len() >= 96 {
+                if let Ok(n) = Ipv4Net::new(v4, v6.prefix_len() - 96) {
+                    return IpNet::V4(n);
+                }
+            }
+        }
+    }
+    net
+}
+
+/// Resolve the real client IP for a request (canonicalized — IPv4-mapped IPv6 → IPv4).
 pub fn client_ip(app: &AppState, headers: &axum::http::HeaderMap, peer: IpAddr) -> IpAddr {
-    resolve_ip(app.cfg.trust_proxy, headers, Some(peer)).unwrap_or(peer)
+    resolve_ip(app.cfg.trust_proxy, headers, Some(peer)).unwrap_or_else(|| canonical(peer))
 }
 
 /// Resolve the real client IP without needing `AppState` (used by the audit sink, which must not hold
@@ -44,17 +73,17 @@ pub fn resolve_ip(
         if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
             if let Some(first) = xff.split(',').next() {
                 if let Ok(ip) = first.trim().parse::<IpAddr>() {
-                    return Some(ip);
+                    return Some(canonical(ip));
                 }
             }
         }
         if let Some(xr) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
             if let Ok(ip) = xr.trim().parse::<IpAddr>() {
-                return Some(ip);
+                return Some(canonical(ip));
             }
         }
     }
-    peer
+    peer.map(canonical)
 }
 
 /// Middleware: one INFO access-log line per HTTP request, to stderr (no standalone access.log). Covers
@@ -126,5 +155,38 @@ mod tests {
         assert!(in_any(&nets, "10.9.9.9".parse().unwrap()));
         assert!(in_any(&nets, "127.0.0.1".parse().unwrap()));
         assert!(!in_any(&nets, "192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv4_mapped_is_canonicalized() {
+        // A dual-stack (::)-bound listener reports an IPv4 client as ::ffff:a.b.c.d; it must match an
+        // IPv4 CIDR after canonicalization.
+        let mapped: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert_eq!(canonical(mapped), "127.0.0.1".parse::<IpAddr>().unwrap());
+        let nets = parse_nets(&["127.0.0.1".into()]);
+        assert!(in_any(&nets, canonical(mapped)));
+        assert!(!in_any(&nets, mapped)); // (unmapped it would not match)
+        // A genuine IPv6 address is left alone.
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(canonical(v6), v6);
+    }
+
+    #[test]
+    fn mapped_rules_are_canonicalized_symmetrically() {
+        // A rule written in IPv4-mapped form matches an (unmapped) IPv4 client.
+        let nets = parse_nets(&["::ffff:127.0.0.1".into()]);
+        assert_eq!(nets, parse_nets(&["127.0.0.1".into()])); // both → 127.0.0.1/32
+        assert!(in_any(&nets, "127.0.0.1".parse().unwrap()));
+
+        // A mapped CIDR (prefix ≥ 96) converts to the equivalent IPv4 CIDR (prefix − 96).
+        let nets = parse_nets(&["::ffff:10.0.0.0/104".into()]);
+        assert_eq!(nets, parse_nets(&["10.0.0.0/8".into()]));
+        assert!(in_any(&nets, "10.9.9.9".parse().unwrap()));
+        assert!(!in_any(&nets, "11.0.0.1".parse().unwrap()));
+
+        // Genuine IPv6 rules are untouched and still match IPv6 clients with the right prefix.
+        let nets = parse_nets(&["2001:db8::/32".into()]);
+        assert!(in_any(&nets, "2001:db8::5".parse().unwrap()));
+        assert!(!in_any(&nets, "2001:dead::5".parse().unwrap()));
     }
 }
