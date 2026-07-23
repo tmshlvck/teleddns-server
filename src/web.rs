@@ -21,12 +21,14 @@ fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E
          www (not the full FQDN)."
             .into(),
     );
+    mm.field("label").validate_str(crate::dns::check::record_label);
     mm.field("ttl").label = Some("TTL (seconds)".into());
     mm.field("ttl").description = Some(
         "How long resolvers may cache this record, e.g. 3600 (=1h); use 300 (=5m) for records that \
          change often."
             .into(),
     );
+    mm.field("ttl").validate_int(crate::dns::check::ttl);
     mm.relation("zone").label = Some("Zone".into());
     mm.relation("zone").description = Some("The zone this record belongs to.".into());
     mm.field("created_at").label = Some("Created".into());
@@ -93,63 +95,80 @@ pub fn build_engine(
     z.field("updated_at").label = Some("Last changed".into());
     z.field("updated_at").read_only = true;
     z.field("updated_at").datetime();
+    z.field("origin").validate_str(crate::dns::check::zone_origin);
+    z.field("mname").validate_str(crate::dns::check::target_name);
+    z.field("rname").validate_str(crate::dns::check::target_name);
+    z.field("serial").validate_int(crate::dns::check::serial);
+    z.field("refresh").validate_int(crate::dns::check::soa_interval);
+    z.field("retry").validate_int(crate::dns::check::soa_interval);
+    z.field("expire").validate_int(crate::dns::check::soa_interval);
+    z.field("minimum").validate_int(crate::dns::check::soa_interval);
+    z.field("ttl").validate_int(crate::dns::check::ttl);
     z.row_label = Box::new(|row| row["origin"].as_str().unwrap_or_default().to_string());
     crud.register(z, gate.clone());
 
     // One RR table per type. `reg_rr!` applies the shared Name/TTL/Zone metadata, then the listed
     // per-type rdata fields as `"col" => ("Label", "help / example")`.
+    use crate::dns::check;
     use crate::model::rr;
+    // Each RR field carries a label + help string, and optionally an input validator: `str <pred>`
+    // (a `fn(&str) -> Result<(), String>`) or `int <pred>` (a `fn(i64) -> …`) from `dns::check` —
+    // the *same* predicates the native API/DDNS/CF paths enforce, so the admin can't create a record
+    // the API would reject. Freeform fields (NAPTR flags/service/regexp/replacement) omit it.
     macro_rules! reg_rr {
-        ($ent:path $(, $field:literal => ($label:literal, $fdesc:literal) )* $(,)?) => {{
+        ($ent:path $(, $field:literal => ($label:literal, $fdesc:literal $(, $kind:ident $pred:path)? ) )* $(,)?) => {{
             let mut mm = MetaModel::new($ent);
             rr_common(&mut mm);
             $(
                 mm.field($field).label = Some($label.into());
                 mm.field($field).description = Some($fdesc.into());
+                $( reg_rr!(@apply mm, $field, $kind $pred); )?
             )*
             crud.register(mm, gate.clone());
         }};
+        (@apply $mm:ident, $field:literal, str $pred:path) => { $mm.field($field).validate_str($pred); };
+        (@apply $mm:ident, $field:literal, int $pred:path) => { $mm.field($field).validate_int($pred); };
     }
-    reg_rr!(rr::a::Entity, "value" => ("IPv4 address", "Dotted-quad, e.g. 192.0.2.1"));
-    reg_rr!(rr::aaaa::Entity, "value" => ("IPv6 address", "e.g. 2001:db8::1 (compressed form allowed)"));
-    reg_rr!(rr::ns::Entity, "value" => ("Nameserver (FQDN)", "Authoritative nameserver hostname with a trailing dot, e.g. ns1.example.com."));
-    reg_rr!(rr::ptr::Entity, "value" => ("Target (FQDN)", "The name this address maps back to, e.g. host.example.com."));
-    reg_rr!(rr::cname::Entity, "value" => ("Canonical name (FQDN)", "Alias target with a trailing dot, e.g. example.com. A CNAME can't coexist with other records at the same name."));
-    reg_rr!(rr::txt::Entity, "value" => ("Text", "Free-form text, e.g. an SPF record: v=spf1 include:_spf.example.com -all"));
+    reg_rr!(rr::a::Entity, "value" => ("IPv4 address", "Dotted-quad, e.g. 192.0.2.1", str check::ipv4));
+    reg_rr!(rr::aaaa::Entity, "value" => ("IPv6 address", "e.g. 2001:db8::1 (compressed form allowed)", str check::ipv6));
+    reg_rr!(rr::ns::Entity, "value" => ("Nameserver (FQDN)", "Authoritative nameserver hostname with a trailing dot, e.g. ns1.example.com.", str check::target_name));
+    reg_rr!(rr::ptr::Entity, "value" => ("Target (FQDN)", "The name this address maps back to, e.g. host.example.com.", str check::target_name));
+    reg_rr!(rr::cname::Entity, "value" => ("Canonical name (FQDN)", "Alias target with a trailing dot, e.g. example.com. A CNAME can't coexist with other records at the same name.", str check::target_name));
+    reg_rr!(rr::txt::Entity, "value" => ("Text", "Free-form text, e.g. an SPF record: v=spf1 include:_spf.example.com -all", str check::txt));
     reg_rr!(rr::mx::Entity,
-        "priority" => ("Priority", "Lower is preferred, e.g. 10. Mail is tried lowest-first."),
-        "value" => ("Mail server (FQDN)", "Mail exchanger hostname with a trailing dot, e.g. mail.example.com."));
+        "priority" => ("Priority", "Lower is preferred, e.g. 10. Mail is tried lowest-first.", int check::u16),
+        "value" => ("Mail server (FQDN)", "Mail exchanger hostname with a trailing dot, e.g. mail.example.com.", str check::target_name));
     reg_rr!(rr::srv::Entity,
-        "priority" => ("Priority", "Lower is preferred, e.g. 10."),
-        "weight" => ("Weight", "Relative share among equal-priority targets, e.g. 5 (0 = no preference)."),
-        "port" => ("Port", "TCP/UDP port of the service, e.g. 443."),
-        "value" => ("Target (FQDN)", "Host providing the service, e.g. sip.example.com. Use a single . for 'service not available'."));
+        "priority" => ("Priority", "Lower is preferred, e.g. 10.", int check::u16),
+        "weight" => ("Weight", "Relative share among equal-priority targets, e.g. 5 (0 = no preference).", int check::u16),
+        "port" => ("Port", "TCP/UDP port of the service, e.g. 443.", int check::u16),
+        "value" => ("Target (FQDN)", "Host providing the service, e.g. sip.example.com. Use a single . for 'service not available'.", str check::target_name));
     reg_rr!(rr::caa::Entity,
-        "flag" => ("Flags", "0 normally; 128 marks the tag critical (issuers must understand it)."),
-        "tag" => ("Tag", "issue, issuewild, or iodef."),
-        "value" => ("Value", "For issue/issuewild: the allowed CA, e.g. letsencrypt.org. For iodef: a mailto: or URL."));
+        "flag" => ("Flags", "0 normally; 128 marks the tag critical (issuers must understand it).", int check::octet),
+        "tag" => ("Tag", "issue, issuewild, or iodef.", str check::caa_tag),
+        "value" => ("Value", "For issue/issuewild: the allowed CA, e.g. letsencrypt.org. For iodef: a mailto: or URL.", str check::non_empty_value));
     reg_rr!(rr::sshfp::Entity,
-        "algorithm" => ("Algorithm", "Key type: 1=RSA, 2=DSA, 3=ECDSA, 4=Ed25519."),
-        "hash_type" => ("Hash type", "1=SHA-1, 2=SHA-256 (recommended)."),
-        "fingerprint" => ("Fingerprint (hex)", "Hex-encoded host-key fingerprint."));
+        "algorithm" => ("Algorithm", "Key type: 1=RSA, 2=DSA, 3=ECDSA, 4=Ed25519.", int check::octet),
+        "hash_type" => ("Hash type", "1=SHA-1, 2=SHA-256 (recommended).", int check::octet),
+        "fingerprint" => ("Fingerprint (hex)", "Hex-encoded host-key fingerprint.", str check::hex));
     reg_rr!(rr::tlsa::Entity,
-        "cert_usage" => ("Certificate usage", "0=PKIX-TA, 1=PKIX-EE, 2=DANE-TA, 3=DANE-EE (most common)."),
-        "selector" => ("Selector", "0=full certificate, 1=subject public key (common)."),
-        "matching_type" => ("Matching type", "0=exact, 1=SHA-256 (common), 2=SHA-512."),
-        "cert_data" => ("Certificate data (hex)", "Hex of the certificate/public key or its hash."));
+        "cert_usage" => ("Certificate usage", "0=PKIX-TA, 1=PKIX-EE, 2=DANE-TA, 3=DANE-EE (most common).", int check::octet),
+        "selector" => ("Selector", "0=full certificate, 1=subject public key (common).", int check::octet),
+        "matching_type" => ("Matching type", "0=exact, 1=SHA-256 (common), 2=SHA-512.", int check::octet),
+        "cert_data" => ("Certificate data (hex)", "Hex of the certificate/public key or its hash.", str check::hex));
     reg_rr!(rr::dnskey::Entity,
-        "flags" => ("Flags", "256=ZSK (zone-signing), 257=KSK (key-signing / secure entry point)."),
-        "protocol" => ("Protocol", "Always 3."),
-        "algorithm" => ("Algorithm", "DNSSEC algorithm, e.g. 13 (ECDSA P-256/SHA-256) or 8 (RSA/SHA-256)."),
-        "public_key" => ("Public key (base64)", "Base64-encoded public key."));
+        "flags" => ("Flags", "256=ZSK (zone-signing), 257=KSK (key-signing / secure entry point).", int check::u16),
+        "protocol" => ("Protocol", "Always 3.", int check::dnskey_protocol),
+        "algorithm" => ("Algorithm", "DNSSEC algorithm, e.g. 13 (ECDSA P-256/SHA-256) or 8 (RSA/SHA-256).", int check::octet),
+        "public_key" => ("Public key (base64)", "Base64-encoded public key.", str check::base64));
     reg_rr!(rr::ds::Entity,
-        "key_tag" => ("Key tag", "Identifies the referenced DNSKEY, e.g. 12345."),
-        "algorithm" => ("Algorithm", "DNSSEC algorithm of that DNSKEY, e.g. 13."),
-        "digest_type" => ("Digest type", "1=SHA-1, 2=SHA-256 (recommended)."),
-        "digest" => ("Digest (hex)", "Hex digest of the referenced DNSKEY."));
+        "key_tag" => ("Key tag", "Identifies the referenced DNSKEY, e.g. 12345.", int check::u16),
+        "algorithm" => ("Algorithm", "DNSSEC algorithm of that DNSKEY, e.g. 13.", int check::octet),
+        "digest_type" => ("Digest type", "1=SHA-1, 2=SHA-256 (recommended).", int check::octet),
+        "digest" => ("Digest (hex)", "Hex digest of the referenced DNSKEY.", str check::hex));
     reg_rr!(rr::naptr::Entity,
-        "order" => ("Order", "Rules are processed low→high, e.g. 100."),
-        "preference" => ("Preference", "Tie-break within equal order, lower first, e.g. 10."),
+        "order" => ("Order", "Rules are processed low→high, e.g. 100.", int check::u16),
+        "preference" => ("Preference", "Tie-break within equal order, lower first, e.g. 10.", int check::u16),
         "flags" => ("Flags", "e.g. U, S, A, P — empty for a non-terminal rule."),
         "service" => ("Service", "e.g. E2U+sip."),
         "regexp" => ("Regexp", "Substitution expression, e.g. !^.*$!sip:info@example.com!"),
@@ -160,6 +179,7 @@ pub fn build_engine(
     apikey.field("hashed_key").hidden = true;
     apikey.field("name").label = Some("Label".into());
     apikey.field("name").description = Some("A human-readable name for this key.".into());
+    apikey.field("name").validate_str(check::non_empty_value);
     apikey.field("prefix").label = Some("Prefix".into());
     apikey.field("prefix").description =
         Some("Short visible start of the key, shown to help identify it.".into());
@@ -167,6 +187,7 @@ pub fn build_engine(
     apikey.field("level").description = Some(
         "1 = one record set, 2 = a whole zone, 3 = admin. Capped by the owner's level.".into(),
     );
+    apikey.field("level").validate_int(relativelylight::validate::int_range(1, 3));
     apikey.field("expires_at").label = Some("Expires at".into());
     apikey.field("expires_at").description = Some("Optional expiry (UTC). Empty = never.".into());
     apikey.field("expires_at").datetime();
@@ -191,10 +212,12 @@ pub fn build_engine(
     rrr.field("label").label = Some("Record name".into());
     rrr.field("label").description =
         Some("The record label this grant is scoped to (@ = the zone apex).".into());
+    rrr.field("label").validate_str(check::record_label);
     crud.register(rrr, gate.clone());
 
     // Auth accounts + groups (admin-only, read included).
     let mut user = MetaModel::new(relativelylight::auth::user::Entity);
+    user.field("username").validate_str(relativelylight::auth::valid_username);
     user.field("password_hash").password();
     user.field("totp_secret").hidden = true;
     user.field("totp_pending").hidden = true;
@@ -211,6 +234,7 @@ pub fn build_engine(
         user.field(f).datetime();
     }
     let mut group = MetaModel::new(relativelylight::auth::group::Entity);
+    group.field("name").validate_str(relativelylight::auth::valid_group_name);
     for f in ["created_at", "updated_at"] {
         group.field(f).read_only = true;
         group.field(f).datetime();

@@ -10,7 +10,7 @@ usage is [`README.md`](README.md); the deployment runbook is
 
 A Rust rewrite of a co-located DNS + Dynamic-DNS control-plane for a Knot DNS
 master, built on the [`relativelylight`](https://github.com/tmshlvck/relativelylight)
-back-office library (a **git dependency pinned to a commit** in `Cargo.toml`; move
+back-office library (a **git dependency pinned to a release tag** in `Cargo.toml`; move
 to a `version = "…"` crates.io pin once it's published). The library
 provides the SeaORM CRUD engine + metadata, the auto-generated admin UI
 (`crud::ui::Admin`), OpenAPI generation, and `auth` (users/groups/sessions/login/
@@ -103,17 +103,21 @@ password + 2FA), then exercise `/api/...`.
   wired here). Consider a **server-timezone** option so the admin shows times in the
   host's zone, matching the Knot logs / syslog. Would mean: expose the server TZ (config
   or the host's `/etc/localtime`) via a tiny endpoint and set `$store.tz` from it on load.
-- `relativelylight` is a **git dependency pinned to a commit** (`Cargo.toml`).
-  Bump the `rev` to adopt library changes; switch to a crates.io `version` once
-  it's published. It's `v0.1.0`.
+- `relativelylight` is a **git dependency pinned to a release tag** (`Cargo.toml`).
+  Bump the `tag` to adopt library changes; switch to a crates.io `version` once
+  it's published. Latest is `v0.1.2` (adds the `validate` module + auth username
+  validation).
 - **Audit** is written by `audit.rs`: it's the `WriteObserver` relativelylight
   fires for the admin auto-CRUD + auth handlers, and the DDNS/API/CF handlers call
   `Audit::record` directly. Rows land in the read-only `audit` table; retention is
   app-side (`audit_retention_days`, pruned at startup). A future `admin` CLI to
   dump/clear the log is anticipated but not implemented.
-- **Temporary `[patch]`** in `Cargo.toml` points relativelylight at the local
-  checkout while the audit/observer work is unpushed — remove it and confirm the
-  `rev` once `relativelylight` is pushed.
+- **Input validation** lives in `dns::check` — typed field predicates built on
+  `relativelylight::validate`, shared by the native API/DDNS/CF write paths **and** the admin
+  CRUD forms (wired via `MetaField::validate_str`/`validate_int` in `web.rs`). Add a new RR field
+  or type? Add its `check::*` validator and wire it on every surface (the `reg_rr!` macro in
+  `web.rs`, the `write_record` arm in `api/record_view.rs`, and the OpenAPI body doc in
+  `api/openapi.rs`).
 
 ## Conventions
 

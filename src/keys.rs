@@ -52,6 +52,13 @@ pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form
     if level == Level::None {
         return (axum::http::StatusCode::FORBIDDEN, "no access level available").into_response();
     }
+    // Bound the label (own key, HTML-escaped on display, but keep it sane). Empty → a default below.
+    let name = f.name.trim();
+    if name.chars().count() > 128 {
+        return (axum::http::StatusCode::BAD_REQUEST, "key label too long (max 128 characters)")
+            .into_response();
+    }
+    let name = if name.is_empty() { "key".to_string() } else { name.to_string() };
 
     let raw = gen_token();
     let hashed = crate::principal::hash_key(&raw);
@@ -61,7 +68,7 @@ pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form
     let am = api_key::ActiveModel {
         id: sea_orm::ActiveValue::NotSet,
         user_id: sea_orm::ActiveValue::Set(who.user_id),
-        name: sea_orm::ActiveValue::Set(if f.name.trim().is_empty() { "key".into() } else { f.name }),
+        name: sea_orm::ActiveValue::Set(name),
         hashed_key: sea_orm::ActiveValue::Set(hashed),
         prefix: sea_orm::ActiveValue::Set(prefix),
         level: sea_orm::ActiveValue::Set(level.as_i32()),

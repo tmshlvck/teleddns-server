@@ -102,8 +102,8 @@ pub async fn create(
         Some(o) if !o.is_empty() => dns::normalize_fqdn(o),
         _ => return err(StatusCode::BAD_REQUEST, "origin is required"),
     };
-    if !dns::is_valid_name(&origin) {
-        return err(StatusCode::BAD_REQUEST, "invalid origin");
+    if let Err(e) = dns::check::zone_origin(&origin) {
+        return err(StatusCode::BAD_REQUEST, &e);
     }
     // Reject a duplicate origin.
     if zone::Entity::find().filter(zone::Column::Origin.eq(&origin)).one(&app.db).await.ok().flatten().is_some()
@@ -157,22 +157,27 @@ pub async fn update(
         return err(StatusCode::FORBIDDEN, "insufficient access");
     }
     let mut am: zone::ActiveModel = z.clone().into();
-    for (k, set) in [
-        ("mname", true),
-        ("rname", true),
-    ] {
-        if set {
-            if let Some(v) = body.get(k).and_then(|v| v.as_str()) {
-                match k {
-                    "mname" => am.mname = Set(v.to_string()),
-                    "rname" => am.rname = Set(v.to_string()),
-                    _ => {}
-                }
-            }
+    // SOA name fields (MNAME/RNAME): validate as DNS names before storing.
+    if let Some(v) = body.get("mname").and_then(|v| v.as_str()) {
+        if let Err(e) = dns::check::target_name(v) {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, &format!("mname {e}"));
         }
+        am.mname = Set(v.to_string());
     }
+    if let Some(v) = body.get("rname").and_then(|v| v.as_str()) {
+        if let Err(e) = dns::check::target_name(v) {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, &format!("rname {e}"));
+        }
+        am.rname = Set(v.to_string());
+    }
+    // SOA intervals + default TTL: range-check to their column width (TTL is the RFC 2181 form).
     for k in ["refresh", "retry", "expire", "minimum", "ttl"] {
         if let Some(v) = body.get(k).and_then(|v| v.as_i64()) {
+            let check: fn(i64) -> Result<(), String> =
+                if k == "ttl" { dns::check::ttl } else { dns::check::soa_interval };
+            if let Err(e) = check(v) {
+                return err(StatusCode::UNPROCESSABLE_ENTITY, &format!("{k} {e}"));
+            }
             match k {
                 "refresh" => am.refresh = Set(v as i32),
                 "retry" => am.retry = Set(v as i32),

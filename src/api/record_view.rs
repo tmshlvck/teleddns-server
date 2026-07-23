@@ -180,7 +180,13 @@ async fn write_record(
     let typ = rstr(obj, "type")?;
     let prefix = type_to_prefix(&typ).ok_or_else(|| ApiError::BadType(typ.clone()))?;
     let label = name_of(obj)?;
-    let ttl = obj.get("ttl").and_then(|v| v.as_i64()).map(|n| n as i32).unwrap_or(default_ttl);
+    let ttl = match obj.get("ttl").and_then(|v| v.as_i64()) {
+        Some(n) => {
+            dns::check::ttl(n).map_err(ApiError::Validation)?;
+            n as i32
+        }
+        None => default_ttl,
+    };
 
     macro_rules! ins {
         ($m:path, { $($f:ident : $val:expr),* $(,)? }) => {{
@@ -204,20 +210,12 @@ async fn write_record(
     }
 
     let view = match prefix {
-        "a" => {
-            let value = rstr(obj, "value")?;
-            if !dns::is_ipv4(&value) { return Err(ApiError::Validation("value must be an IPv4 address".into())); }
-            ins!(rr::a, { value: value })
-        }
-        "aaaa" => {
-            let value = rstr(obj, "value")?;
-            if !dns::is_ipv6(&value) { return Err(ApiError::Validation("value must be an IPv6 address".into())); }
-            ins!(rr::aaaa, { value: value })
-        }
+        "a" => { let value = strv(obj, "value", dns::check::ipv4)?; ins!(rr::a, { value: value }) }
+        "aaaa" => { let value = strv(obj, "value", dns::check::ipv6)?; ins!(rr::aaaa, { value: value }) }
         "ns" => { let value = name_val(obj, "value")?; ins!(rr::ns, { value: value }) }
         "ptr" => { let value = name_val(obj, "value")?; ins!(rr::ptr, { value: value }) }
         "cname" => { let value = name_val(obj, "value")?; ins!(rr::cname, { value: value }) }
-        "txt" => { let value = rstr(obj, "value")?; ins!(rr::txt, { value: value }) }
+        "txt" => { let value = strv(obj, "value", dns::check::txt)?; ins!(rr::txt, { value: value }) }
         "mx" => {
             let priority = u16v(obj, "priority")?;
             let value = name_val(obj, "value")?;
@@ -231,39 +229,36 @@ async fn write_record(
             ins!(rr::srv, { priority: priority, weight: weight, port: port, value: value })
         }
         "caa" => {
-            let flag = u16v(obj, "flag")?;
-            let tag = rstr(obj, "tag")?;
-            if !matches!(tag.as_str(), "issue" | "issuewild" | "iodef") {
-                return Err(ApiError::Validation("tag must be issue|issuewild|iodef".into()));
-            }
-            let value = rstr(obj, "value")?;
+            let flag = octv(obj, "flag")?;
+            let tag = strv(obj, "tag", dns::check::caa_tag)?;
+            let value = strv(obj, "value", dns::check::non_empty_value)?;
             ins!(rr::caa, { flag: flag, tag: tag, value: value })
         }
         "sshfp" => {
-            let algorithm = u16v(obj, "algorithm")?;
-            let hash_type = u16v(obj, "hash_type")?;
-            let fingerprint = rstr(obj, "fingerprint")?;
+            let algorithm = octv(obj, "algorithm")?;
+            let hash_type = octv(obj, "hash_type")?;
+            let fingerprint = strv(obj, "fingerprint", dns::check::hex)?;
             ins!(rr::sshfp, { algorithm: algorithm, hash_type: hash_type, fingerprint: fingerprint })
         }
         "tlsa" => {
-            let cert_usage = u16v(obj, "cert_usage")?;
-            let selector = u16v(obj, "selector")?;
-            let matching_type = u16v(obj, "matching_type")?;
-            let cert_data = rstr(obj, "cert_data")?;
+            let cert_usage = octv(obj, "cert_usage")?;
+            let selector = octv(obj, "selector")?;
+            let matching_type = octv(obj, "matching_type")?;
+            let cert_data = strv(obj, "cert_data", dns::check::hex)?;
             ins!(rr::tlsa, { cert_usage: cert_usage, selector: selector, matching_type: matching_type, cert_data: cert_data })
         }
         "dnskey" => {
             let flags = u16v(obj, "flags")?;
-            let protocol = u16v(obj, "protocol")?;
-            let algorithm = u16v(obj, "algorithm")?;
-            let public_key = rstr(obj, "public_key")?;
+            let protocol = intv(obj, "protocol", dns::check::dnskey_protocol)?;
+            let algorithm = octv(obj, "algorithm")?;
+            let public_key = strv(obj, "public_key", dns::check::base64)?;
             ins!(rr::dnskey, { flags: flags, protocol: protocol, algorithm: algorithm, public_key: public_key })
         }
         "ds" => {
             let key_tag = u16v(obj, "key_tag")?;
-            let algorithm = u16v(obj, "algorithm")?;
-            let digest_type = u16v(obj, "digest_type")?;
-            let digest = rstr(obj, "digest")?;
+            let algorithm = octv(obj, "algorithm")?;
+            let digest_type = octv(obj, "digest_type")?;
+            let digest = strv(obj, "digest", dns::check::hex)?;
             ins!(rr::ds, { key_tag: key_tag, algorithm: algorithm, digest_type: digest_type, digest: digest })
         }
         "naptr" => {
@@ -397,9 +392,7 @@ fn name_of(obj: &Map<String, Value>) -> Result<String, ApiError> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| ApiError::Validation("name is required".into()))?;
     let n = if n.is_empty() { "@" } else { n };
-    if !dns::is_valid_name(n) {
-        return Err(ApiError::Validation(format!("invalid name: {n}")));
-    }
+    dns::check::record_label(n).map_err(ApiError::Validation)?;
     Ok(n.to_string())
 }
 
@@ -412,22 +405,45 @@ fn rstr(obj: &Map<String, Value>, key: &str) -> Result<String, ApiError> {
 
 fn name_val(obj: &Map<String, Value>, key: &str) -> Result<String, ApiError> {
     let v = rstr(obj, key)?;
-    if !dns::is_valid_name(&v) {
-        return Err(ApiError::Validation(format!("{key} must be a valid DNS name")));
-    }
+    dns::check::target_name(&v).map_err(|e| ApiError::Validation(format!("{key} {e}")))?;
     Ok(v)
 }
 
-/// A 16-bit unsigned field in [0,65535], stored as i32.
-fn u16v(obj: &Map<String, Value>, key: &str) -> Result<i32, ApiError> {
+/// Read a required integer field and validate it with `check` (e.g. `dns::check::u16`), prefixing the
+/// message with the field name. Returns it as `i32` (the column width).
+fn intv(
+    obj: &Map<String, Value>,
+    key: &str,
+    check: impl Fn(i64) -> Result<(), String>,
+) -> Result<i32, ApiError> {
     let n = obj
         .get(key)
         .and_then(|v| v.as_i64())
         .ok_or_else(|| ApiError::Validation(format!("{key} is required (integer)")))?;
-    if !(0..=65535).contains(&n) {
-        return Err(ApiError::Validation(format!("{key} must be in [0,65535]")));
-    }
+    check(n).map_err(|e| ApiError::Validation(format!("{key} {e}")))?;
     Ok(n as i32)
+}
+
+/// A 16-bit unsigned field in `[0,65535]`, stored as i32.
+fn u16v(obj: &Map<String, Value>, key: &str) -> Result<i32, ApiError> {
+    intv(obj, key, dns::check::u16)
+}
+
+/// A single-octet field in `[0,255]`, stored as i32.
+fn octv(obj: &Map<String, Value>, key: &str) -> Result<i32, ApiError> {
+    intv(obj, key, dns::check::octet)
+}
+
+/// Read a required string field and validate it with `check` (e.g. `dns::check::hex`), prefixing the
+/// message with the field name.
+fn strv(
+    obj: &Map<String, Value>,
+    key: &str,
+    check: impl Fn(&str) -> Result<(), String>,
+) -> Result<String, ApiError> {
+    let v = rstr(obj, key)?;
+    check(&v).map_err(|e| ApiError::Validation(format!("{key} {e}")))?;
+    Ok(v)
 }
 
 #[cfg(test)]
