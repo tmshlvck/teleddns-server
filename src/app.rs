@@ -33,6 +33,7 @@ pub struct AppState {
 
 /// Run the HTTP server.
 pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
+    crate::web::init_ui_title(&cfg.ui_title); // navbar brand
     let db = crate::db::connect(&cfg.db_dsn).await?;
     Migrator::up(&db, None).await?; // versioned schema (auth + app tables), applied once
     seed_admin(&db).await?;

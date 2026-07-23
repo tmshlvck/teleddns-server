@@ -523,7 +523,7 @@ Key groups:
   append-only.
 - **HTTP** — listen address; `allowed_ips` (global CIDR allow-list); `trust_proxy`
   (parse `X-Forwarded-For`/`X-Real-IP`/`X-Forwarded-Proto` from a trusted proxy);
-  `ops_allowed_ips`.
+  `ops_allowed_ips`; `ui_title` (navbar brand, default "TeleDDNS Server Manager").
 - **TTLs** — `default_ttl` (API-created records, default 3600), `ddns_rr_ttl`
   (DDNS-touched A/AAAA, default 60).
 - **Backend sync** — `backend` (`log` | `knot`), `knot_zone_dir`, `knotc_path`,

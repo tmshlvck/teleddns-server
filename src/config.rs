@@ -21,6 +21,8 @@ pub struct Config {
     pub trust_proxy: bool,
     /// Verbose (debug-level) logging.
     pub debug: bool,
+    /// Brand shown in the web UI navbar (top-left). Default "TeleDDNS Server Manager".
+    pub ui_title: String,
 
     /// $TTL + records created via the management API.
     pub default_ttl: u32,
@@ -109,6 +111,7 @@ impl Default for Config {
             ops_allowed_ips: vec![],
             trust_proxy: false,
             debug: false,
+            ui_title: "TeleDDNS Server Manager".into(),
             default_ttl: 3600,
             ddns_rr_ttl: 60,
             backend_sync_delay: Duration::from_secs(10),

@@ -275,7 +275,9 @@ pub fn build_engine(
 /// Build the admin panel fragment structure (grouped side-panel). Rendered per-request via
 /// `render_for` so write controls hide for non-writers.
 pub fn build_admin(engine: &Engine) -> Admin<'_> {
-    let mut admin = Admin::new(engine).title("teleddns").group("DNS").entity_with("zone", |t| {
+    // No component title (the navbar brand `ui_title` is the single app heading) — omitting
+    // `.title(...)` leaves `has_title = false`, so no empty heading element is rendered.
+    let mut admin = Admin::new(engine).group("DNS").entity_with("zone", |t| {
         t.title("Zones").description(
             "DNS zones and their SOA. Creating a zone auto-generates the SOA and a default apex NS; \
              record changes bump the serial and trigger a backend sync.",
@@ -343,6 +345,21 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
 /// The repository, shown in the footer.
 const REPO_URL: &str = "https://github.com/tmshlvck/teleddns-server";
 
+/// The server version, shown in the footer.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The navbar brand (`ui_title`), set once at startup; defaults to "TeleDDNS" until then.
+static UI_TITLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Set the navbar brand from config (call once at startup).
+pub fn init_ui_title(title: &str) {
+    let _ = UI_TITLE.set(title.to_string());
+}
+
+fn ui_title() -> &'static str {
+    UI_TITLE.get().map(String::as_str).unwrap_or("TeleDDNS Server Manager")
+}
+
 /// Sets the initial Bootstrap color mode before first paint (so there's no flash): a remembered
 /// choice from `localStorage`, else the browser's `prefers-color-scheme`. Runs first in `<head>`.
 const THEME_HEAD: &str = r#"<script>(function(){try{var s=localStorage.getItem('theme');}catch(e){}var t=s||((window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light');document.documentElement.setAttribute('data-bs-theme',t);})();</script>"#;
@@ -357,9 +374,11 @@ document.addEventListener('DOMContentLoaded',ruThemeIcon);
 </script>"#;
 
 /// The app's HTML page shell (Bootstrap + Alpine — required by the crud::ui fragments). The header
-/// shows the signed-in username as a link to their profile (+ log out) and a light/dark toggle; the
-/// footer carries the API docs link, the source link, and the copyright.
+/// shows the configurable brand (`ui_title`) and the signed-in username as a link to their profile
+/// (+ log out) and a light/dark toggle; the footer carries the server name + version, the API docs
+/// and source links, and the copyright.
 pub fn shell(title: &str, user: &str, body: &str) -> String {
+    let brand = crate::keys::html_escape(ui_title());
     let nav_user = if user.is_empty() {
         String::new()
     } else {
@@ -381,13 +400,14 @@ pub fn shell(title: &str, user: &str, body: &str) -> String {
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </head><body class="bg-body-tertiary d-flex flex-column min-vh-100">
-<nav class="navbar bg-body border-bottom px-3"><a class="navbar-brand" href="/">teleddns</a>
+<nav class="navbar bg-body border-bottom px-3"><a class="navbar-brand" href="/">{brand}</a>
 <div class="d-flex align-items-center gap-3 ms-auto">{nav_user}<button id="theme-toggle" type="button"
  class="btn btn-sm btn-outline-secondary border-0 px-2" onclick="ruToggleTheme()"
  aria-label="Toggle light / dark mode">&#9790;</button></div></nav>
 <main class="container-fluid py-3 flex-grow-1">{body}</main>
 <footer class="border-top py-3 mt-auto"><div class="container-fluid text-center small text-muted">
-<a href="/docs" class="link-secondary text-decoration-none">API docs</a>
+<span>teleddns-server v{VERSION}</span>
+ · <a href="/docs" class="link-secondary text-decoration-none">API docs</a>
  · <a href="{REPO_URL}" class="link-secondary text-decoration-none" target="_blank" rel="noopener">GitHub</a>
  · © 2026 Tomas Hlavacek · <span>GPL-3.0-or-later</span></div></footer>
 {THEME_JS}</body></html>"#
