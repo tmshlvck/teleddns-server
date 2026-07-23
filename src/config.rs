@@ -45,6 +45,11 @@ pub struct Config {
     pub knotc_path: String,
     /// The knot.conf template assigned to each managed zone.
     pub knot_template: String,
+    /// After `knotc zone-reload`, how long to wait for Knot to actually serve the pushed SOA serial
+    /// before treating the push as failed (a `zone-reload` returns as soon as it's *accepted*, so
+    /// without this a zone Knot then rejects would look pushed). `0` disables the confirmation.
+    #[serde(with = "humantime_serde_opt")]
+    pub knot_confirm_timeout: Duration,
 
     /// Days to keep audit-log rows; older rows are pruned at startup. `0` = keep forever.
     pub audit_retention_days: u32,
@@ -113,6 +118,7 @@ impl Default for Config {
             knot_zone_dir: "/var/lib/knot/zones".into(),
             knotc_path: "knotc".into(),
             knot_template: "master".into(),
+            knot_confirm_timeout: Duration::from_secs(5),
             audit_retention_days: 365,
             public_url: String::new(),
             sso_providers: vec![],

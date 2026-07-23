@@ -3,7 +3,7 @@
 //! DB-derived gauges first. No per-user/token labels (cardinality); the audit log carries the actor.
 
 use prometheus::{
-    IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
+    HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
 };
 
 pub struct Metrics {
@@ -12,10 +12,14 @@ pub struct Metrics {
     pub auth_failures: IntCounterVec,
     pub ratelimited: IntCounterVec,
     pub backend_push: IntCounterVec,
+    /// Wall-clock seconds a backend push (render+write+reload+confirm) takes, by kind.
+    pub backend_push_seconds: HistogramVec,
     pub zones: IntGauge,
     pub records: IntGauge,
     pub records_by_type: IntGaugeVec,
     pub pending_pushes: IntGaugeVec,
+    /// Zones whose live Knot serial is behind the DB (or missing), with nothing pending to fix it.
+    pub zones_out_of_sync: IntGauge,
     pub knot_up: IntGauge,
     pub worker_last_tick: IntGauge,
 }
@@ -43,6 +47,12 @@ impl Metrics {
             &["kind", "result"],
         )
         .unwrap();
+        let backend_push_seconds = HistogramVec::new(
+            HistogramOpts::new("teleddns_backend_push_seconds", "backend push duration")
+                .buckets(vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0]),
+            &["kind"],
+        )
+        .unwrap();
         let zones = IntGauge::new("teleddns_zones", "number of zones").unwrap();
         let records = IntGauge::new("teleddns_records", "number of records").unwrap();
         let records_by_type = IntGaugeVec::new(
@@ -55,6 +65,9 @@ impl Metrics {
             &["state"],
         )
         .unwrap();
+        let zones_out_of_sync =
+            IntGauge::new("teleddns_zones_out_of_sync", "zones Knot is not serving at the DB serial")
+                .unwrap();
         let knot_up = IntGauge::new("teleddns_knot_up", "1 if the knot backend is reachable").unwrap();
         let worker_last_tick =
             IntGauge::new("teleddns_worker_last_tick_seconds", "unix time of the last worker tick")
@@ -64,10 +77,12 @@ impl Metrics {
         registry.register(Box::new(auth_failures.clone())).ok();
         registry.register(Box::new(ratelimited.clone())).ok();
         registry.register(Box::new(backend_push.clone())).ok();
+        registry.register(Box::new(backend_push_seconds.clone())).ok();
         registry.register(Box::new(zones.clone())).ok();
         registry.register(Box::new(records.clone())).ok();
         registry.register(Box::new(records_by_type.clone())).ok();
         registry.register(Box::new(pending_pushes.clone())).ok();
+        registry.register(Box::new(zones_out_of_sync.clone())).ok();
         registry.register(Box::new(knot_up.clone())).ok();
         registry.register(Box::new(worker_last_tick.clone())).ok();
 
@@ -77,10 +92,12 @@ impl Metrics {
             auth_failures,
             ratelimited,
             backend_push,
+            backend_push_seconds,
             zones,
             records,
             records_by_type,
             pending_pushes,
+            zones_out_of_sync,
             knot_up,
             worker_last_tick,
         }

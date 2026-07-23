@@ -237,28 +237,42 @@ sso_providers:
 
 ## Monitoring
 
-Restrict both endpoints with `ops_allowed_ips` (a CIDR allow-list applied on top
-of `allowed_ips`, after the reverse-proxy real-IP rewrite).
+**Logging.** teleddns logs to stderr (structured `tracing`; captured by the
+journal under systemd) — no standalone access.log. It emits **one INFO line per
+HTTP request** across every surface (DDNS, native API, CF facade, UI, `/metrics`,
+`/healthcheck`) with the method, path, status, the real client IP (proxy-aware),
+User-Agent, and latency; INFO lines for each zone-file write and `knotc`
+interaction; and **WARN/ERROR when a push fails** — including when Knot *accepts* a
+reload but doesn't end up serving the pushed serial (a bad zone), which retries and
+then dead-letters. Set `debug: true` for verbose logs. (The in-DB **audit log** —
+who changed which record, visible in the admin UI — is separate and covers DNS
+changes; this is the operational log.)
+
+Restrict the operability endpoints with `ops_allowed_ips` (a CIDR allow-list
+applied on top of `allowed_ips`, after the reverse-proxy real-IP rewrite).
 
 - **`GET /healthcheck`** — always HTTP 200; the body's first token is `OK` or
   `WARN`:
 
   ```
-  OK uptime=<s> zones=<n> records=<n> pending=<n> failed=<n> knot=<up|down|na> last_push=<unixts>
+  OK uptime=<s> zones=<n> records=<n> pending=<n> failed=<n> outofsync=<n> knot=<up|down|na> last_push=<unixts>
   ```
 
   It flips to `WARN` when the sync worker stalls, a push is dead-lettered
-  (`failed>0`), the backlog is stuck (`warn_on_nopush`), or `backend=knot` and
-  `knotc` is unreachable (`knot=na` for the no-op `log` backend).
+  (`failed>0`), a zone drifts out of sync (`outofsync>0` — Knot isn't serving the
+  DB's serial, checked periodically), the backlog is stuck (`warn_on_nopush`), or
+  `backend=knot` and `knotc` is unreachable (`knot=na` for the no-op `log`
+  backend).
 
 - **`GET /metrics`** — Prometheus exposition: `teleddns_zones`,
   `teleddns_records`(+`_by_type`), `teleddns_ddns_updates_total{result}`,
   `teleddns_auth_failures_total`, `teleddns_ratelimited_total`,
-  `teleddns_backend_push_total`, `teleddns_pending_pushes{state}`,
+  `teleddns_backend_push_total`, `teleddns_backend_push_seconds` (reconcile
+  latency), `teleddns_pending_pushes{state}`, `teleddns_zones_out_of_sync`,
   `teleddns_worker_last_tick_seconds`, `teleddns_knot_up`. Since regular updates
   aren't expected, alert on `rate(teleddns_ddns_updates_total[5m])`, the
-  auth-failure counter, `teleddns_pending_pushes{state="failed"} > 0`, and
-  `teleddns_knot_up == 0`.
+  auth-failure counter, `teleddns_pending_pushes{state="failed"} > 0`,
+  `teleddns_zones_out_of_sync > 0`, and `teleddns_knot_up == 0`.
 
 ---
 

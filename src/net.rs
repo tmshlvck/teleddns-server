@@ -5,7 +5,7 @@
 
 use crate::app::AppState;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{Request, StatusCode};
+use axum::http::{header, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use ipnet::IpNet;
@@ -55,6 +55,43 @@ pub fn resolve_ip(
         }
     }
     peer
+}
+
+/// Middleware: one INFO access-log line per HTTP request, to stderr (no standalone access.log). Covers
+/// every surface — DDNS, native API, CF facade, UI, `/metrics`, `/healthcheck`. Fields: method, the
+/// path+query, response status, the resolved client IP (proxy-aware when `trust_proxy`), the
+/// User-Agent, and the latency. Placed outermost, so even allow-list-denied (403) requests are logged.
+pub async fn access_log(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let method = req.method().clone();
+    let target = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
+    let ip = client_ip(&app, req.headers(), peer.ip());
+    let ua = req
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let start = std::time::Instant::now();
+    let res = next.run(req).await;
+    tracing::info!(
+        %method,
+        target = %target,
+        status = res.status().as_u16(),
+        ip = %ip,
+        ua = %ua,
+        latency_ms = start.elapsed().as_millis() as u64,
+        "http"
+    );
+    res
 }
 
 /// Middleware: enforce `allowed_ips` globally and `ops_allowed_ips` on the operability endpoints.

@@ -4,15 +4,18 @@
 
 use super::{Backend, Probe};
 use async_trait::async_trait;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::process::Command;
 
 pub struct KnotBackend {
     zone_dir: PathBuf,
     knotc: String,
     template: String,
+    /// How long to wait for Knot to serve a pushed serial before failing the push.
+    confirm_timeout: Duration,
     /// Origins already declared in Knot's config DB this process (avoids repeat conf-set).
     declared: Mutex<HashSet<String>>,
 }
@@ -23,6 +26,7 @@ impl KnotBackend {
             zone_dir: PathBuf::from(&cfg.knot_zone_dir),
             knotc: cfg.knotc_path.clone(),
             template: cfg.knot_template.clone(),
+            confirm_timeout: cfg.knot_confirm_timeout,
             declared: Mutex::new(HashSet::new()),
         }
     }
@@ -30,6 +34,7 @@ impl KnotBackend {
     /// Run `knotc` with args. On failure the error carries the command, the exit code, and both
     /// stderr and stdout (knotc prints some errors to stdout, e.g. `error: (duplicate identifier)`).
     async fn knotc(&self, args: &[&str]) -> Result<String, String> {
+        tracing::debug!(?args, "knotc");
         let out = Command::new(&self.knotc)
             .args(args)
             .output()
@@ -47,6 +52,36 @@ impl KnotBackend {
             return Err(format!("knotc {:?} exited {code}: {}", args, detail.trim()));
         }
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    /// Poll `knotc zone-status <origin> +serial` until Knot serves a serial ≥ `want`, or the confirm
+    /// timeout elapses. A `zone-reload` returns as soon as it's *accepted*; this is what actually
+    /// proves Knot loaded the file (a rejected zone keeps the old, lower serial → this errors).
+    async fn confirm_serial(&self, origin: &str, want: i64) -> Result<(), String> {
+        if self.confirm_timeout.is_zero() {
+            return Ok(());
+        }
+        let deadline = tokio::time::Instant::now() + self.confirm_timeout;
+        let mut last: Option<i64> = None;
+        loop {
+            // Ignore transient probe errors; keep polling until the serial appears or we time out.
+            if let Ok(out) = self.knotc(&["zone-status", origin, "+serial"]).await {
+                if let Some(cur) = parse_one_serial(&out) {
+                    last = Some(cur);
+                    if cur >= want {
+                        return Ok(());
+                    }
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "reloaded but Knot is not serving serial {want} within {:?} (last seen {})",
+                    self.confirm_timeout,
+                    last.map(|s| s.to_string()).unwrap_or_else(|| "none".into()),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
     }
 
     /// Whether the zone is already declared in Knot's committed configuration. `conf-read` reads the
@@ -81,6 +116,7 @@ impl KnotBackend {
         }
         self.knotc(&["conf-commit"]).await?;
         self.declared.lock().unwrap().insert(origin.to_string());
+        tracing::info!(%origin, template = %self.template, "declared zone in Knot config");
         Ok(())
     }
 
@@ -89,15 +125,48 @@ impl KnotBackend {
     }
 }
 
+/// Extract the first parseable serial from `knotc zone-status … +serial` output (a line like
+/// `[example.com.] serial: 2024010101`). `serial: none` / `-` → `None`.
+fn parse_one_serial(out: &str) -> Option<i64> {
+    for line in out.lines() {
+        if let Some(rest) = line.split("serial:").nth(1) {
+            let tok = rest.trim().split(|c: char| c.is_whitespace() || c == '|').next().unwrap_or("");
+            if let Ok(n) = tok.parse::<i64>() {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+/// Parse `knotc zone-status +serial` (all zones): one `[origin] … serial: N` line per zone.
+fn parse_serial_map(out: &str) -> HashMap<String, i64> {
+    let mut m = HashMap::new();
+    for line in out.lines() {
+        let origin = line.split('[').nth(1).and_then(|s| s.split(']').next());
+        let serial = line.split("serial:").nth(1).and_then(|rest| {
+            rest.trim().split(|c: char| c.is_whitespace() || c == '|').next().and_then(|t| t.parse::<i64>().ok())
+        });
+        if let (Some(o), Some(s)) = (origin, serial) {
+            m.insert(o.trim().to_string(), s);
+        }
+    }
+    m
+}
+
 #[async_trait]
 impl Backend for KnotBackend {
-    async fn push_zone(&self, origin: &str, zonefile: &str) -> Result<(), String> {
+    async fn push_zone(&self, origin: &str, zonefile: &str, serial: i64) -> Result<(), String> {
         let path = self.zone_path(origin);
         tokio::fs::write(&path, zonefile)
             .await
             .map_err(|e| format!("writing {}: {e}", path.display()))?;
+        tracing::info!(%origin, serial, bytes = zonefile.len(), path = %path.display(), "wrote zone file");
         self.ensure_declared(origin).await?;
         self.knotc(&["zone-reload", origin]).await?;
+        // A reload only means "accepted" — confirm Knot actually loaded it and serves the serial.
+        self.confirm_serial(origin, serial).await?;
+        tracing::info!(%origin, serial, "zone reloaded and serving");
         Ok(())
     }
 
@@ -121,7 +190,29 @@ impl Backend for KnotBackend {
         }
     }
 
+    async fn zone_serials(&self) -> Result<Option<HashMap<String, i64>>, String> {
+        let out = self.knotc(&["zone-status", "+serial"]).await?;
+        Ok(Some(parse_serial_map(&out)))
+    }
+
     fn name(&self) -> &'static str {
         "knot"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_single_and_map_serials() {
+        assert_eq!(parse_one_serial("[example.com.] serial: 2024010101"), Some(2024010101));
+        assert_eq!(parse_one_serial("[ns1.example.com.] serial: 42 | role: master"), Some(42));
+        assert_eq!(parse_one_serial("[example.com.] serial: none"), None);
+
+        let m = parse_serial_map("[a.com.] serial: 5\n[b.com.] serial: 9\n[bad.com.] serial: none\n");
+        assert_eq!(m.get("a.com."), Some(&5));
+        assert_eq!(m.get("b.com."), Some(&9));
+        assert_eq!(m.get("bad.com."), None);
     }
 }

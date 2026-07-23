@@ -35,6 +35,8 @@ pub async fn healthcheck(State(app): State<AppState>) -> Response {
     };
     let last_push = app.worker.last_push.load(Ordering::Relaxed);
     let last_tick = app.worker.last_tick.load(Ordering::Relaxed);
+    // Zones Knot isn't serving at the DB serial (periodic reconcile); -1 = not yet computed / log backend.
+    let out_of_sync = app.worker.out_of_sync.load(Ordering::Relaxed);
 
     // WARN conditions (past a short startup grace).
     let grace = 30;
@@ -50,6 +52,9 @@ pub async fn healthcheck(State(app): State<AppState>) -> Response {
         if matches!(probe, Probe::Down) {
             warn = true; // knot unreachable
         }
+        if out_of_sync > 0 {
+            warn = true; // Knot not serving the current serial for some zone(s)
+        }
         if let Some(oldest) = oldest_unfinished(&app).await {
             if now() - oldest > app.cfg.warn_on_nopush.as_secs() as i64 {
                 warn = true; // backlog stuck
@@ -59,7 +64,8 @@ pub async fn healthcheck(State(app): State<AppState>) -> Response {
 
     let first = if warn { "WARN" } else { "OK" };
     let body = format!(
-        "{first} uptime={uptime} zones={zones} records={records} pending={pending} failed={failed} knot={knot} last_push={last_push}\n"
+        "{first} uptime={uptime} zones={zones} records={records} pending={pending} failed={failed} outofsync={oos} knot={knot} last_push={last_push}\n",
+        oos = out_of_sync.max(0),
     );
     ([(header::CONTENT_TYPE, "text/plain")], body).into_response()
 }

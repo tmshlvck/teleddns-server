@@ -26,6 +26,9 @@ const BACKOFF_CAP_SECS: i64 = 3600;
 pub struct WorkerHandle {
     pub last_tick: Arc<AtomicI64>,
     pub last_push: Arc<AtomicI64>,
+    /// Zones whose live Knot serial is behind the DB (or missing), with nothing pending — refreshed
+    /// by the periodic reconcile. `-1` = not yet computed / not applicable (log backend).
+    pub out_of_sync: Arc<AtomicI64>,
 }
 
 /// Spawn the worker; returns handles the healthcheck reads.
@@ -37,7 +40,12 @@ pub fn spawn(
 ) -> WorkerHandle {
     let last_tick = Arc::new(AtomicI64::new(0));
     let last_push = Arc::new(AtomicI64::new(0));
-    let handle = WorkerHandle { last_tick: last_tick.clone(), last_push: last_push.clone() };
+    let out_of_sync = Arc::new(AtomicI64::new(-1));
+    let handle = WorkerHandle {
+        last_tick: last_tick.clone(),
+        last_push: last_push.clone(),
+        out_of_sync: out_of_sync.clone(),
+    };
 
     let delay = cfg.backend_sync_delay.max(Duration::from_secs(1));
     let period = cfg.backend_sync_period.as_secs() as i64;
@@ -48,16 +56,78 @@ pub fn spawn(
 
         let mut ticker = tokio::time::interval(delay);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_reconcile = 0i64;
         loop {
             ticker.tick().await;
             if let Err(e) = tick(&db, &*backend, period, &last_push, &metrics).await {
                 tracing::warn!(error = %e, "sync worker tick failed");
             }
             last_tick.store(now(), Ordering::Relaxed);
+            // Periodic drift check: is Knot actually serving every zone's current serial?
+            if now() - last_reconcile >= period.max(1) {
+                reconcile(&db, &*backend, &metrics, &out_of_sync).await;
+                last_reconcile = now();
+            }
         }
     });
 
     handle
+}
+
+/// Compare each zone's DB serial to what Knot is serving (`zone_serials`), ignoring zones with a
+/// push still pending/in-flight (those are expected to be transiently behind). Publishes the count to
+/// the `out_of_sync` handle + the gauge, and logs each drifted zone at WARN. No-op for the `log`
+/// backend (which can't report serials).
+async fn reconcile(
+    db: &DatabaseConnection,
+    backend: &dyn Backend,
+    metrics: &crate::metrics::Metrics,
+    out_of_sync: &AtomicI64,
+) {
+    let served = match backend.zone_serials().await {
+        Ok(Some(m)) => m,
+        Ok(None) => return, // log backend: nothing to reconcile against
+        Err(e) => {
+            tracing::debug!(error = %e, "reconcile: could not read Knot serials");
+            return;
+        }
+    };
+    let zones = match zone::Entity::find().all(db).await {
+        Ok(z) => z,
+        Err(e) => {
+            tracing::warn!(error = %e, "reconcile: could not load zones");
+            return;
+        }
+    };
+    // Origins with an outstanding push are allowed to be behind.
+    let pending: HashSet<String> = sync_task::Entity::find()
+        .filter(sync_task::Column::State.is_in([STATE_PENDING, STATE_IN_FLIGHT]))
+        .all(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| t.origin)
+        .collect();
+
+    let mut count = 0i64;
+    for z in &zones {
+        if pending.contains(&z.origin) {
+            continue;
+        }
+        match served.get(&z.origin) {
+            Some(&live) if live >= z.serial => {} // in sync (≥: DNSSEC signing may bump it)
+            Some(&live) => {
+                count += 1;
+                tracing::warn!(origin = %z.origin, db_serial = z.serial, knot_serial = live, "zone out of sync");
+            }
+            None => {
+                count += 1;
+                tracing::warn!(origin = %z.origin, db_serial = z.serial, "zone not served by Knot");
+            }
+        }
+    }
+    out_of_sync.store(count, Ordering::Relaxed);
+    metrics.zones_out_of_sync.set(count);
 }
 
 async fn reset_in_flight(db: &DatabaseConnection) -> Result<(), sea_orm::DbErr> {
@@ -119,6 +189,7 @@ async fn process(
     am.updated_at = Set(now());
     am.update(db).await?;
 
+    let started = std::time::Instant::now();
     let result: Result<(), String> = if task.kind == KIND_ZONE_REMOVE {
         backend.remove_zone(&task.origin).await
     } else {
@@ -128,13 +199,17 @@ async fn process(
             .await?
         {
             Some(z) => match super::zonefile::render_zone(db, &z).await {
-                Ok(text) => backend.push_zone(&task.origin, &text).await,
+                Ok(text) => backend.push_zone(&task.origin, &text, z.serial).await,
                 Err(e) => Err(format!("render: {e}")),
             },
             // The zone was deleted; treat a stale `zone` task as a removal.
             None => backend.remove_zone(&task.origin).await,
         }
     };
+    metrics
+        .backend_push_seconds
+        .with_label_values(&[&task.kind])
+        .observe(started.elapsed().as_secs_f64());
 
     match result {
         Ok(()) => {
@@ -142,7 +217,7 @@ async fn process(
             sync_task::Entity::delete_by_id(id).exec(db).await?;
             last_push.store(now(), Ordering::Relaxed);
             metrics.backend_push.with_label_values(&[&task.kind, "ok"]).inc();
-            tracing::debug!(origin = %task.origin, kind = %task.kind, "pushed");
+            tracing::info!(origin = %task.origin, kind = %task.kind, "pushed to backend");
         }
         Err(e) => {
             metrics.backend_push.with_label_values(&[&task.kind, "error"]).inc();

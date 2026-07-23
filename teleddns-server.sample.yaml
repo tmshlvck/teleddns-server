@@ -54,6 +54,9 @@ backend: "log"
 # knot_zone_dir: "/var/lib/knot/zones"
 # knotc_path: "knotc"
 # knot_template: "master"
+# After zone-reload, wait this long for Knot to actually serve the pushed SOA serial before
+# treating the push as failed (a reload only means "accepted"). "0" disables the check.  ["5s"]
+# knot_confirm_timeout: "5s"
 
 # Single sign-on (OpenID Connect). Optional. A "Sign in with …" button appears on
 # the login page per provider; the callback URL is <public_url>/login/sso/<name>/

@@ -142,6 +142,9 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     };
     let app =
         app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::allow_list));
+    // Outermost: one access-log line per request (logs allow-list denials too).
+    let app =
+        app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::access_log));
 
     let addr = state.cfg.bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;

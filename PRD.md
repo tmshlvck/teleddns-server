@@ -409,7 +409,13 @@ The worker drives the local Knot via `knotc`. On each push it:
 2. on a zone's first push this process, **declares it** in Knot's config DB —
    `knotc conf-begin; conf-set 'zone[<o>]'; conf-set 'zone[<o>].template'
    <knot_template>; conf-commit` (cached, idempotent);
-3. `knotc zone-reload <origin>`.
+3. `knotc zone-reload <origin>`;
+4. **confirms the reload took** — a `zone-reload` returns as soon as it is
+   *accepted*, so the worker then polls `knotc zone-status <origin> +serial` until
+   Knot serves a serial ≥ the pushed one (up to `knot_confirm_timeout`, default 5 s).
+   If Knot rejects the zone it keeps the old, lower serial, so this **fails the
+   push** → it retries, logs WARN/ERROR, and (past `MAX_ATTEMPTS`) dead-letters —
+   rather than silently reporting success.
 
 With `zonefile-load: difference` in the operator's template, Knot diffs the
 regenerated file and emits an **incremental IXFR** to secondaries — so full-file
@@ -446,13 +452,16 @@ sent traffic (zero updates is healthy). Always HTTP **200**; `OK`/`WARN` is the
 body's first token:
 
 ```
-OK uptime=<s> zones=<n> records=<n> pending=<n> failed=<n> knot=<up|down|na> last_push=<unixts|0>
+OK uptime=<s> zones=<n> records=<n> pending=<n> failed=<n> outofsync=<n> knot=<up|down|na> last_push=<unixts|0>
 ```
 
 `WARN` (past a short startup grace) when any of: the sync worker has stalled (no
-tick within 2 × `backend_sync_period`); a push is dead-lettered (`failed>0`); the
-oldest unfinished push is older than `warn_on_nopush` (default 3600 s); or
-`backend=knot` and a `knotc status` probe fails (`knot=na` for the `log` backend).
+tick within 2 × `backend_sync_period`); a push is dead-lettered (`failed>0`); a
+zone has drifted out of sync (`outofsync>0` — a periodic reconcile finds Knot
+serving a serial behind the DB, or not serving the zone, with nothing pending to
+fix it); the oldest unfinished push is older than `warn_on_nopush` (default 3600 s);
+or `backend=knot` and a `knotc status` probe fails (`knot=na` for the `log`
+backend).
 
 ### 8.2 `GET /metrics`
 
@@ -468,6 +477,7 @@ Prometheus exposition:
 | `teleddns_backend_push_seconds` | histogram | `kind` |
 | `teleddns_backend_push_total` | counter | `kind`,`result` |
 | `teleddns_pending_pushes` | gauge | `state` |
+| `teleddns_zones_out_of_sync` | gauge | — |
 | `teleddns_worker_last_tick_seconds` | gauge | — |
 | `teleddns_knot_up` | gauge | — |
 
@@ -476,6 +486,25 @@ the actor once an alert fires. Because regular updates are not expected, update
 *volume* is the abuse signal — alert on `rate(teleddns_ddns_updates_total[5m])`
 and on the auth-failure / rate-limit counters (a stolen or brute-forced
 credential).
+
+### 8.3 Logging
+
+Structured `tracing` to **stderr** (captured by the journal under systemd) — no
+standalone log files. Three concerns, deliberately distinct:
+
+- **Access log** — one INFO line per HTTP request on every surface (DDNS, native
+  API, CF facade, UI, `/metrics`, `/healthcheck`), emitted by an outer middleware:
+  method, path+query, status, the resolved client IP (proxy-aware after the real-IP
+  rewrite), User-Agent, and latency. Denied (allow-list 403) requests are logged
+  too.
+- **State changes / backend** — INFO for zone-file writes, zone declarations, and
+  successful pushes; **WARN/ERROR** when a push fails or a reload is accepted but
+  Knot doesn't serve the pushed serial (§7.2). This is what makes a rejected zone
+  visible without reading Knot's own journal.
+- **Audit** (§5.4) — the persisted, retrospective DNS-change record (who/what/where),
+  surfaced in the operator UI; **not** the same as the operational stderr log above.
+
+`debug: true` raises the level (and dumps rendered zones from the `log` backend).
 
 ---
 
@@ -498,8 +527,9 @@ Key groups:
 - **TTLs** — `default_ttl` (API-created records, default 3600), `ddns_rr_ttl`
   (DDNS-touched A/AAAA, default 60).
 - **Backend sync** — `backend` (`log` | `knot`), `knot_zone_dir`, `knotc_path`,
-  `knot_template`, `backend_sync_delay` (default 10 s), `backend_sync_period`
-  (default 300 s), `warn_on_nopush` (default 3600 s).
+  `knot_template`, `knot_confirm_timeout` (default 5 s; post-reload serial
+  confirmation, §7.2), `backend_sync_delay` (default 10 s), `backend_sync_period`
+  (default 300 s; also the reconcile cadence), `warn_on_nopush` (default 3600 s).
 - **SSO** — `public_url` and `sso_providers[]` (§4.2).
 
 On first start the server **seeds an `admin` user** and logs the generated
