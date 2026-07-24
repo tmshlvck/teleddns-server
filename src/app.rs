@@ -71,7 +71,8 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(providers = s.buttons().len(), "OIDC SSO enabled");
     }
 
-    let engine = Arc::new(crate::web::build_engine(db.clone(), &auth, audit.clone()));
+    let engine =
+        Arc::new(crate::web::build_engine(db.clone(), &auth, audit.clone(), cfg.default_ttl));
 
     // The app owns the OpenAPI root; the admin CRUD entity endpoints + schemas are merged in.
     let app_doc = utoipa::openapi::OpenApiBuilder::new()

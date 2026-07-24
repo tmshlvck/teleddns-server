@@ -14,7 +14,9 @@ use sea_orm::DatabaseConnection;
 use std::sync::Arc;
 
 /// Shared per-RR field metadata: the common Name / TTL / Zone columns every record type carries.
-fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E>) {
+/// `default_ttl` pre-fills the TTL field on the create form (`config.default_ttl` — the same value
+/// the native API applies when a caller omits it).
+fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E>, default_ttl: u32) {
     mm.field("label").label = Some("Name".into());
     mm.field("label").description = Some(
         "Record name relative to the zone origin — use @ for the zone apex, or a subdomain like \
@@ -29,6 +31,7 @@ fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E
             .into(),
     );
     mm.field("ttl").validate_int(crate::dns::check::ttl);
+    mm.field("ttl").default = Some(serde_json::json!(default_ttl));
     mm.relation("zone").label = Some("Zone".into());
     mm.relation("zone").description = Some("The zone this record belongs to.".into());
     mm.field("created_at").label = Some("Created".into());
@@ -45,6 +48,7 @@ pub fn build_engine(
     db: DatabaseConnection,
     auth: &Auth,
     audit: Arc<crate::audit::Audit>,
+    default_ttl: u32,
 ) -> Engine {
     let gate = Arc::new(GroupReadWrite::new(auth, ["admin"]));
     let mut crud = Crud::new(db, "/admin/api");
@@ -118,7 +122,7 @@ pub fn build_engine(
     macro_rules! reg_rr {
         ($ent:path $(, $field:literal => ($label:literal, $fdesc:literal $(, $kind:ident $pred:path)? ) )* $(,)?) => {{
             let mut mm = MetaModel::new($ent);
-            rr_common(&mut mm);
+            rr_common(&mut mm, default_ttl);
             $(
                 mm.field($field).label = Some($label.into());
                 mm.field($field).description = Some($fdesc.into());
