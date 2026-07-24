@@ -26,6 +26,10 @@ impl Backend for LogBackend {
         Ok(None) // no live server to reconcile against
     }
 
+    async fn managed_zones(&self) -> Result<Option<std::collections::HashSet<String>>, String> {
+        Ok(None) // no live server to enumerate
+    }
+
     fn name(&self) -> &'static str {
         "log"
     }

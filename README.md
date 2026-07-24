@@ -373,8 +373,12 @@ knotc conf-read 'zone[catalog.]'                    # sanity: reads the committe
 ```
 
 Keep the base config's `zone:` block to just the catalog zone — teleddns adds and
-removes per-domain `zone[...]` entries itself, idempotently (a restart is safe). To
-change templates/keys later, edit `knot.conf` and re-run `knotc conf-import`.
+removes per-domain `zone[...]` entries itself, idempotently (a restart is safe).
+teleddns treats every zone declared under `knot_template` as its own: a daily
+sweep (also run once at startup) prunes any such zone that isn't in its database.
+Set `knot_delete_zones: false` if you want to declare zones under that template by
+hand as well. To change templates/keys later, edit `knot.conf` and re-run `knotc
+conf-import`.
 
 ### 3. teleddns config + systemd
 

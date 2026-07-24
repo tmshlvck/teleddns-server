@@ -90,6 +90,24 @@ impl KnotBackend {
         self.knotc(&["conf-read", &format!("zone[{origin}]")]).await.is_ok()
     }
 
+    /// All origins declared in Knot's committed config under `self.template`, for orphan pruning.
+    /// Best-effort: an origin whose template can't be determined is left out rather than risking a
+    /// wrong deletion; a single per-origin `knotc` failure only skips that origin.
+    async fn list_managed_zones(&self) -> Result<HashSet<String>, String> {
+        let out = self.knotc(&["conf-read", "zone"]).await?;
+        let mut result = HashSet::new();
+        for origin in parse_zone_list(&out) {
+            let tmpl = self
+                .knotc(&["conf-read", &format!("zone[{origin}].template")])
+                .await
+                .unwrap_or_default();
+            if tmpl.trim() == self.template {
+                result.insert(origin);
+            }
+        }
+        Ok(result)
+    }
+
     /// Ensure the zone is declared as a member of the configured template. Idempotent across process
     /// restarts: if the zone is already in Knot's config we do nothing (Knot rejects re-declaring an
     /// existing `zone[...]` with a "duplicate identifier" error), so a restart doesn't wedge pushes.
@@ -137,6 +155,14 @@ fn parse_one_serial(out: &str) -> Option<i64> {
         }
     }
     None
+}
+
+/// Parse `knotc conf-read zone` (all declared zones): one `zone[origin]` line per zone.
+fn parse_zone_list(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|line| line.split('[').nth(1).and_then(|s| s.split(']').next()))
+        .map(|s| s.trim().to_string())
+        .collect()
 }
 
 /// Parse `knotc zone-status +serial` (all zones): one `[origin] … serial: N` line per zone.
@@ -195,6 +221,10 @@ impl Backend for KnotBackend {
         Ok(Some(parse_serial_map(&out)))
     }
 
+    async fn managed_zones(&self) -> Result<Option<HashSet<String>>, String> {
+        self.list_managed_zones().await.map(Some)
+    }
+
     fn name(&self) -> &'static str {
         "knot"
     }
@@ -214,5 +244,12 @@ mod tests {
         assert_eq!(m.get("a.com."), Some(&5));
         assert_eq!(m.get("b.com."), Some(&9));
         assert_eq!(m.get("bad.com."), None);
+    }
+
+    #[test]
+    fn parses_zone_list() {
+        let out = "zone[a.com.]\nzone[b.com.]\n";
+        assert_eq!(parse_zone_list(out), vec!["a.com.".to_string(), "b.com.".to_string()]);
+        assert!(parse_zone_list("").is_empty());
     }
 }

@@ -8,7 +8,7 @@ pub mod zonefile;
 
 use crate::config::Config;
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Liveness of the underlying DNS server.
@@ -37,6 +37,9 @@ pub trait Backend: Send + Sync {
     /// The serial the server is currently serving for each zone it holds, for reconciliation.
     /// `Ok(None)` = the backend can't report (the `log` backend) — reconciliation is skipped.
     async fn zone_serials(&self) -> Result<Option<HashMap<String, i64>>, String>;
+    /// Origins currently declared in the backend under the configured template, for orphan
+    /// pruning. `Ok(None)` = not applicable (the `log` backend has nothing to enumerate).
+    async fn managed_zones(&self) -> Result<Option<HashSet<String>>, String>;
     /// Short name for logs/metrics.
     fn name(&self) -> &'static str;
 }

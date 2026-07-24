@@ -52,6 +52,15 @@ pub struct Config {
     /// without this a zone Knot then rejects would look pushed). `0` disables the confirmation.
     #[serde(with = "humantime_serde_opt")]
     pub knot_confirm_timeout: Duration,
+    /// How often to run the full sweep: re-push every zone (covers RRs transitively) and, if
+    /// `knot_delete_zones`, prune backend zones under `knot_template` that aren't in the DB. Also
+    /// runs once shortly after startup (the first worker tick).
+    #[serde(with = "humantime_serde_opt")]
+    pub full_resync_period: Duration,
+    /// During the full sweep, delete backend zones declared under `knot_template` that are not in
+    /// our DB (conf-unset + delete the zone file). Default on; set false to only get the
+    /// push-everything half of the sweep.
+    pub knot_delete_zones: bool,
 
     /// Days to keep audit-log rows; older rows are pruned at startup. `0` = keep forever.
     pub audit_retention_days: u32,
@@ -122,6 +131,8 @@ impl Default for Config {
             knotc_path: "knotc".into(),
             knot_template: "master".into(),
             knot_confirm_timeout: Duration::from_secs(5),
+            full_resync_period: Duration::from_secs(24 * 3600),
+            knot_delete_zones: true,
             audit_retention_days: 365,
             public_url: String::new(),
             sso_providers: vec![],

@@ -49,6 +49,8 @@ pub fn spawn(
 
     let delay = cfg.backend_sync_delay.max(Duration::from_secs(1));
     let period = cfg.backend_sync_period.as_secs() as i64;
+    let full_resync_period = cfg.full_resync_period.as_secs() as i64;
+    let delete_zones = cfg.knot_delete_zones;
 
     tokio::spawn(async move {
         // At-least-once: anything left in_flight from a previous run goes back to pending.
@@ -57,6 +59,8 @@ pub fn spawn(
         let mut ticker = tokio::time::interval(delay);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_reconcile = 0i64;
+        // 0 so the sweep also runs once on the first tick after startup.
+        let mut last_full_resync = 0i64;
         loop {
             ticker.tick().await;
             if let Err(e) = tick(&db, &*backend, period, &last_push, &metrics).await {
@@ -68,10 +72,52 @@ pub fn spawn(
                 reconcile(&db, &*backend, &metrics, &out_of_sync).await;
                 last_reconcile = now();
             }
+            // Full sweep: re-push every zone, and (if enabled) prune backend zones we don't own.
+            if now() - last_full_resync >= full_resync_period.max(1) {
+                full_resync(&db, &*backend, delete_zones).await;
+                last_full_resync = now();
+            }
         }
     });
 
     handle
+}
+
+/// Unconditionally re-push every zone in the DB (covers RRs transitively — a push is a full
+/// render), then, if `delete_zones`, prune backend zones declared under our template that aren't
+/// in the DB. Runs on startup (first tick) and every `full_resync_period` after.
+async fn full_resync(db: &DatabaseConnection, backend: &dyn Backend, delete_zones: bool) {
+    let zones = match zone::Entity::find().all(db).await {
+        Ok(z) => z,
+        Err(e) => {
+            tracing::warn!(error = %e, "full resync: could not load zones");
+            return;
+        }
+    };
+    let mut origins = HashSet::new();
+    for z in &zones {
+        if let Err(e) = crate::sync::enqueue(db, &z.origin).await {
+            tracing::warn!(origin = %z.origin, error = %e, "full resync: could not enqueue push");
+        }
+        origins.insert(z.origin.clone());
+    }
+    tracing::info!(zones = origins.len(), "full resync: enqueued push for all zones");
+
+    if !delete_zones {
+        return;
+    }
+    match backend.managed_zones().await {
+        Ok(Some(declared)) => {
+            for orphan in declared.difference(&origins) {
+                tracing::warn!(origin = %orphan, "full resync: pruning zone not in DB");
+                if let Err(e) = crate::sync::enqueue_remove(db, orphan).await {
+                    tracing::warn!(origin = %orphan, error = %e, "full resync: could not enqueue removal");
+                }
+            }
+        }
+        Ok(None) => {} // backend can't enumerate (log backend)
+        Err(e) => tracing::warn!(error = %e, "full resync: could not list backend zones"),
+    }
 }
 
 /// Compare each zone's DB serial to what Knot is serving (`zone_serials`), ignoring zones with a

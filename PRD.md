@@ -396,6 +396,14 @@ waiting on `knotc`. A single in-process worker drains the journal:
   failed state after ~20 attempts (surfaced in `/metrics` and the audit log).
 - **Safety-net sweep** every `backend_sync_period` (default 300 s) re-enqueues
   stale-but-unclaimed entries.
+- **Full resync** on startup and every `full_resync_period` (default 24 h)
+  unconditionally re-enqueues a push for **every** zone (a push regenerates the
+  full zone from current state, so this also covers RRs). If `knot_delete_zones`
+  (default on), the same pass lists zones the backend has declared under
+  `knot_template` and enqueues a `zone-remove` for any that aren't in the DB —
+  teleddns takes ownership of everything under its template and prunes the rest.
+  A backend that can't enumerate its zones (the `log` backend) skips the prune
+  half silently.
 
 Journal states: `pending`, `in_flight`, `done`, `failed`; kinds: `zone`,
 `zone-remove`. A multi-process deployment would need row-level locking
@@ -529,7 +537,9 @@ Key groups:
 - **Backend sync** — `backend` (`log` | `knot`), `knot_zone_dir`, `knotc_path`,
   `knot_template`, `knot_confirm_timeout` (default 5 s; post-reload serial
   confirmation, §7.2), `backend_sync_delay` (default 10 s), `backend_sync_period`
-  (default 300 s; also the reconcile cadence), `warn_on_nopush` (default 3600 s).
+  (default 300 s; also the reconcile cadence), `warn_on_nopush` (default 3600 s),
+  `full_resync_period` (default 24 h; §7.1 full resync), `knot_delete_zones`
+  (default true; prune backend zones under `knot_template` not in the DB).
 - **SSO** — `public_url` and `sso_providers[]` (§4.2).
 
 On first start the server **seeds an `admin` user** and logs the generated
