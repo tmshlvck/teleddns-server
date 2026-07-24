@@ -154,9 +154,11 @@ pub mod check {
         rl::dns_name(s).map_err(|_| format!("must be a valid hostname: {s:?}"))
     }
 
-    /// A zone origin — a DNS name (normalized to an absolute FQDN before storage).
+    /// A zone origin — an absolute FQDN (trailing dot required). The native API/zoneimport paths
+    /// also call `normalize_fqdn` before this runs, so a missing dot never reaches them; the admin
+    /// CRUD form validates the raw field with only this, so it must enforce the dot itself.
     pub fn zone_origin(s: &str) -> Result<(), String> {
-        rl::dns_name(s).map_err(|_| format!("invalid zone origin: {s:?}"))
+        rl::fqdn(s).map_err(|_| format!("invalid zone origin (must be fully-qualified, e.g. example.com.): {s:?}"))
     }
 
     /// A CAA property tag: `issue`, `issuewild`, or `iodef` (case-insensitive).
@@ -216,6 +218,8 @@ mod tests {
         assert!(check::target_name("mail.example.com.").is_ok());
         assert!(check::target_name(".").is_ok()); // SRV "no service"
         assert!(check::target_name("bad space").is_err());
+        assert!(check::zone_origin("example.com.").is_ok());
+        assert!(check::zone_origin("example.com").is_err()); // missing trailing dot
 
         // Numeric ranges.
         assert!(check::ttl(3600).is_ok() && check::ttl(-1).is_err() && check::ttl(1 << 31).is_err());
