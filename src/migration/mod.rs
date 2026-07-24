@@ -1,11 +1,14 @@
 //! Versioned schema migrations (`sea-orm-migration`), embedded in the binary and run at startup via
-//! [`Migrator::up`]. This replaces the old create-if-absent bootstrap: migrations are applied once and
-//! recorded in a `seaql_migrations` table, so restarts and upgrades are safe.
+//! [`Migrator::up`]. Migrations are applied once and recorded in a `seaql_migrations` table, so
+//! restarts and upgrades are safe.
 //!
-//! The initial migration creates the relativelylight `auth` tables (via
+//! A single migration creates the relativelylight `auth` tables (via
 //! `relativelylight::auth::table_create_statements`) plus every app-owned table, in FK-safe order
-//! (referenced tables first). Later schema changes go in *new* migration structs added to
-//! [`Migrator::migrations`] — never edit a migration that has shipped.
+//! (referenced tables first) — all from the *current* entity definitions, so a fresh DB always gets
+//! the full column set (lifecycle timestamps included) in one shot. This is schema v1: no deployed
+//! DB predates it, so there's nothing to preserve compatibility with. Later schema changes go in
+//! *new* migration structs appended to [`Migrator::migrations`] — never edit a migration that has
+//! shipped.
 
 use sea_orm_migration::prelude::*;
 
@@ -14,11 +17,7 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![
-            Box::new(m0001_init::Migration),
-            Box::new(m0002_audit::Migration),
-            Box::new(m0003_row_timestamps::Migration),
-        ]
+        vec![Box::new(m0001_init::Migration)]
     }
 }
 
@@ -47,7 +46,7 @@ mod m0001_init {
 
             // App tables, referenced-first: zone before rr_*; auth (above) before roles/api_key.
             let schema = Schema::new(backend);
-            use crate::model::{api_key, idempotency, rr, rr_role, sync_task, zone, zone_role};
+            use crate::model::{api_key, audit, idempotency, rr, rr_role, sync_task, zone, zone_role};
             macro_rules! create {
                 ($($ent:expr),* $(,)?) => {{
                     $( m.create_table(schema.create_table_from_entity($ent)).await?; )*
@@ -65,6 +64,7 @@ mod m0001_init {
                 rr_role::Entity,
                 sync_task::Entity,
                 idempotency::Entity,
+                audit::Entity,
             );
 
             // Uniqueness for the access grants (enforced in the DB, not just app code):
@@ -96,6 +96,7 @@ mod m0001_init {
         async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
             // Drop dependents before their targets (reverse of `up`).
             for table in [
+                "audit",
                 "api_idempotency",
                 "sync_task",
                 "rr_role",
@@ -124,96 +125,6 @@ mod m0001_init {
                 m.drop_table(Table::drop().table(Alias::new(table)).if_exists().to_owned()).await?;
             }
             Ok(())
-        }
-    }
-}
-
-mod m0002_audit {
-    use sea_orm::{ConnectionTrait, Schema};
-    use sea_orm_migration::prelude::*;
-
-    pub struct Migration;
-
-    impl MigrationName for Migration {
-        fn name(&self) -> &str {
-            "m0002_audit"
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl MigrationTrait for Migration {
-        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
-            // The audit log table (new for every deployment).
-            let schema = Schema::new(m.get_database_backend());
-            let mut stmt = schema.create_table_from_entity(crate::model::audit::Entity);
-            stmt.if_not_exists();
-            m.create_table(stmt).await?;
-
-            // Auth lifecycle timestamps (added to relativelylight alongside the audit hook). On a DB
-            // whose auth tables were created *before* those columns existed (an upgrade), add them; on
-            // a fresh DB the columns already exist (created by m0001's table_create_statements), so the
-            // "duplicate column" error is expected and ignored.
-            let db = m.get_connection();
-            for sql in [
-                "ALTER TABLE auth_user ADD COLUMN created_at bigint NOT NULL DEFAULT 0",
-                "ALTER TABLE auth_user ADD COLUMN updated_at bigint NOT NULL DEFAULT 0",
-                "ALTER TABLE auth_user ADD COLUMN last_login_at bigint",
-                "ALTER TABLE auth_group ADD COLUMN created_at bigint NOT NULL DEFAULT 0",
-                "ALTER TABLE auth_group ADD COLUMN updated_at bigint NOT NULL DEFAULT 0",
-            ] {
-                let _ = db.execute_unprepared(sql).await;
-            }
-            Ok(())
-        }
-
-        async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
-            m.drop_table(Table::drop().table(Alias::new("audit")).if_exists().to_owned()).await?;
-            // The auth columns are left in place (per-engine column drops aren't worth it).
-            Ok(())
-        }
-    }
-}
-
-mod m0003_row_timestamps {
-    use sea_orm::ConnectionTrait;
-    use sea_orm_migration::prelude::*;
-
-    pub struct Migration;
-
-    impl MigrationName for Migration {
-        fn name(&self) -> &str {
-            "m0003_row_timestamps"
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl MigrationTrait for Migration {
-        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
-            // Add created_at/updated_at (UTC Unix seconds) to the zone + every RR table. As with
-            // m0002's auth columns: an upgrade adds them; a fresh DB already has them (from m0001's
-            // create_table_from_entity), so the "duplicate column" error is expected and ignored.
-            let db = m.get_connection();
-            let tables = [
-                "zone", "rr_a", "rr_aaaa", "rr_ns", "rr_ptr", "rr_cname", "rr_txt", "rr_mx",
-                "rr_srv", "rr_caa", "rr_sshfp", "rr_tlsa", "rr_dnskey", "rr_ds", "rr_naptr",
-            ];
-            for t in tables {
-                let _ = db
-                    .execute_unprepared(&format!(
-                        "ALTER TABLE {t} ADD COLUMN created_at bigint NOT NULL DEFAULT 0"
-                    ))
-                    .await;
-                let _ = db
-                    .execute_unprepared(&format!(
-                        "ALTER TABLE {t} ADD COLUMN updated_at bigint NOT NULL DEFAULT 0"
-                    ))
-                    .await;
-            }
-            Ok(())
-        }
-
-        async fn down(&self, _m: &SchemaManager) -> Result<(), DbErr> {
-            Ok(()) // columns left in place
         }
     }
 }
