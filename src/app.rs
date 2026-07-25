@@ -120,7 +120,11 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         ops_nets,
     };
 
-    let ddns = get(crate::ddns::update).fallback(crate::ddns::reject_non_get);
+    // dyndns2 documents the parameters in the query string and prefers GET, but permits POST; any
+    // other method falls through to `badagent`.
+    let ddns = get(crate::ddns::update)
+        .post(crate::ddns::update)
+        .fallback(crate::ddns::reject_method);
     let app = Router::new()
         .route("/", get(crate::web::home))
         .route("/keys", axum::routing::post(crate::keys::mint))

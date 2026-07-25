@@ -56,7 +56,10 @@ base-URL change.
 
 ### Endpoints
 
-Three GET paths behave identically; a non-GET method is rejected with `405`:
+Three paths behave identically and accept `GET` (preferred) or `POST`; any other
+method is rejected with `405 badagent` (dyndns2 folds an unsupported HTTP method into
+`badagent`). Parameters travel in the query string; a `POST` may instead
+form-encode them in the body (query wins on a clash):
 
 | Path           | Notes |
 |----------------|-------|
@@ -68,12 +71,28 @@ Three GET paths behave identically; a non-GET method is rejected with `405`:
 
 | Name       | Required | Notes |
 |------------|----------|-------|
-| `hostname` | yes      | FQDN to update; trailing dot tolerated. |
-| `myip`     | one of   | IPv4 *or* IPv6 literal; family auto-detected. |
-| `myipv6`   | one of   | Explicit IPv6. If both `myip` and `myipv6` are present they are processed independently (one A update, one AAAA update). |
+| `hostname` | yes      | Comma-separated list of **1–20** FQDNs (dyn's cap); trailing dot tolerated, case-insensitive. More than 20 → `numhost`; a syntactically invalid name fails the whole request with `notfqdn`. |
+| `myip`     | no       | Comma-separated address list of **either family** (dyn's own dual-stack form), family auto-detected per entry. |
+| `myipv6`   | no       | Comma-separated IPv6 (a widely-used extension; dyn itself carries v6 in `myip`). IPv4 here → `notfqdn`. |
 
-At least one of `myip` / `myipv6` is required. The DDNS path **never deletes**
-records — deletions go through the management API or UI.
+With **no** address parameter the request's own source address is published — the
+family it connected over, and only that family (an explicit `myip` is never extended
+with a detected address of the other family). The address is the one `net::resolve_ip`
+yields, so behind a proxy it is the left-most forwarded hop **only when
+`trust_proxy` is set**; without a resolvable address the request is `notfqdn`.
+
+At most **one address per family** per request: the same address repeated is fine,
+two different addresses of one family contradict each other → `notfqdn`. The address
+set is applied to **every** listed hostname (dyn: each hostname "receives the same
+information"); the two lists are *not* paired positionally.
+
+The DDNS path **never deletes** records — deletions go through the management API or
+UI. The deprecated dyn flags (`wildcard`, `mx`, `backmx`, `offline`) and
+`system`/`url` are ignored.
+
+The full client-facing wire contract — including the parse/retry algorithm a client
+should implement and the per-client compatibility matrix — is
+[`DYNDNS2.md`](DYNDNS2.md).
 
 ### Zone & label resolution
 
@@ -85,7 +104,7 @@ No matching zone → `nohost` (404).
 
 ### Update semantics
 
-For each `(family, address)`:
+For each hostname, and within it for each `(family, address)`:
 
 1. Resolve `(zone, label)`; resolve the record set (A for v4, AAAA for v6).
 2. Authorize (§3). Insufficient access → `!yours` (403).
@@ -96,27 +115,38 @@ For each `(family, address)`:
 6. Multiple records → keep the first, delete the rest, update if needed (`good`).
 7. On any data change: bump the zone SOA serial and enqueue a backend push (§7).
 
+Each hostname resolves independently (so one `nohost` among 20 names doesn't sink the
+others), and rate limiting + authorization are decided per `(zone, label, family)`.
+
 TTL of records touched via DDNS is `ddns_rr_ttl` (default 60 s); records created
 through the management API use `default_ttl` (default 3600 s).
 
 ### Response codes & body
 
-Body is `text/plain` in dyndns2 vocabulary; the HTTP status is the authoritative
-signal.
+Body is `text/plain` in dyndns2 vocabulary: **one line per hostname, in request
+order** — except a whole-request failure (auth, malformed query, `numhost`), which is
+a single line whatever the hostname count. The HTTP status is the most severe of the
+lines and always agrees with the body.
 
 | HTTP | Body        | Condition |
 |------|-------------|-----------|
-| 200  | `good <ip>` | created or updated. |
-| 200  | `nochg <ip>`| already at the requested value. |
-| 400  | `notfqdn`   | bad `hostname`, or `myip`/`myipv6` not parseable. |
+| 200  | `good <addrs>` | created or updated; addresses comma-separated, IPv4 first. |
+| 200  | `nochg <addrs>`| already at the requested value(s). |
+| 400  | `notfqdn`   | missing/syntactically invalid `hostname`, or an unparseable/contradictory address, or no address and none detectable (dyndns2 has no keyword for a malformed address; `notfqdn` classifies as a permanent client-side error, which is the right signal). |
+| 400  | `numhost`   | more than 20 hostnames in one request. |
 | 401  | `badauth`   | missing/wrong credentials, or Basic auth by a 2FA/SSO user. |
 | 403  | `!yours`    | authenticated but not authorized for the resolved record. |
 | 404  | `nohost`    | no configured zone matches `hostname`. |
+| 405  | `badagent`  | non-GET method (dyndns2's catch-all for a client that does not follow the update-client requirements). |
 | 429  | `abuse`     | rate limit tripped. |
 | 500  | `911`       | internal error. |
 
-With both `myip` and `myipv6`, the body carries both status lines (`\n`-separated)
-and the response takes the **worst** HTTP code.
+A dual-stack request reports **one** line for the hostname: the most severe failure
+if either family failed, else `good` (something changed) or `nochg` (nothing did),
+ranked `nochg` < `good` < `nohost` < `!yours` < `abuse` < `notfqdn` < `numhost` <
+`badagent` < `badauth` < `911`. A family that succeeded alongside a failing one is
+still applied — the client's retry then sees `nochg` for it. Clients that want
+per-family resolution send one family per request.
 
 ### Authentication
 
@@ -291,15 +321,37 @@ or UI.
 | `DS`     | `key_tag`, `algorithm`, `digest_type`, `digest`     | `<label> <ttl> IN DS <key_tag> <algorithm> <digest_type> <digest>` |
 | `NAPTR`  | `order`, `preference`, `flags`, `service`, `regexp`, `replacement` | `<label> <ttl> IN NAPTR <order> <preference> "<flags>" "<service>" "<regexp>" <replacement>` |
 
-**Validation is per type and enforced on every write surface** (native API, DDNS,
-CF facade, and the admin forms) from one shared set of predicates (`dns::check`,
-built on `relativelylight::validate`): IP literals for A/AAAA; DNS-name grammar for
-name-valued rdata; the CAA `tag` enum; hex (SSHFP/TLSA/DS) and base64 (DNSKEY)
-rdata; TTL to the RFC 2181 `0..2³¹−1`; and numeric fields range-checked to their
-wire width (octet vs 16-bit). It is RFC-reasonable with a few corners cut for
-uncommon cases (numeric enums are range-checked to their width, not to the exact
-IANA-registered set). The zone-file render must be byte-faithful and pass Knot's
-`kzonecheck`. `DNSKEY`/`DS` are stored as static data; **signing is Knot's job**.
+**Validation is per type and enforced on every write surface** (DDNS, native API,
+CF facade, `admin import`, and the admin forms) from one shared set of predicates
+(`dns::check`, built on `relativelylight::validate`): IP literals for A/AAAA;
+DNS-name grammar for owner names and name-valued rdata; the CAA `tag` enum; hex
+(SSHFP/TLSA/DS) and base64 (DNSKEY) rdata; TTL to the RFC 2181 `0..2³¹−1`; and
+numeric fields range-checked to their wire width (octet vs 16-bit). It is
+RFC-reasonable with a few corners cut for uncommon cases (numeric enums are
+range-checked to their width, not to the exact IANA-registered set).
+
+Every **name-shaped** field is composed from two primitives — `dns_label` (one
+label: 1–63 chars, LDH plus `_` service labels) and `fqdn_hostname` (an absolute
+name, trailing dot required) — so no surface can accept a name another rejects:
+
+| Field | Rule |
+|---|---|
+| record owner (`label`), DDNS `hostname`, record-grant scope | label sequence; `@`/empty = apex; leftmost `*` wildcard allowed |
+| rdata targets (NS/PTR/CNAME/MX/SRV `value`, NAPTR `replacement`), SOA MNAME/RNAME | label sequence, absolute or zone-relative, **no** wildcard; a lone `.` allowed where "no target" is meaningful |
+| zone `origin` | `fqdn_hostname` — trailing dot required |
+| quoted rdata (CAA `value`, NAPTR `flags`/`service`/`regexp`) | one character-string: ≤ 255 octets, no control characters |
+| TXT `value` | ≤ 65535 bytes, any byte (see the render rule below) |
+
+The reason the bar is set here is the **rendered zone file**: a stored value
+carrying whitespace, a newline, a comma or an over-long label breaks the
+`<owner> <ttl> IN <TYPE> <rdata>` line and Knot then refuses the whole zone on
+reload, so such a value must never reach the DB in the first place.
+
+The zone-file render must be byte-faithful and pass Knot's `kzonecheck`: quoted
+rdata escapes `"`/`\` and writes any non-printable byte as `\DDD`, and a TXT value
+longer than one character-string is emitted as **adjacent 255-octet strings**
+(`"part1" "part2"` — what a long DKIM key needs; a single over-long string would be
+rejected). `DNSKEY`/`DS` are stored as static data; **signing is Knot's job**.
 
 Types not modelled (`HINFO`, `LOC`, `SVCB`, `HTTPS`, `NSEC*`, `RRSIG`, `URI`, …)
 are out of scope.
@@ -368,7 +420,10 @@ enough for those clients:
 - auth via `Authorization: Bearer <key>` or `X-Auth-Key`.
 
 It maps CF `name`/`content` onto `(zone, label, value)` and reuses the native
-validation + write path. Supported record types: **A, AAAA, CNAME, TXT, NS, MX**
+validation + write path. The FQDN in `name` must be **inside the addressed zone**
+(`400` otherwise) — as a relative label it would otherwise be stored under the
+zone's origin, creating a record the caller never asked for. Supported record
+types: **A, AAAA, CNAME, TXT, NS, MX**
 (what those tools use). The key's level scopes which zones it can touch, same as
 the native API. This is the only *external* API surface; there is no teleddns↔
 teleddns peer API.
@@ -479,7 +534,7 @@ Prometheus exposition:
 |---|---|---|
 | `teleddns_zones` / `teleddns_records` | gauge | — |
 | `teleddns_records_by_type` | gauge | `type` |
-| `teleddns_ddns_updates_total` | counter | `result` (`good`/`nochg`/`nohost`/`notyours`/`badauth`/`notfqdn`/`abuse`/`error`) |
+| `teleddns_ddns_updates_total` | counter | `result` (`good`/`nochg`/`nohost`/`notyours`/`badauth`/`notfqdn`/`numhost`/`abuse`/`badagent`/`error`) — one count per response line, i.e. per hostname |
 | `teleddns_auth_failures_total` | counter | `surface`,`reason` |
 | `teleddns_ratelimited_total` | counter | `surface` |
 | `teleddns_backend_push_seconds` | histogram | `kind` |

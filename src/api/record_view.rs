@@ -231,7 +231,7 @@ async fn write_record(
         "caa" => {
             let flag = octv(obj, "flag")?;
             let tag = strv(obj, "tag", dns::check::caa_tag)?;
-            let value = strv(obj, "value", dns::check::non_empty_value)?;
+            let value = strv(obj, "value", dns::check::caa_value)?;
             ins!(rr::caa, { flag: flag, tag: tag, value: value })
         }
         "sshfp" => {
@@ -264,10 +264,13 @@ async fn write_record(
         "naptr" => {
             let order = u16v(obj, "order")?;
             let preference = u16v(obj, "preference")?;
-            let flags = rstr(obj, "flags")?;
-            let service = rstr(obj, "service")?;
-            let regexp = rstr(obj, "regexp").unwrap_or_default();
-            let replacement = rstr(obj, "replacement")?;
+            let flags = strv(obj, "flags", dns::check::naptr_flags)?;
+            let service = strv(obj, "service", dns::check::naptr_service)?;
+            let regexp = match rstr(obj, "regexp") {
+                Ok(r) => strv_val("regexp", r, dns::check::naptr_regexp)?,
+                Err(_) => String::new(), // optional: a rule may substitute via `replacement` instead
+            };
+            let replacement = name_val(obj, "replacement")?;
             ins!(rr::naptr, { order: order, preference: preference, flags: flags, service: service, regexp: regexp, replacement: replacement })
         }
         _ => return Err(ApiError::BadType(typ)),
@@ -441,9 +444,18 @@ fn strv(
     key: &str,
     check: impl Fn(&str) -> Result<(), String>,
 ) -> Result<String, ApiError> {
-    let v = rstr(obj, key)?;
-    check(&v).map_err(|e| ApiError::Validation(format!("{key} {e}")))?;
-    Ok(v)
+    strv_val(key, rstr(obj, key)?, check)
+}
+
+/// Validate an already-read string value (for optional fields, where the caller supplied the
+/// default), with the same field-name-prefixed message as [`strv`].
+fn strv_val(
+    key: &str,
+    value: String,
+    check: impl Fn(&str) -> Result<(), String>,
+) -> Result<String, ApiError> {
+    check(&value).map_err(|e| ApiError::Validation(format!("{key} {e}")))?;
+    Ok(value)
 }
 
 #[cfg(test)]

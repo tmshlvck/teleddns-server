@@ -115,10 +115,11 @@ pub fn build_engine(
     // per-type rdata fields as `"col" => ("Label", "help / example")`.
     use crate::dns::check;
     use crate::model::rr;
-    // Each RR field carries a label + help string, and optionally an input validator: `str <pred>`
-    // (a `fn(&str) -> Result<(), String>`) or `int <pred>` (a `fn(i64) -> …`) from `dns::check` —
-    // the *same* predicates the native API/DDNS/CF paths enforce, so the admin can't create a record
-    // the API would reject. Freeform fields (NAPTR flags/service/regexp/replacement) omit it.
+    // Each RR field carries a label + help string and an input validator: `str <pred>` (a
+    // `fn(&str) -> Result<(), String>`) or `int <pred>` (a `fn(i64) -> …`) from `dns::check` — the
+    // *same* predicates the native API/DDNS/CF paths enforce, so the admin can't create a record the
+    // API would reject (nor one that would break the rendered zone). Every rdata field of every type
+    // is validated; if you add a field here without a predicate, junk reaches the zone file.
     macro_rules! reg_rr {
         ($ent:path $(, $field:literal => ($label:literal, $fdesc:literal $(, $kind:ident $pred:path)? ) )* $(,)?) => {{
             let mut mm = MetaModel::new($ent);
@@ -150,7 +151,7 @@ pub fn build_engine(
     reg_rr!(rr::caa::Entity,
         "flag" => ("Flags", "0 normally; 128 marks the tag critical (issuers must understand it).", int check::octet),
         "tag" => ("Tag", "issue, issuewild, or iodef.", str check::caa_tag),
-        "value" => ("Value", "For issue/issuewild: the allowed CA, e.g. letsencrypt.org. For iodef: a mailto: or URL.", str check::non_empty_value));
+        "value" => ("Value", "For issue/issuewild: the allowed CA, e.g. letsencrypt.org. For iodef: a mailto: or URL.", str check::caa_value));
     reg_rr!(rr::sshfp::Entity,
         "algorithm" => ("Algorithm", "Key type: 1=RSA, 2=DSA, 3=ECDSA, 4=Ed25519.", int check::octet),
         "hash_type" => ("Hash type", "1=SHA-1, 2=SHA-256 (recommended).", int check::octet),
@@ -173,10 +174,10 @@ pub fn build_engine(
     reg_rr!(rr::naptr::Entity,
         "order" => ("Order", "Rules are processed low→high, e.g. 100.", int check::u16),
         "preference" => ("Preference", "Tie-break within equal order, lower first, e.g. 10.", int check::u16),
-        "flags" => ("Flags", "e.g. U, S, A, P — empty for a non-terminal rule."),
-        "service" => ("Service", "e.g. E2U+sip."),
-        "regexp" => ("Regexp", "Substitution expression, e.g. !^.*$!sip:info@example.com!"),
-        "replacement" => ("Replacement (FQDN)", "Next name to look up, or a single . when using Regexp."));
+        "flags" => ("Flags", "e.g. U, S, A, P — empty for a non-terminal rule.", str check::naptr_flags),
+        "service" => ("Service", "e.g. E2U+sip.", str check::naptr_service),
+        "regexp" => ("Regexp", "Substitution expression, e.g. !^.*$!sip:info@example.com!", str check::naptr_regexp),
+        "replacement" => ("Replacement (FQDN)", "Next name to look up, or a single . when using Regexp.", str check::target_name));
 
     // API keys: minted from the profile page; here shown read-mostly (never expose the hash).
     let mut apikey = MetaModel::new(crate::model::api_key::Entity);

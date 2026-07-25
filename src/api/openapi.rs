@@ -62,15 +62,17 @@ fn record_body_doc() -> &'static str {
      rdata by type — all validated on write:\n\
      - **A**: `value` = IPv4 (e.g. 192.0.2.1); **AAAA**: `value` = IPv6.\n\
      - **NS/PTR/CNAME**: `value` = hostname (trailing dot ok).\n\
-     - **TXT**: `value` = free text (≤ 65535 bytes).\n\
+     - **TXT**: `value` = free text (≤ 65535 bytes; split into 255-byte strings when rendered).\n\
      - **MX**: `priority` 0..65535, `value` = hostname.\n\
      - **SRV**: `priority`/`weight`/`port` 0..65535, `value` = host (`.` = no service).\n\
-     - **CAA**: `flag` 0..255, `tag` = issue|issuewild|iodef, `value` non-empty.\n\
+     - **CAA**: `flag` 0..255, `tag` = issue|issuewild|iodef, `value` non-empty (≤ 255 bytes).\n\
      - **SSHFP**: `algorithm`/`hash_type` 0..255, `fingerprint` = hex.\n\
      - **TLSA**: `cert_usage`/`selector`/`matching_type` 0..255, `cert_data` = hex.\n\
      - **DNSKEY**: `flags` 0..65535, `protocol` = 3, `algorithm` 0..255, `public_key` = base64.\n\
      - **DS**: `key_tag` 0..65535, `algorithm`/`digest_type` 0..255, `digest` = hex.\n\
-     - **NAPTR**: `order`/`preference` 0..65535, `flags`/`service`/`regexp` free, `replacement` = name."
+     - **NAPTR**: `order`/`preference` 0..65535, `flags` = letters/digits (may be empty), \
+     `service` = text without spaces (e.g. E2U+sip), `regexp` = text (≤ 255 bytes, optional), \
+     `replacement` = hostname (`.` = none)."
 }
 
 fn native_paths(sec: &Value) -> Vec<(String, Value)> {

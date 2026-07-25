@@ -33,6 +33,9 @@ pub async fn import(
 
     let parsed = parse(&text, origin_override)?;
     let origin = parsed.origin;
+    // The origin comes from the file ($ORIGIN / SOA) or --origin; validate it like any other zone
+    // create would, so a malformed name can't become a zone (and a zone file Knot won't load).
+    dns::check::zone_origin(&origin)?;
     println!("importing {} records into {origin}", parsed.records.len());
 
     // Ensure the zone exists.

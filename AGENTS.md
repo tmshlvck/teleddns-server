@@ -3,7 +3,9 @@
 Orientation for developing **on** this codebase. Read this, then the docs it
 points to. The design + requirements (behavioral contracts, high-level decisions,
 status) are in [`PRD.md`](PRD.md); operator usage and the deployment runbook are in
-[`README.md`](README.md).
+[`README.md`](README.md); the DDNS wire protocol as clients see it (and where it
+deviates from the dyn API) is [`DYNDNS2.md`](DYNDNS2.md) — keep it in step with
+`src/ddns.rs`, it is what client authors implement against.
 
 ## What this is
 
@@ -112,11 +114,18 @@ password + 2FA), then exercise `/api/...`.
   app-side (`audit_retention_days`, pruned at startup). A future `admin` CLI to
   dump/clear the log is anticipated but not implemented.
 - **Input validation** lives in `dns::check` — typed field predicates built on
-  `relativelylight::validate`, shared by the native API/DDNS/CF write paths **and** the admin
-  CRUD forms (wired via `MetaField::validate_str`/`validate_int` in `web.rs`). Add a new RR field
-  or type? Add its `check::*` validator and wire it on every surface (the `reg_rr!` macro in
-  `web.rs`, the `write_record` arm in `api/record_view.rs`, and the OpenAPI body doc in
-  `api/openapi.rs`).
+  `relativelylight::validate`, shared by the DDNS/native API/CF write paths, `admin import`, **and**
+  the admin CRUD forms (wired via `MetaField::validate_str`/`validate_int` in `web.rs`). Every
+  name-shaped field composes the two primitives `check::dns_label` (one label) and
+  `check::fqdn_hostname` (absolute name) — `record_label`, `ddns_hostname`, `target_name`,
+  `hostname`, `zone_origin` are all thin wrappers, so all surfaces reject exactly the same junk. The
+  bar is the **rendered zone file**: whitespace, newlines, commas, over-long labels or control
+  characters must never reach the DB, or Knot rejects the zone on reload. Quoted rdata
+  (CAA value, NAPTR flags/service/regexp) is capped at one 255-octet character-string by
+  `check::char_string`; TXT is the exception — long values are legal and `backend::zonefile`
+  splits them into 255-octet strings. Add a new RR field or type? Add its `check::*` validator
+  (built on the primitives) and wire it on every surface: the `reg_rr!` macro in `web.rs`, the
+  `write_record` arm in `api/record_view.rs`, and the OpenAPI body doc in `api/openapi.rs`.
 
 ## Conventions
 

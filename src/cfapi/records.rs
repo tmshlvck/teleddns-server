@@ -251,6 +251,17 @@ fn cf_to_native(body: &Value, zone: &zone::Model) -> Result<Value, String> {
         return Err(format!("unsupported record type: {typ}"));
     }
     let name = body.get("name").and_then(|v| v.as_str()).ok_or("name is required")?;
+    // CF `name` is a full FQDN and must live inside this zone. Without the check, a name from
+    // another zone (or plain junk) would be taken as a *relative* label and stored as
+    // `<name>.<origin>` — a record nobody asked for. The label itself is then validated by the
+    // native write path (`dns::check::record_label`).
+    let fqdn = dns::normalize_fqdn(name);
+    if fqdn != zone.origin && !fqdn.ends_with(&format!(".{}", zone.origin)) {
+        return Err(format!(
+            "name {name:?} is not inside zone {}",
+            zone.origin.trim_end_matches('.')
+        ));
+    }
     let label = dns::label_in_zone(name, &zone.origin);
     let content = body.get("content").and_then(|v| v.as_str()).ok_or("content is required")?;
     let mut native = json!({ "type": typ, "name": label, "value": content });

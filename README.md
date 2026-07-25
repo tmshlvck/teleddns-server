@@ -79,7 +79,7 @@ Then open **`http://127.0.0.1:8080/`**, log in, and you have:
 - **API docs** — `/docs` (Swagger UI); spec at `/openapi.json`
 - **Profile** — password, 2FA, and self-service API keys at `/profile` (or click your name in the header)
 - **Health / metrics** — `/healthcheck` · `/metrics`
-- **DDNS** — `GET /nic/update|/ddns/update|/update?hostname=…&myip=…`
+- **DDNS** — `GET|POST /nic/update|/ddns/update|/update?hostname=…[&myip=…]`
 - **Management API** — `/api/zones` + `/api/zones/{id}/rr`
 - **Cloudflare facade** — `/client/v4/…`
 
@@ -114,9 +114,18 @@ OPNsense/pfSense, UniFi, …) works with only a base-URL change. `GET
 /nic/update|/ddns/update|/update` with `hostname` + `myip`/`myipv6`. Auth is HTTP
 Basic (rejected for 2FA/SSO users — use a token) or `Authorization: Bearer <key>`.
 The path only creates/updates A/AAAA (never deletes); the per-record check gates
-what a token can touch. Responses use dyndns2 vocabulary (`good`/`nochg`/`nohost`/
-`!yours`/`notfqdn`/`badauth`/`abuse`); the HTTP status is authoritative.
-Per-record (60/h) and per-token (600/h) rate limits return `429 abuse`.
+what a token can touch.
+
+`hostname` takes up to 20 comma-separated names and `myip` a comma-separated address
+list of either family (`myip=192.0.2.1,2001:db8::1` — dyn's dual-stack form; the
+`myipv6` extension is equivalent), with the address set applied to every listed name.
+Omit the address entirely and the request's source address is used (its family only;
+behind a proxy that needs `trust_proxy`). `POST` is accepted as well as `GET`, with
+the parameters in the query string or a form-encoded body. Responses are `text/plain`
+in dyndns2 vocabulary (`good`/`nochg`/`nohost`/`!yours`/`notfqdn`/`numhost`/`badauth`/
+`abuse`/`badagent`/`911`), **one line per hostname in request order**; the HTTP status
+is the worst of them. Per-record (60/h) and per-token (600/h) rate limits return
+`429 abuse`. Full client-facing contract: [`DYNDNS2.md`](DYNDNS2.md).
 
 ### Management API (native)
 
@@ -144,7 +153,10 @@ curl -X DELETE $URL/api/zones/1/rr/a-1 -H "Authorization: Bearer $KEY"
 Zones: read/update need L2, create/delete need L3. Records: A/AAAA read+update
 need L1, everything else L2. Input is validated per type (IP literals, DNS names,
 hex/base64 rdata, numeric ranges) — a bad value returns `400`/`422` with
-`{ "error": … }`. Mutations bump the SOA serial and push to Knot. Lists paginate
+`{ "error": … }`. The same shared validators guard every write surface (DDNS, this
+API, the CF facade, `admin import`, the admin forms), so nothing that would break
+the rendered zone file — a name with whitespace or an over-long label, a control
+character in quoted rdata — can be stored at all. Mutations bump the SOA serial and push to Knot. Lists paginate
 (`?page`/`?per_page`, default 50 / max 500) with an `X-Total-Count` header and
 `?type`/`?name` filters. A `POST` may carry an `Idempotency-Key` — a retry within
 24 h replays the original response (`Idempotency-Replayed: true`); the same key
