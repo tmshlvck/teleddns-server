@@ -121,7 +121,7 @@ fn op_str(op: Operation) -> &'static str {
 impl WriteObserver for Audit {
     async fn on_write(&self, ev: &WriteEvent<'_>) {
         let (uid, uname, auth_type) = self.session_actor(ev.headers).await;
-        let ip = crate::net::resolve_ip(self.trust_proxy, ev.headers, ev.peer.map(|p| p.ip()))
+        let ip = relativelylight::net::client_ip(self.trust_proxy, ev.headers, ev.peer.map(|p| p.ip()))
             .map(|i| i.to_string())
             .unwrap_or_else(|| "-".into());
         let target = match &ev.key {

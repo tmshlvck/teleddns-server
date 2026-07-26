@@ -4,6 +4,12 @@
 //! and return to `/profile`. A user lists/mints/revokes their **own** keys; the level picker is capped
 //! at their max level and re-capped server-side. Only the SHA-256 hash is stored; the raw key is
 //! shown once, on the mint confirmation page.
+//!
+//! Both posts are **cookie-authenticated**, so both carry relativelylight's double-submit CSRF token
+//! (`relativelylight::csrf`), exactly as the library's own password/2FA forms do. The token can't be
+//! rendered server-side here — `Auth::profile_extra` hands us the identity, not the request — so the
+//! forms declare `data-csrf` and [`CSRF_SCRIPT`] copies the (deliberately JS-readable) token cookie
+//! into their hidden `_csrf` field on load. The handlers verify it before doing anything.
 
 use crate::app::AppState;
 use crate::authz::Level;
@@ -35,8 +41,20 @@ pub async fn section(db: &DatabaseConnection, user_id: i32) -> String {
 pub struct MintForm {
     pub name: String,
     pub level: i32,
+    /// Days until the key expires; blank (the form's default) means never. Kept as a string because
+    /// an empty `<input type=number>` posts `expires_days=`, which is not an integer.
     #[serde(default)]
-    pub expires_days: Option<i64>,
+    pub expires_days: Option<String>,
+    /// The double-submit CSRF token (filled in by [`CSRF_SCRIPT`]).
+    #[serde(default, rename = "_csrf")]
+    pub csrf: Option<String>,
+}
+
+/// A post that carries nothing but the CSRF token (the revoke buttons).
+#[derive(Deserialize)]
+pub struct CsrfForm {
+    #[serde(default, rename = "_csrf")]
+    pub csrf: Option<String>,
 }
 
 /// POST /keys — mint a key, then show a one-time confirmation page with the raw value.
@@ -44,6 +62,9 @@ pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form
     let Some(who) = signed_in(&app, &headers).await else {
         return Redirect::to(app.auth.login_path()).into_response();
     };
+    if let Some(r) = csrf_rejected(&app, &headers, f.csrf.as_deref()) {
+        return r;
+    }
     let max = crate::authz::user_max_level(&app.db, &who.group_ids, who.is_admin)
         .await
         .unwrap_or(Level::None);
@@ -63,7 +84,19 @@ pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form
     let raw = gen_token();
     let hashed = crate::principal::hash_key(&raw);
     let prefix = raw.chars().take(12).collect::<String>();
-    let expires_at = f.expires_days.filter(|d| *d > 0).map(|d| now() + d * 86400);
+    let expires_at = match f.expires_days.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => None, // blank = never
+        Some(s) => match s.parse::<i64>() {
+            Ok(d) if d > 0 => Some(now() + d * 86400),
+            _ => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "expiry must be a positive number of days (or blank for never)",
+                )
+                    .into_response()
+            }
+        },
+    };
 
     let am = api_key::ActiveModel {
         id: sea_orm::ActiveValue::NotSet,
@@ -94,10 +127,18 @@ pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form
 }
 
 /// POST /keys/{id}/revoke — delete one of the caller's own keys, then return to the profile.
-pub async fn revoke(headers: HeaderMap, State(app): State<AppState>, Path(id): Path<i32>) -> Response {
+pub async fn revoke(
+    headers: HeaderMap,
+    State(app): State<AppState>,
+    Path(id): Path<i32>,
+    Form(f): Form<CsrfForm>,
+) -> Response {
     let Some(who) = signed_in(&app, &headers).await else {
         return Redirect::to(app.auth.login_path()).into_response();
     };
+    if let Some(r) = csrf_rejected(&app, &headers, f.csrf.as_deref()) {
+        return r;
+    }
     // Only delete a key the caller owns.
     let _ = api_key::Entity::delete_many()
         .filter(api_key::Column::Id.eq(id))
@@ -110,6 +151,31 @@ pub async fn revoke(headers: HeaderMap, State(app): State<AppState>, Path(id): P
 async fn signed_in(app: &AppState, headers: &HeaderMap) -> Option<crate::principal::Principal> {
     crate::principal::from_session(&app.auth, &app.db, headers).await.ok().flatten()
 }
+
+/// Verify the double-submit CSRF token on a cookie-authenticated post; `Some(response)` is the 403 to
+/// return when it doesn't check out.
+fn csrf_rejected(app: &AppState, headers: &HeaderMap, token: Option<&str>) -> Option<Response> {
+    if app.auth.csrf().verify(headers, token) {
+        return None;
+    }
+    tracing::warn!("rejected an API-key form post with a missing or invalid CSRF token");
+    Some(
+        (axum::http::StatusCode::FORBIDDEN, "CSRF token missing or invalid — reload /profile")
+            .into_response(),
+    )
+}
+
+/// Copies the CSRF token cookie into the hidden `_csrf` field of every `form[data-csrf]` in the
+/// fragment. The cookie is not `HttpOnly` by design (it is not a credential — the point is that only
+/// a same-origin page can read it); relativelylight's `crud::ui` tables do the same for their fetches.
+const CSRF_SCRIPT: &str = r#"<script>
+(function(){var n='{cookie}=',v='';
+document.cookie.split('; ').forEach(function(c){if(c.indexOf(n)===0){v=decodeURIComponent(c.slice(n.length));}});
+document.querySelectorAll('form[data-csrf] input[name="_csrf"]').forEach(function(i){i.value=v;});})();
+</script>"#;
+
+/// The hidden field `CSRF_SCRIPT` fills in.
+const CSRF_INPUT: &str = r#"<input type="hidden" name="_csrf">"#;
 
 fn gen_token() -> String {
     let mut rng = rand::thread_rng();
@@ -125,8 +191,8 @@ fn render_card(max: Level, keys: &[api_key::Model]) -> String {
         let used = k.last_used_at.map(|e| e.to_string()).unwrap_or_else(|| "never".into());
         rows.push_str(&format!(
             r#"<tr><td>{name}</td><td><code>{prefix}…</code></td><td>L{level}</td><td>{exp}</td><td>{used}</td>
-<td><form method="post" action="/keys/{id}/revoke" onsubmit="return confirm('Revoke this key?')">
-<button class="btn btn-sm btn-outline-danger">Revoke</button></form></td></tr>"#,
+<td><form method="post" action="/keys/{id}/revoke" data-csrf onsubmit="return confirm('Revoke this key?')">
+{CSRF_INPUT}<button class="btn btn-sm btn-outline-danger">Revoke</button></form></td></tr>"#,
             name = html_escape(&k.name),
             prefix = html_escape(&k.prefix),
             level = k.level,
@@ -145,7 +211,8 @@ fn render_card(max: Level, keys: &[api_key::Model]) -> String {
         r#"<p class="text-muted">You hold no DNS access level, so you cannot mint keys.</p>"#.into()
     } else {
         format!(
-            r#"<form method="post" action="/keys" class="row g-2 align-items-end">
+            r#"<form method="post" action="/keys" data-csrf class="row g-2 align-items-end">
+{CSRF_INPUT}
 <div class="col-auto"><label class="form-label">Name</label>
 <input class="form-control" name="name" placeholder="router at home"></div>
 <div class="col-auto"><label class="form-label">Level</label>
@@ -157,6 +224,7 @@ fn render_card(max: Level, keys: &[api_key::Model]) -> String {
         )
     };
 
+    let csrf_script = CSRF_SCRIPT.replace("{cookie}", crate::app::CSRF_COOKIE);
     format!(
         r#"<hr class="my-4">
 <h2 class="h5">API keys</h2>
@@ -164,11 +232,54 @@ fn render_card(max: Level, keys: &[api_key::Model]) -> String {
 {mint_form}
 <table class="table table-sm align-middle mt-3"><thead><tr>
 <th>Name</th><th>Prefix</th><th>Level</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
-<tbody>{rows}</tbody></table>"#
+<tbody>{rows}</tbody></table>
+{csrf_script}"#
     )
 }
 
 /// Minimal HTML escaping for user-controlled strings rendered into the page.
 pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(id: i32) -> api_key::Model {
+        api_key::Model {
+            id,
+            user_id: 1,
+            name: "router".into(),
+            hashed_key: "deadbeef".into(),
+            prefix: "tddns_abcdef".into(),
+            level: 1,
+            expires_at: None,
+            last_used_at: None,
+            disabled: false,
+        }
+    }
+
+    /// Every form in the card must carry the hidden `_csrf` field the script fills, and the script
+    /// must know the *app's* cookie name (the placeholder substituted) — else the posts 403.
+    #[test]
+    fn every_form_carries_the_csrf_field_and_the_script_knows_the_cookie() {
+        let html = render_card(Level::L2, &[key(1), key(2)]);
+        // 1 mint form + 2 revoke forms, each with the hidden input.
+        assert_eq!(html.matches(r#"<form method="post""#).count(), 3);
+        assert_eq!(html.matches(CSRF_INPUT).count(), 3);
+        assert_eq!(html.matches("data-csrf").count(), 4); // the 3 forms + the script's selector
+        assert!(html.contains(&format!("'{}='", crate::app::CSRF_COOKIE)), "cookie name: {html}");
+        assert!(!html.contains("{cookie}"), "the placeholder must be substituted");
+    }
+
+    /// A user with no access level gets no mint form — but the revoke forms (and their tokens) stay,
+    /// so they can still clean up keys minted before their access was taken away.
+    #[test]
+    fn without_a_level_only_the_revoke_forms_remain() {
+        let html = render_card(Level::None, &[key(1)]);
+        assert!(!html.contains(r#"action="/keys""#), "no mint form");
+        assert!(html.contains(r#"action="/keys/1/revoke""#));
+        assert_eq!(html.matches(CSRF_INPUT).count(), 1);
+    }
 }

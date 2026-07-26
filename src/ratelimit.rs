@@ -1,6 +1,10 @@
 //! In-memory rate limiting for the DDNS endpoint: 60 updates/hour per record and 600/hour per token
 //! (PRD §2). A fixed 1-hour window per key is enough — regular updates are not expected, so the limit
 //! is an abuse guard, not a fairness scheduler.
+//!
+//! The *other* in-memory guard — the brute-force brake on failed credential checks — is not here: it is
+//! relativelylight's own attempt limiter, shared through `AppState::attempts` so the console login and
+//! our DDNS/API/CF credential checks spend one budget per account (see `principal`, PRD §3.6).
 
 use crate::model::now;
 use std::collections::HashMap;

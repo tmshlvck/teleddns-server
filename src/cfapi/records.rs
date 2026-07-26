@@ -34,11 +34,13 @@ async fn zone_or_err(app: &AppState, id: i32) -> Result<zone::Model, Response> {
 pub async fn list(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(zid): Path<i32>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Some(who) = authenticate(&app, &headers).await else {
-        return cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token");
+    let who = match authenticate(&app, &headers, peer).await {
+        Ok(p) => p,
+        Err(r) => return r,
     };
     let zone = match zone_or_err(&app, zid).await {
         Ok(z) => z,
@@ -81,10 +83,12 @@ pub async fn list(
 pub async fn get_one(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((zid, rid)): Path<(i32, String)>,
 ) -> Response {
-    let Some(who) = authenticate(&app, &headers).await else {
-        return cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token");
+    let who = match authenticate(&app, &headers, peer).await {
+        Ok(p) => p,
+        Err(r) => return r,
     };
     let zone = match zone_or_err(&app, zid).await {
         Ok(z) => z,
@@ -110,8 +114,9 @@ pub async fn create(
     Path(zid): Path<i32>,
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
-    let Some(who) = authenticate(&app, &headers).await else {
-        return cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token");
+    let who = match authenticate(&app, &headers, peer).await {
+        Ok(p) => p,
+        Err(r) => return r,
     };
     let zone = match zone_or_err(&app, zid).await {
         Ok(z) => z,
@@ -155,8 +160,9 @@ pub async fn update(
     Path((zid, rid)): Path<(i32, String)>,
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
-    let Some(who) = authenticate(&app, &headers).await else {
-        return cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token");
+    let who = match authenticate(&app, &headers, peer).await {
+        Ok(p) => p,
+        Err(r) => return r,
     };
     let zone = match zone_or_err(&app, zid).await {
         Ok(z) => z,
@@ -195,8 +201,9 @@ pub async fn delete(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((zid, rid)): Path<(i32, String)>,
 ) -> Response {
-    let Some(who) = authenticate(&app, &headers).await else {
-        return cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token");
+    let who = match authenticate(&app, &headers, peer).await {
+        Ok(p) => p,
+        Err(r) => return r,
     };
     if zone_or_err(&app, zid).await.is_err() {
         return cf_err(StatusCode::NOT_FOUND, 1003, "zone not found");

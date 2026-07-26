@@ -32,19 +32,40 @@ pub fn router() -> axum::Router<AppState> {
         )
 }
 
-/// Resolve the caller from `Authorization: Bearer` or `X-Auth-Key`.
-pub async fn authenticate(app: &AppState, headers: &HeaderMap) -> Option<Principal> {
-    if let Some(tok) = principal::bearer_token(headers) {
-        if let Ok(Some(p)) = principal::principal_for_token(&app.db, &tok, Source::Cfapi).await {
-            return Some(p);
+/// Resolve the caller from `Authorization: Bearer` or `X-Auth-Key`. `Err` is the ready-to-return CF
+/// error envelope: `401` for a bad/absent token, `429` + `Retry-After` when the source has failed too
+/// many checks recently (the token isn't looked at then — see `principal`), `500` if we couldn't check.
+pub async fn authenticate(
+    app: &AppState,
+    headers: &HeaderMap,
+    peer: std::net::SocketAddr,
+) -> Result<Principal, Response> {
+    let ip = crate::api::req_ip(app, headers, peer);
+    // `X-Auth-Key` is CF's own carrier for the same token; `Authorization: Bearer` wins when both are
+    // present (as on DDNS and the native API), so one request is never two credential checks.
+    let token = principal::bearer_token(headers)
+        .or_else(|| headers.get("X-Auth-Key").and_then(|v| v.to_str().ok()).map(str::to_string));
+    let Some(token) = token else {
+        return Err(cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token"));
+    };
+    match principal::from_token(app, ip, &token, Source::Cfapi).await {
+        Ok(p) => Ok(p),
+        Err(principal::AuthError::Locked(retry)) => Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, retry.to_string())],
+            Json(json!({
+                "success": false,
+                "errors": [{ "code": 10000, "message": "too many failed authentication attempts" }],
+                "messages": [],
+                "result": null,
+            })),
+        )
+            .into_response()),
+        Err(principal::AuthError::Internal) => {
+            Err(cf_err(StatusCode::INTERNAL_SERVER_ERROR, 1001, "auth error"))
         }
+        Err(_) => Err(cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token")),
     }
-    if let Some(v) = headers.get("X-Auth-Key").and_then(|v| v.to_str().ok()) {
-        if let Ok(Some(p)) = principal::principal_for_token(&app.db, v, Source::Cfapi).await {
-            return Some(p);
-        }
-    }
-    None
 }
 
 /// A CF success envelope wrapping `result`.
@@ -90,12 +111,16 @@ pub fn cf_err(status: StatusCode, code: i64, message: &str) -> Response {
 }
 
 /// GET /client/v4/user/tokens/verify — confirms a token is valid/active.
-async fn verify_token(axum::extract::State(app): axum::extract::State<AppState>, headers: HeaderMap) -> Response {
-    match authenticate(&app, &headers).await {
-        Some(p) => ok(json!({
+async fn verify_token(
+    axum::extract::State(app): axum::extract::State<AppState>,
+    headers: HeaderMap,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    match authenticate(&app, &headers, peer).await {
+        Ok(p) => ok(json!({
             "id": p.key_id.map(|k| k.to_string()).unwrap_or_default(),
             "status": "active",
         })),
-        None => cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token"),
+        Err(r) => r,
     }
 }

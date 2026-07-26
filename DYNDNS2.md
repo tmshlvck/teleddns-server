@@ -163,7 +163,7 @@ nohost
 | `!yours` | 403 | authenticated, but not authorized for that name | permanent — fix the grant |
 | `nohost` | 404 | no served zone matches the name | permanent — fix the name |
 | `badagent` | 405 | request did not follow the client requirements (here: non-GET) | permanent — fix the client |
-| `abuse` | 429 | rate limit tripped (§10) | back off, retry later |
+| `abuse` | 429 | update rate limit tripped, or too many failed credential checks (§10) | back off, retry later |
 | `911` | 500 | server-side failure | transient — retry with backoff |
 
 Not implemented (never returned): `dnserr`, `!donator`, `!active`.
@@ -191,6 +191,13 @@ per-family resolution should send one family per request (both forms are support
 **60 updates/hour per record set** and **600 updates/hour per token**, counted
 in-memory per family. Exceeding either yields `abuse` (429). Regular updates are not
 expected of a DDNS client: update when your address actually changes, not on a timer.
+
+**Failed credentials are limited too.** Repeated `badauth` answers lock the account
+(by default 10 failures in 15 minutes) and the source address (100 in 15 minutes);
+while locked, the request is answered `abuse` (429) without the credentials being
+checked at all — including a *correct* one, so a client that keeps retrying wrong
+credentials locks itself out until the window passes. Treat `badauth` as permanent
+(§8): fix the credentials, don't retry them on a timer.
 
 ## 11. Deviations from the dyn API
 

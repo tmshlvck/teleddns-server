@@ -65,6 +65,23 @@ pub struct Config {
     /// Days to keep audit-log rows; older rows are pruned at startup. `0` = keep forever.
     pub audit_retention_days: u32,
 
+    /// Failed credential checks against one **account** before it is locked out (`429`). Covers the
+    /// console login + TOTP step and DDNS HTTP Basic — one budget per account, whichever surface it is
+    /// spent on. `0` disables.
+    pub username_lockout_after: u32,
+    /// How long a locked account stays locked (and how much silence resets its counter).
+    #[serde(with = "humantime_serde_opt")]
+    pub username_lockout_duration: Duration,
+    /// Failed credential checks from one **client IP** before it is locked out — the brake on
+    /// bearer-token guessing (a token names no account) and on username spraying. Keep it well above
+    /// what a broken client produces: a locked address is refused *before* its credential is looked at,
+    /// so a shared address (CGNAT, an office NAT) also stops valid callers. `0` disables.
+    pub ip_lockout_after: u32,
+    /// How long a locked address stays locked. Separate from the account window on purpose — an
+    /// address is a coarser subject, so it is usually worth a shorter (or longer) lock than an account.
+    #[serde(with = "humantime_serde_opt")]
+    pub ip_lockout_duration: Duration,
+
     /// Externally reachable base URL (scheme + host), used to derive SSO redirect URLs.
     pub public_url: String,
     /// OIDC single sign-on providers.
@@ -134,6 +151,10 @@ impl Default for Config {
             full_resync_period: Duration::from_secs(24 * 3600),
             knot_delete_zones: true,
             audit_retention_days: 365,
+            username_lockout_after: 10,
+            username_lockout_duration: Duration::from_secs(900),
+            ip_lockout_after: 100,
+            ip_lockout_duration: Duration::from_secs(900),
             public_url: String::new(),
             sso_providers: vec![],
         }

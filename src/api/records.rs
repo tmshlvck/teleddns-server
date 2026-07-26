@@ -31,10 +31,11 @@ async fn zone_or_404(app: &AppState, id: i32) -> Result<zone::Model, Response> {
 pub async fn list(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(id): Path<i32>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -62,9 +63,10 @@ pub async fn list(
 pub async fn get_one(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((id, rrid)): Path<(i32, String)>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -91,7 +93,7 @@ pub async fn create(
     Path(id): Path<i32>,
     Json(body): Json<Value>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -132,7 +134,7 @@ pub async fn update(
     Path((id, rrid)): Path<(i32, String)>,
     Json(body): Json<Value>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -167,7 +169,7 @@ pub async fn delete(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((id, rrid)): Path<(i32, String)>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };

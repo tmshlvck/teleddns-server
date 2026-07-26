@@ -120,7 +120,7 @@ pub async fn update(
     let params = request_params(query, &headers, &body);
     // Real client IP (post proxy rewrite) for the audit log, the request log line, and — when the
     // request carries no address at all — the address to publish.
-    let ip = crate::net::resolve_ip(app.cfg.trust_proxy, &headers, Some(peer.ip()));
+    let ip = relativelylight::net::client_ip(app.cfg.trust_proxy, &headers, Some(peer.ip()));
     let ip_s = ip.map(|i| i.to_string()).unwrap_or_else(|| "-".into());
     let ua = headers
         .get(axum::http::header::USER_AGENT)
@@ -129,7 +129,7 @@ pub async fn update(
         .to_string();
 
     // --- authenticate ---
-    let principal = match authenticate(&app, &headers).await {
+    let principal = match authenticate(&app, &headers, ip).await {
         Ok(p) => p,
         Err(o) => return finish(&app, &[o], "-", &ua),
     };
@@ -245,7 +245,7 @@ impl Addrs {
     }
 
     /// The set implied by the address a request arrived from (used when it names none): that one
-    /// family only. `IpAddr`'s display form is the canonical literal, and `net::resolve_ip` has
+    /// family only. `IpAddr`'s display form is the canonical literal, and `net::client_ip` has
     /// already unwrapped an IPv4-mapped IPv6 peer, so a dual-stack listener yields plain IPv4 here.
     fn from_client_ip(ip: std::net::IpAddr) -> Self {
         match ip {
@@ -333,20 +333,32 @@ async fn update_host(
 }
 
 /// Authenticate a DDNS request (Bearer wins over Basic).
-async fn authenticate(app: &AppState, headers: &HeaderMap) -> Result<Principal, Outcome> {
+/// Authenticate a DDNS request: Bearer first, then HTTP Basic. `ip` is the resolved client address —
+/// the brute-force brake counts failures against it (and, for Basic, against the account). A locked
+/// account/source is `abuse` (429), which is exactly what dyndns2 says about a blocked username; it is
+/// deliberately distinct from `badauth` so a client can tell "wrong password" from "stop hammering".
+async fn authenticate(
+    app: &AppState,
+    headers: &HeaderMap,
+    ip: Option<std::net::IpAddr>,
+) -> Result<Principal, Outcome> {
     if principal::bearer_token(headers).is_some() {
-        return match principal::from_bearer(&app.db, headers, Source::Ddns).await {
-            Ok(Some(p)) => Ok(p),
-            _ => Err(Outcome::BadAuth),
-        };
+        return principal::from_bearer(app, ip, headers, Source::Ddns).await.map_err(auth_outcome);
     }
     if let Some((u, p)) = principal::basic_creds(headers) {
-        return match principal::from_basic(&app.db, &u, &p).await {
-            Ok(pr) => Ok(pr),
-            Err(AuthError::BasicNotAllowed) | Err(AuthError::BadAuth) => Err(Outcome::BadAuth),
-        };
+        return principal::from_basic(app, ip, &u, &p).await.map_err(auth_outcome);
     }
     Err(Outcome::BadAuth)
+}
+
+/// A failed credential check in dyndns2 vocabulary. "Basic not allowed" is deliberately `badauth`
+/// too — telling a caller *why* would say which accounts have 2FA/SSO.
+fn auth_outcome(e: AuthError) -> Outcome {
+    match e {
+        AuthError::Locked(_) => Outcome::Abuse,
+        AuthError::Internal => Outcome::Error,
+        AuthError::BadAuth | AuthError::BasicNotAllowed => Outcome::BadAuth,
+    }
 }
 
 /// Update one address family for `(zone, label)`.
@@ -549,6 +561,17 @@ mod tests {
             assert_eq!(o.body(), body);
             assert_eq!(o.status().as_u16(), status);
         }
+    }
+
+    /// A failed credential check keeps to the vocabulary: a lockout is `abuse` (the client must back
+    /// off), everything else a client could fix is `badauth`, and only our own failure is `911`.
+    #[test]
+    fn credential_failures_map_to_the_dyndns2_vocabulary() {
+        assert_eq!(auth_outcome(AuthError::Locked(42)), Outcome::Abuse);
+        assert_eq!(auth_outcome(AuthError::BadAuth), Outcome::BadAuth);
+        // Never leak *why* Basic was refused — that would enumerate the 2FA/SSO accounts.
+        assert_eq!(auth_outcome(AuthError::BasicNotAllowed), Outcome::BadAuth);
+        assert_eq!(auth_outcome(AuthError::Internal), Outcome::Error);
     }
 
     /// The response is one line per hostname in request order, and the HTTP status is the worst.

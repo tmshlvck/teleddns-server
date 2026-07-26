@@ -11,10 +11,11 @@ name = "teleddns-server"
 path = "src/main.rs"
 
 [dependencies]
-# relativelylight is consumed from GitHub, pinned to a release tag for reproducibility.
-# Once it is published to crates.io, replace this with: relativelylight = { version = "0.1", features = [...] }
+# relativelylight is consumed from GitHub, pinned to an exact commit for reproducibility. This is the
+# 0.2.0 pre-release (CSRF, the DB-backed login lockout + `net::client_ip`, nullable-column handling);
+# move to `tag = "v0.2.0"` once it is cut, and to `version = "0.2"` once it is published to crates.io.
 # `validate-base64` enables validate::base64 (used for the DNSKEY public-key field check).
-relativelylight = { git = "https://github.com/tmshlvck/relativelylight", tag = "v0.1.2", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso", "validate-base64"] }
+relativelylight = { git = "https://github.com/tmshlvck/relativelylight", rev = "1d76722144611b0192976d7ab9cc81ba9d1d406f", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso", "validate-base64"] }
 
 sea-orm = { version = "1.1", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }

@@ -77,9 +77,10 @@ form-encode them in the body (query wins on a clash):
 
 With **no** address parameter the request's own source address is published — the
 family it connected over, and only that family (an explicit `myip` is never extended
-with a detected address of the other family). The address is the one `net::resolve_ip`
-yields, so behind a proxy it is the left-most forwarded hop **only when
-`trust_proxy` is set**; without a resolvable address the request is `notfqdn`.
+with a detected address of the other family). The address is the one
+`relativelylight::net::client_ip` yields, so behind a proxy it is the left-most
+forwarded hop **only when `trust_proxy` is set**; without a resolvable address the
+request is `notfqdn`.
 
 At most **one address per family** per request: the same address repeated is fine,
 two different addresses of one family contradict each other → `notfqdn`. The address
@@ -138,7 +139,7 @@ lines and always agrees with the body.
 | 403  | `!yours`    | authenticated but not authorized for the resolved record. |
 | 404  | `nohost`    | no configured zone matches `hostname`. |
 | 405  | `badagent`  | non-GET method (dyndns2's catch-all for a client that does not follow the update-client requirements). |
-| 429  | `abuse`     | rate limit tripped. |
+| 429  | `abuse`     | rate limit tripped, or the account/source is locked out after too many failed credential checks. |
 | 500  | `911`       | internal error. |
 
 A dual-stack request reports **one** line for the hostname: the most severe failure
@@ -163,6 +164,12 @@ what a token can actually touch.
 Per-token and per-`(user, hostname)` limits: **60 updates/hour per record**,
 **600 updates/hour per token**. Exceeding either returns `429 abuse`. Because
 regular updates are not expected, update *volume* is itself the abuse signal (§8).
+
+Credential *failures* are limited separately (§3.6): once an account or a source
+address is locked out, the request is `429 abuse` and the submitted secret is never
+checked — so guessing a DDNS password costs the attacker the lockout window rather
+than an argon2 verification per try, and the account's budget is the same one the
+console login spends.
 
 ---
 
@@ -235,6 +242,52 @@ router can't escalate.
 - **Single sign-on (OIDC)** — optional; see §4.2. SSO controls group membership,
   and group membership is what carries L1/L2/L3.
 
+### 3.6 Credential lockout (brute-force brake)
+
+Every **unauthenticated** credential check is behind a lockout: the console login and its TOTP step,
+DDNS HTTP Basic, and every bearer token on the DDNS/native/CF surfaces. A locked subject is refused
+*before* the submitted secret is looked at, with `429` + `Retry-After` (`abuse` on the DDNS endpoint) —
+so a locked account costs no argon2 work and the answer says nothing about whether it exists. Two
+counters, each with its own limit and window:
+
+- **per account** (default 10 failures, 15 min) — the account being guessed at. Cleared by a successful
+  check.
+- **per client IP** (default 100 failures, 15 min) — the only thing that brakes *bearer tokens*, which
+  name no account, and the only thing that catches username spraying. Deliberately far looser: a locked
+  address turns away valid callers too, which matters on a shared one (CGNAT, an office NAT). Not
+  cleared by a success.
+
+A failure records `failures += 1, last_failure_at = now` **unless the subject is already locked** — a
+locked key records nothing, so an attacker cannot push the expiry out by continuing. The lock lifts
+`duration` after the last counted failure, at which point the row reads as absent and the pruner
+deletes it. So: *N failures, each within `duration` of the previous, lock the subject for `duration`
+after the last one.* A request presenting **no** credential is a plain `401` and is not counted — an
+anonymous scanner must not be able to lock out everyone sharing its address.
+
+**Authenticated checks are deliberately not limited**: the password confirmation on `/profile` and 2FA
+enrolment. Whoever posts those already holds a session, which is a session-theft problem with its own
+mitigations — and counting them would let a stolen session lock the real user out of logging in.
+
+**One set of counters, in the database.** They are relativelylight's own (`auth::lockout`), so DDNS
+Basic and the console login spend the *same* account budget — there is no way for one account to have
+two budgets. The rows live in `auth_username_lockout` / `auth_ip_lockout`, so they survive a restart (a
+deploy must not hand every attacker a fresh budget), and — the point — **the operator unlock is
+deleting a row in the admin console**: gated at L3, CSRF-checked and written to the audit log like any
+other change, with no bespoke endpoint and no shell access. The console shows both tables ("Locked
+accounts", "Locked addresses"), which is also the only place the fact of an attack is visible.
+
+Expired rows are cleared by `relativelylight::auth::prune` (which also drops expired sessions), called
+hourly from the sync worker — the library schedules nothing itself. Skipping a prune is harmless: an
+expired row reads as unlocked and resets itself on the next failure.
+
+**One answer to "who is the client".** `trust_proxy` selects it — the left-most forwarded hop when set,
+the socket peer otherwise, IPv4-mapped addresses collapsed either way — and there is a single
+implementation: `relativelylight::net::client_ip`, called directly by the library's login route and by
+every surface of ours (DDNS, the APIs, the access log, the audit sink). So proxy trust is decided in
+exactly one place, our config, and one client's failures always land on one row.
+Without a proxy the forwarded headers are ignored, so a caller cannot choose whose address gets locked
+out; behind one, `trust_proxy` must be set or every user is bucketed under the proxy's address.
+
 ---
 
 ## 4. Operator web UI & login
@@ -250,7 +303,19 @@ access grants (zone-role / record-role) are managed — none of that is on the A
   strong factor can no longer use HTTP Basic on the DDNS endpoint (must use a
   token).
 - **Self-service profile:** change own password, manage own TOTP/passkeys, and
-  **mint/revoke API keys** (§3.4). Admins can reset another user's password.
+  **mint/revoke API keys** (§3.4). Admins can reset another user's password — a reset
+  changes *only* the password: a disabled account stays disabled and 2FA stays
+  enrolled, so it can never quietly re-open a closed account. Recovering a locked-out
+  administrator is a separate, deliberately destructive CLI action (§9).
+- **Failed logins are locked out** per account (and per source address where the peer
+  is the real client) — see §3.6. An operator clears one by deleting its row in the
+  console; nothing else is needed.
+- **CSRF:** every cookie-authenticated write — the login/profile forms, the API-key
+  card, and the admin console's JSON API — carries a double-submit token
+  (`X-CSRF-Token` header or a `_csrf` field) and is `403` without it. Bearer-
+  authenticated requests are exempt: an `Authorization` header is not ambient, so a
+  cross-site request cannot borrow it. A script that posts to `/login` must read the
+  token cookie and echo it.
 
 ### 4.2 Single sign-on (OIDC)
 
@@ -535,7 +600,7 @@ Prometheus exposition:
 | `teleddns_zones` / `teleddns_records` | gauge | — |
 | `teleddns_records_by_type` | gauge | `type` |
 | `teleddns_ddns_updates_total` | counter | `result` (`good`/`nochg`/`nohost`/`notyours`/`badauth`/`notfqdn`/`numhost`/`abuse`/`badagent`/`error`) — one count per response line, i.e. per hostname |
-| `teleddns_auth_failures_total` | counter | `surface`,`reason` |
+| `teleddns_auth_failures_total` | counter | `surface`,`reason` (`bad_token`/`bad_password`/`no_such_user`/`inactive`/`locked`/`error`; `locked` = refused by the §3.6 lockout) |
 | `teleddns_ratelimited_total` | counter | `surface` |
 | `teleddns_backend_push_seconds` | histogram | `kind` |
 | `teleddns_backend_push_total` | counter | `kind`,`result` |
@@ -595,11 +660,19 @@ Key groups:
   (default 300 s; also the reconcile cadence), `warn_on_nopush` (default 3600 s),
   `full_resync_period` (default 24 h; §7.1 full resync), `knot_delete_zones`
   (default true; prune backend zones under `knot_template` not in the DB).
+- **Credential lockout** (§3.6) — `username_lockout_after` (default 10) +
+  `username_lockout_duration` (15 m), `ip_lockout_after` (100) + `ip_lockout_duration`
+  (15 m); `0` disables either counter, and the two windows are independent.
+  `trust_proxy` decides whether the library's login route may count the socket peer, so
+  there is no separate setting for that.
 - **SSO** — `public_url` and `sso_providers[]` (§4.2).
 
 On first start the server **seeds an `admin` user** and logs the generated
 password once. It ships a CLI for at least: run the server, print the version,
-reset a user's password, and bulk-import a zone file (§7.3).
+reset a user's password, and bulk-import a zone file (§7.3). Password reset has a
+`--break-glass` mode for a locked-out administrator: it re-activates the account,
+**clears its TOTP enrolment** and restores admin-group membership (refusing an SSO
+account), which the plain reset deliberately does not do.
 
 ---
 
@@ -698,6 +771,16 @@ Knot backend + worker, §8 operability, §9 config + CLI.
 - **Row-level authz lives in app code**, not the library gate (which is
   header-only by design); the admin console stays L3-only.
 - **Multi-process deployments** would need row-level locking on the push journal
-  (`SELECT … FOR UPDATE SKIP LOCKED`); the single co-located instance doesn't.
+  (`SELECT … FOR UPDATE SKIP LOCKED`); the single co-located instance doesn't. (The
+  lockout counters are DB-backed, so those *are* replica-safe — §3.6.)
+- **No allow-lists on the lockout** (§3.6): a service account or an office range can
+  still be locked out by someone else's failures. Tracked in relativelylight
+  (usernames by regex, addresses by CIDR).
+- **Re-authentication is not required** before changing a password or disabling 2FA,
+  a password change does not invalidate the user's other sessions, and there are no
+  TOTP recovery codes — all in relativelylight's auth module, tracked there.
+- **CORS and trusted-proxy real-IP parsing** are not middleware yet: client-IP
+  resolution is ours (`net.rs`, gated on `trust_proxy`), and the only network filter
+  is the CIDR allow-list. CSRF *is* in place for cookie-authenticated writes (§4.1).
 - **Admin timezone display** — the DB/API are UTC and the admin renders UTC; a
   server-timezone option (to match Knot/syslog) is deferred (see `AGENTS.md`).

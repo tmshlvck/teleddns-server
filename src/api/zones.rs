@@ -23,9 +23,10 @@ use std::collections::HashMap;
 pub async fn list(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -61,8 +62,13 @@ pub async fn list(
 }
 
 /// GET /api/zones/{id} — needs L2 in-scope.
-pub async fn get_one(State(app): State<AppState>, headers: HeaderMap, Path(id): Path<i32>) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+pub async fn get_one(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(id): Path<i32>,
+) -> Response {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -82,7 +88,7 @@ pub async fn create(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(body): Json<Value>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -146,7 +152,7 @@ pub async fn update(
     Path(id): Path<i32>,
     Json(body): Json<Value>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -210,7 +216,7 @@ pub async fn delete(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(id): Path<i32>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers).await {
+    let who = match require_bearer(&app, &headers, peer).await {
         Ok(p) => p,
         Err(r) => return r,
     };

@@ -4,21 +4,24 @@
 use super::{authenticate, cf_err, ok_list};
 use crate::app::AppState;
 use crate::model::zone;
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 /// GET /client/v4/zones[?name=]
 pub async fn list(
     State(app): State<AppState>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Some(who) = authenticate(&app, &headers).await else {
-        return cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token");
+    let who = match authenticate(&app, &headers, peer).await {
+        Ok(p) => p,
+        Err(r) => return r,
     };
 
     let rows = match zone::Entity::find().order_by_asc(zone::Column::Origin).all(&app.db).await {

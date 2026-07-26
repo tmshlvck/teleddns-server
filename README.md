@@ -71,7 +71,15 @@ On first start it seeds an `admin` user and logs the generated password once
 
 ```sh
 teleddns-server admin reset-password admin
+# locked out for real (2FA device gone, account disabled, dropped from the admin group)?
+teleddns-server admin reset-password admin --break-glass
 ```
+
+A plain reset changes **only** the password: a disabled account stays disabled and 2FA
+stays enrolled, so it can't be used to quietly re-open a closed account (an unknown
+username is an error, not a new account). `--break-glass` is the recovery path — it
+also re-activates the account, **discards its TOTP enrolment** and restores admin-group
+membership; it refuses an SSO account.
 
 Then open **`http://127.0.0.1:8080/`**, log in, and you have:
 
@@ -107,6 +115,13 @@ field is validated on input and carries inline help. The full console is L3
 (admin group); non-admin users work through the DDNS/API surfaces and the
 self-service profile page.
 
+Cookie-authenticated writes (the login/profile forms, the API-key card, the console's
+own JSON API under `/admin/api`) require a **double-submit CSRF token** and answer
+`403` without it. Browsers handle this by themselves; a *script* that posts to
+`/login` or `/admin/api/…` must read the `teleddns_csrf` cookie and echo it in the
+`X-CSRF-Token` header (or a `_csrf` form field) — or just use a bearer token on the
+native API instead, which is exempt (an `Authorization` header is not ambient).
+
 ### DDNS endpoint
 
 A drop-in **dyndns2** server — any generic dyndns2 client (`ddclient`, MikroTik,
@@ -125,7 +140,9 @@ the parameters in the query string or a form-encoded body. Responses are `text/p
 in dyndns2 vocabulary (`good`/`nochg`/`nohost`/`!yours`/`notfqdn`/`numhost`/`badauth`/
 `abuse`/`badagent`/`911`), **one line per hostname in request order**; the HTTP status
 is the worst of them. Per-record (60/h) and per-token (600/h) rate limits return
-`429 abuse`. Full client-facing contract: [`DYNDNS2.md`](DYNDNS2.md).
+`429 abuse`, and so does a credential lockout (below) — a client that retries wrong
+credentials on a timer locks itself out. Full client-facing contract:
+[`DYNDNS2.md`](DYNDNS2.md).
 
 ### Management API (native)
 
@@ -199,6 +216,36 @@ console (or via SSO), never on the API.
 below password + 2FA): a user mints/revokes their own keys, with the level picker
 capped at their max level and re-capped server-side (so an L2 user can mint an L1
 key for a router). Only the key's hash is stored; the raw key is shown once.
+
+### Brute-force protection
+
+Every **unauthenticated** credential check — the login form, the TOTP step at login, DDNS HTTP Basic,
+and every bearer token on the DDNS/native/CF surfaces — is behind a lockout. All of them share one set
+of counters, so an account can't be given two budgets: burn it on DDNS and the console login is locked
+too, and vice versa. A locked subject is refused with `429` + `Retry-After` (`abuse` on DDNS)
+**without the submitted secret being checked**, so it costs no password verification and leaks nothing:
+
+| Key | Defaults | Covers |
+|---|---|---|
+| per account | `username_lockout_after: 10`, `username_lockout_duration: "15m"` | password + TOTP checks; cleared by a success |
+| per client IP | `ip_lockout_after: 100`, `ip_lockout_duration: "15m"` | bearer-token guessing (a token names no account) and username spraying |
+
+`0` turns either counter off, and the two windows are independent. Requests carrying **no** credential
+are a plain `401` and are not counted, so an anonymous scanner can't lock out everyone sharing its
+address. Checks made by an *already authenticated* caller (the password confirmation on `/profile`, 2FA
+enrolment) are deliberately not counted — that's session theft, not brute force.
+
+**Unlocking is a row delete in the console.** The counters live in the database
+(`auth_username_lockout`, `auth_ip_lockout`), and the admin console shows them as **Locked accounts**
+and **Locked addresses**. Delete a row and that account or address is free immediately; leave it and it
+clears itself when the lockout expires. The delete is L3-gated and lands in the audit log like any
+other change. Because the rows are durable, a restart no longer resets anyone's budget.
+
+The client address is resolved the same way everywhere — the forwarded hop when `trust_proxy: true`,
+the socket peer otherwise — so the login form, the DDNS endpoint, the APIs and the audit log all agree
+on who a caller is. One operational note: while an address is locked, *valid* callers from it are
+refused too, so keep `ip_lockout_after` well above what a broken client produces if your users share an
+address (CGNAT, an office NAT). Watch `teleddns_auth_failures_total{reason="locked"}`.
 
 ### Single sign-on (SSO)
 
@@ -278,7 +325,8 @@ applied on top of `allowed_ips`, after the reverse-proxy real-IP rewrite).
 
 - **`GET /metrics`** — Prometheus exposition: `teleddns_zones`,
   `teleddns_records`(+`_by_type`), `teleddns_ddns_updates_total{result}`,
-  `teleddns_auth_failures_total`, `teleddns_ratelimited_total`,
+  `teleddns_auth_failures_total{surface,reason}` (`reason="locked"` = refused by the
+  brute-force brake), `teleddns_ratelimited_total`,
   `teleddns_backend_push_total`, `teleddns_backend_push_seconds` (reconcile
   latency), `teleddns_pending_pushes{state}`, `teleddns_zones_out_of_sync`,
   `teleddns_worker_last_tick_seconds`, `teleddns_knot_up`. Since regular updates

@@ -2,7 +2,15 @@
 //! the operator session cookie (via relativelylight `auth`), HTTP Basic (DDNS only), and a Bearer API
 //! key. The token level caps what the principal can do (§3); the per-target `effective_level` lookup
 //! (see `authz`) does the rest.
+//!
+//! **Every credential check here goes through the brute-force brake** — `AppState::{usernames, ips}`,
+//! which are relativelylight's own lockout counters (`auth::lockout`), not a second implementation: a
+//! DDNS Basic failure and a console login failure spend the *same* account budget, and deleting that
+//! one row in the admin panel unlocks both. A locked account or source address is refused with
+//! [`AuthError::Locked`] *before* the secret is looked at; a checked-and-rejected credential is recorded
+//! here and only here (with its metric) — don't re-count at the call site.
 
+use crate::app::AppState;
 use crate::authz::Level;
 use crate::model::{api_key, now};
 use axum::http::HeaderMap;
@@ -11,6 +19,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter,
 };
 use sha2::{Digest, Sha256};
+use std::net::IpAddr;
 
 /// Where the request came from (for audit + metrics labels).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +65,11 @@ pub enum AuthError {
     BadAuth,
     /// A 2FA/SSO user tried HTTP Basic (must use a token).
     BasicNotAllowed,
+    /// Too many recent failures for this account or source address; retry after N seconds. The
+    /// credential was **not** checked.
+    Locked(i64),
+    /// The credential could not be checked (database error) — never a statement about the credential.
+    Internal,
 }
 
 /// SHA-256 hex of a raw API key.
@@ -88,20 +102,48 @@ pub async fn from_session(
     }))
 }
 
-/// Resolve from an `Authorization` header (Bearer only), for a given source surface.
+/// Resolve from an `Authorization` header (Bearer only), for a given source surface. A request with
+/// no bearer token at all is `BadAuth` **without** being recorded as a failed attempt — there was no
+/// credential to check, and counting anonymous traffic would let a bot lock out everyone sharing its
+/// address.
 pub async fn from_bearer(
-    db: &DatabaseConnection,
+    app: &AppState,
+    ip: Option<IpAddr>,
     headers: &HeaderMap,
     source: Source,
-) -> Result<Option<Principal>, DbErr> {
+) -> Result<Principal, AuthError> {
     let Some(token) = bearer_token(headers) else {
-        return Ok(None);
+        return Err(AuthError::BadAuth);
     };
-    principal_for_token(db, &token, source).await
+    from_token(app, ip, &token, source).await
 }
 
-/// Resolve a raw token string (used by Bearer and the CF `X-Auth-Key` header).
-pub async fn principal_for_token(
+/// Resolve a raw token string (used by Bearer and the CF `X-Auth-Key` header), rate-limited per
+/// source address: a bearer token carries no account name, so the source is the only thing a failure
+/// can be counted against.
+pub async fn from_token(
+    app: &AppState,
+    ip: Option<IpAddr>,
+    token: &str,
+    source: Source,
+) -> Result<Principal, AuthError> {
+    // A token names no account, so the source address is the only thing to key on.
+    if let Some(retry) = app.ips.locked(ip).await {
+        return Err(locked(app, source, retry));
+    }
+    match principal_for_token(&app.db, token, source).await {
+        Ok(Some(p)) => Ok(p),
+        Ok(None) => Err(rejected(app, source, ip, None, "bad_token").await),
+        Err(e) => {
+            tracing::error!(surface = source.as_str(), error = %e, "could not check the API key");
+            app.metrics.auth_failure(source.as_str(), "error");
+            Err(AuthError::Internal)
+        }
+    }
+}
+
+/// Look a raw token up, ignoring the attempt limiter — the plain DB lookup behind [`from_token`].
+async fn principal_for_token(
     db: &DatabaseConnection,
     token: &str,
     source: Source,
@@ -144,34 +186,54 @@ pub async fn principal_for_token(
     }))
 }
 
-/// Resolve from HTTP Basic credentials (DDNS only). Rejects users with any strong factor (TOTP/SSO/
-/// passkey) — they must use a token. Token level = L3, capped by effective access.
+/// Resolve from HTTP Basic credentials (DDNS only). Rejects users with any strong factor (TOTP or
+/// SSO) — they must use a token. Token level = L3, capped by effective access.
+///
+/// This is the one surface where a *password* is guessable, so it is limited per account as well as
+/// per source address: while either is locked the argon2 verification is never run.
 pub async fn from_basic(
-    db: &DatabaseConnection,
+    app: &AppState,
+    ip: Option<IpAddr>,
     username: &str,
     password: &str,
 ) -> Result<Principal, AuthError> {
+    if let Some(retry) = locked_for(app, username, ip).await {
+        return Err(locked(app, Source::Ddns, retry));
+    }
     let user = match auth::user::Entity::find()
         .filter(auth::user::Column::Username.eq(username))
-        .one(db)
+        .one(&app.db)
         .await
     {
         Ok(Some(u)) => u,
-        _ => return Err(AuthError::BadAuth),
+        Ok(None) => {
+            return Err(rejected(app, Source::Ddns, ip, Some(username), "no_such_user").await)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "could not check Basic credentials");
+            app.metrics.auth_failure("ddns", "error");
+            return Err(AuthError::Internal);
+        }
     };
     if !user.is_active {
-        return Err(AuthError::BadAuth);
+        return Err(rejected(app, Source::Ddns, ip, Some(username), "inactive").await);
     }
-    // A user with TOTP enabled (or a future SSO/passkey marker) may not use Basic.
-    if user.totp_secret.is_some() {
+    // A user with 2FA enrolled or an external (SSO) account may not use Basic — the password either
+    // isn't the whole credential or isn't ours to check. A *blank* TOTP secret is no second factor
+    // (`has_totp`), so it must not lock the account out of DDNS either.
+    if user.has_totp() || user.is_sso() {
         return Err(AuthError::BasicNotAllowed);
     }
     if !auth::verify_password(&user.password_hash, password) {
-        return Err(AuthError::BadAuth);
+        return Err(rejected(app, Source::Ddns, ip, Some(username), "bad_password").await);
     }
-    let (group_ids, group_names, is_admin) = crate::authz::user_groups(db, user.id)
+    let (group_ids, group_names, is_admin) = crate::authz::user_groups(&app.db, user.id)
         .await
-        .map_err(|_| AuthError::BadAuth)?;
+        .map_err(|_| AuthError::Internal)?;
+    // A good password clears the account's failures — including any it collected on the console login
+    // form (one row). The source's are deliberately kept: one valid credential shouldn't refund a
+    // spraying address's budget.
+    app.usernames.clear(username).await;
     Ok(Principal {
         user_id: user.id,
         username: user.username,
@@ -182,6 +244,46 @@ pub async fn from_basic(
         source: Source::Ddns,
         key_id: None,
     })
+}
+
+/// The longer of the account's and the address's remaining lockout, if either is locked.
+async fn locked_for(app: &AppState, username: &str, ip: Option<IpAddr>) -> Option<i64> {
+    match (app.usernames.locked(username).await, app.ips.locked(ip).await) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Record a checked-and-rejected credential: count it, meter it, and warn once if that failure is what
+/// locked the account/source out. Returns the error to hand back.
+async fn rejected(
+    app: &AppState,
+    source: Source,
+    ip: Option<IpAddr>,
+    username: Option<&str>,
+    reason: &str,
+) -> AuthError {
+    let by_user = match username {
+        Some(u) => app.usernames.record_failure(u).await,
+        None => false,
+    };
+    if app.ips.record_failure(ip).await || by_user {
+        tracing::warn!(
+            surface = source.as_str(),
+            user = username.unwrap_or("-"),
+            src = %ip.map(|i| i.to_string()).unwrap_or_else(|| "-".into()),
+            "too many failed credential checks — locked out for now"
+        );
+    }
+    app.metrics.auth_failure(source.as_str(), reason);
+    AuthError::BadAuth
+}
+
+/// A credential refused without being checked, because its account or source is locked out.
+fn locked(app: &AppState, source: Source, retry: i64) -> AuthError {
+    tracing::debug!(surface = source.as_str(), retry, "credential check refused: locked out");
+    app.metrics.auth_failure(source.as_str(), "locked");
+    AuthError::Locked(retry)
 }
 
 /// Extract a Bearer token from the `Authorization` header.

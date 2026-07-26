@@ -132,7 +132,7 @@ pub async fn user_groups<C: ConnectionTrait>(
         .into_iter()
         .map(|g| g.name)
         .collect();
-    let is_admin = names.iter().any(|n| n == "admin");
+    let is_admin = names.iter().any(|n| n == crate::app::ADMIN_GROUP);
     Ok((ids, names, is_admin))
 }
 

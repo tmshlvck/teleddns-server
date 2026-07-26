@@ -49,6 +49,26 @@ warn_on_nopush:      "3600s"  # WARN if the oldest unfinished push is older ["36
 # Rows older than this are pruned at startup; 0 = keep forever.   [365]
 audit_retention_days: 365
 
+# Brute-force lockout on the unauthenticated credential checks (login form, the TOTP
+# step, DDNS HTTP Basic, bearer tokens). A locked subject is refused with 429 +
+# Retry-After ("abuse" on DDNS) and its secret is never checked. The counters are rows
+# in auth_username_lockout / auth_ip_lockout: the admin console lists them as "Locked
+# accounts" / "Locked addresses", and deleting a row is the unlock (audited). Expired
+# rows are pruned hourly by the sync worker.
+#
+# Per account — the console login and DDNS HTTP Basic share one budget per account, so
+# whichever surface is guessed at, both lock. Cleared by a successful check. 0 = off.
+username_lockout_after: 10
+username_lockout_duration: "15m"
+# Per client IP — the brake on bearer-token guessing (a token names no account) and on
+# username spraying. While an address is locked, *valid* callers from it are refused
+# too, so keep this well above what a misconfigured client produces if your users share
+# an address (CGNAT, an office NAT). 0 = off.
+#   The address is whatever trust_proxy says it is (forwarded hop vs socket peer), the
+#   same for the login form, DDNS, the APIs and the audit log.
+ip_lockout_after: 100
+ip_lockout_duration: "15m"
+
 # Backend. "log" (default) just logs what it would push — safe for first boot
 # and dev. "knot" writes <knot_zone_dir>/<origin>.zone, declares the zone in
 # Knot's config DB as a member of <knot_template>, and runs `knotc zone-reload`.

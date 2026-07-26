@@ -31,20 +31,37 @@ pub fn router() -> axum::Router<AppState> {
         )
 }
 
-/// Require a valid Bearer token; on failure returns the JSON 401 response to short-circuit.
-pub async fn require_bearer(app: &AppState, headers: &HeaderMap) -> Result<Principal, Response> {
+/// Require a valid Bearer token; on failure returns the JSON error response to short-circuit. Token
+/// checks are rate-limited per client IP (`principal`), so a caller that keeps guessing gets `429` +
+/// `Retry-After` instead of another `401` — `peer` is needed to resolve that address.
+pub async fn require_bearer(
+    app: &AppState,
+    headers: &HeaderMap,
+    peer: std::net::SocketAddr,
+) -> Result<Principal, Response> {
     // Basic is rejected on the API (bearer-only).
     if principal::basic_creds(headers).is_some() && principal::bearer_token(headers).is_none() {
         return Err(err(StatusCode::UNAUTHORIZED, "bearer token required (HTTP Basic not accepted)"));
     }
-    match principal::from_bearer(&app.db, headers, Source::Api).await {
-        Ok(Some(p)) => Ok(p),
-        Ok(None) => {
-            app.metrics.auth_failure("api", "bad_token");
-            Err(err(StatusCode::UNAUTHORIZED, "invalid or missing bearer token"))
+    let ip = req_ip(app, headers, peer);
+    match principal::from_bearer(app, ip, headers, Source::Api).await {
+        Ok(p) => Ok(p),
+        Err(principal::AuthError::Locked(retry)) => Err(too_many(retry)),
+        Err(principal::AuthError::Internal) => {
+            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "auth error"))
         }
-        Err(_) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "auth error")),
+        Err(_) => Err(err(StatusCode::UNAUTHORIZED, "invalid or missing bearer token")),
     }
+}
+
+/// `429` with a `Retry-After`, for a credential refused because its source is locked out.
+fn too_many(retry: i64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(axum::http::header::RETRY_AFTER, retry.to_string())],
+        Json(json!({ "error": "too many failed authentication attempts" })),
+    )
+        .into_response()
 }
 
 /// A JSON error response `{ "error": msg }`.
@@ -58,7 +75,7 @@ pub fn req_ip(
     headers: &HeaderMap,
     peer: std::net::SocketAddr,
 ) -> Option<std::net::IpAddr> {
-    crate::net::resolve_ip(app.cfg.trust_proxy, headers, Some(peer.ip()))
+    relativelylight::net::client_ip(app.cfg.trust_proxy, headers, Some(peer.ip()))
 }
 
 /// Map a record_view::ApiError to an HTTP response.

@@ -17,7 +17,7 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(m0001_init::Migration)]
+        vec![Box::new(m0001_init::Migration), Box::new(m0002_lockout::Migration)]
     }
 }
 
@@ -122,6 +122,46 @@ mod m0001_init {
                 "auth_group",
                 "auth_user",
             ] {
+                m.drop_table(Table::drop().table(Alias::new(table)).if_exists().to_owned()).await?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The relativelylight lockout tables (`auth_username_lockout`, `auth_ip_lockout`), added when the
+/// brute-force brake moved from a process-local map into the database (PRD §3.6). A *fresh* database
+/// already has them — `m0001` builds every table `auth::table_create_statements` reports, and that list
+/// grew — so this step is `IF NOT EXISTS` and only does work on a DB created before the change.
+mod m0002_lockout {
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0002_lockout"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            let backend = m.get_database_backend();
+            let schema = sea_orm::Schema::new(backend);
+            for mut entity_stmt in [
+                schema.create_table_from_entity(
+                    relativelylight::auth::lockout::username_entity::Entity,
+                ),
+                schema.create_table_from_entity(relativelylight::auth::lockout::ip_entity::Entity),
+            ] {
+                m.create_table(entity_stmt.if_not_exists().to_owned()).await?;
+            }
+            Ok(())
+        }
+
+        async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            for table in ["auth_ip_lockout", "auth_username_lockout"] {
                 m.drop_table(Table::drop().table(Alias::new(table)).if_exists().to_owned()).await?;
             }
             Ok(())

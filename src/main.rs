@@ -51,8 +51,15 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AdminCommand {
-    /// Reset a user's password (prompts are avoided; a new random password is printed).
-    ResetPassword { username: String },
+    /// Reset a user's password (prompts are avoided; a new random password is printed). Only the
+    /// password changes: a disabled account stays disabled and 2FA stays enrolled.
+    ResetPassword {
+        username: String,
+        /// Break-glass recovery for a locked-out admin: also re-activate the account, **clear its
+        /// TOTP 2FA** and put it back in the `admin` group (creating the user if needed).
+        #[arg(long)]
+        break_glass: bool,
+    },
     /// Bulk-load a BIND zone file into the DB (use `-` to read stdin).
     Import {
         /// Path to the zone file, or `-` for stdin.
@@ -74,8 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         None | Some(Command::Serve) => app::serve(cfg).await,
-        Some(Command::Admin(AdminCommand::ResetPassword { username })) => {
-            app::reset_password(cfg, &username).await
+        Some(Command::Admin(AdminCommand::ResetPassword { username, break_glass })) => {
+            app::reset_password(cfg, &username, break_glass).await
         }
         Some(Command::Admin(AdminCommand::Import { file, replace, origin })) => {
             zoneimport::import(cfg, &file, replace, origin.as_deref()).await

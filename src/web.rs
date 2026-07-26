@@ -50,9 +50,14 @@ pub fn build_engine(
     audit: Arc<crate::audit::Audit>,
     default_ttl: u32,
 ) -> Engine {
-    let gate = Arc::new(GroupReadWrite::new(auth, ["admin"]));
+    let gate = Arc::new(GroupReadWrite::new(auth, [crate::app::ADMIN_GROUP]));
     let mut crud = Crud::new(db, "/admin/api");
     crud.on_write(audit);
+    // The console's API is cookie-authenticated, so every write must echo the double-submit CSRF token
+    // (`auth.csrf()` shares one token cookie with the login/profile forms). The crud::ui tables add the
+    // `X-CSRF-Token` header to their own fetches; a bearer-authenticated caller is exempt (nothing
+    // ambient to abuse) — but that's the native API's job anyway, not this engine's.
+    crud.csrf(auth.csrf());
 
     // Zone (+ inline SOA). The SOA fields get plain-language labels + example values.
     let mut z = MetaModel::new(crate::model::zone::Entity);
@@ -257,6 +262,34 @@ pub fn build_engine(
     crud.register(user, gate.clone());
     crud.register(group, gate.clone());
 
+    // Lockout rows (relativelylight `auth::lockout`): who is currently locked out of the login form /
+    // DDNS Basic / the token surfaces, and the operator's unlock — **deleting the row**. Everything is
+    // maintained by the limiter, so nothing here is editable; the delete is gated (L3), CSRF-checked
+    // and audited like any other write, which is exactly why the counters live in the DB (PRD §3.6).
+    let mut ul = MetaModel::new(relativelylight::auth::lockout::username_entity::Entity);
+    ul.field("username").label = Some("Account".into());
+    ul.field("username").description =
+        Some("The submitted account name (lower-cased). Unknown names are counted too.".into());
+    ul.field("failures").label = Some("Failures".into());
+    ul.field("failures").read_only = true;
+    ul.field("last_failure_at").label = Some("Last failure".into());
+    ul.field("last_failure_at").read_only = true;
+    ul.field("last_failure_at").datetime();
+    ul.row_label = Box::new(|row| row["username"].as_str().unwrap_or_default().to_string());
+    crud.register(ul, gate.clone());
+
+    let mut il = MetaModel::new(relativelylight::auth::lockout::ip_entity::Entity);
+    il.field("ip").label = Some("Client address".into());
+    il.field("ip").description =
+        Some("Source address as resolved for the request (honours trust_proxy).".into());
+    il.field("failures").label = Some("Failures".into());
+    il.field("failures").read_only = true;
+    il.field("last_failure_at").label = Some("Last failure".into());
+    il.field("last_failure_at").read_only = true;
+    il.field("last_failure_at").datetime();
+    il.row_label = Box::new(|row| row["ip"].as_str().unwrap_or_default().to_string());
+    crud.register(il, gate.clone());
+
     // Audit log: read-only view (rows are written by the audit sink, never the CRUD API).
     let mut a = MetaModel::new(crate::model::audit::Entity);
     for f in ["id", "ts", "source", "operation", "target", "actor_user_id", "actor_username",
@@ -335,6 +368,18 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
         })
         .entity_with("auth_group", |t| {
             t.title("Groups").description("Groups drive access grants and the admin gate.")
+        })
+        .entity_with("auth_username_lockout", |t| {
+            t.title("Locked accounts").description(
+                "Accounts with recent failed logins (console, DDNS HTTP Basic). Delete a row to \
+                 unlock one immediately; otherwise it clears itself when the lockout expires.",
+            )
+        })
+        .entity_with("auth_ip_lockout", |t| {
+            t.title("Locked addresses").description(
+                "Client addresses with recent failed credential checks — this is what brakes bearer- \
+                 token guessing, which names no account. Delete a row to unlock.",
+            )
         })
         .separator()
         .group("Audit")

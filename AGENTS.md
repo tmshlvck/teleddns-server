@@ -37,14 +37,14 @@ password + 2FA), then exercise `/api/...`.
 
 | File | Role |
 |---|---|
-| `main.rs` | CLI (`serve`, `--version`, `admin reset-password`, `admin import`) |
+| `main.rs` | CLI (`serve`, `--version`, `admin reset-password [--break-glass]`, `admin import`) |
 | `config.rs` | layered YAML config (defaults → file → env → flags) |
 | `db.rs` | connection; SQLite DSN normalization |
 | `app.rs` | `AppState`, router composition, server bootstrap, admin seed |
 | `model/` | SeaORM entities: `zone` (SOA inline), `rr` (one table per type, macro), `api_key`, `roles` (zone_role/rr_role), `sync_task`, `idempotency`, `audit` |
 | `migration/` | versioned `sea-orm-migration` steps (auth tables via the library + app tables + audit) |
 | `authz.rs` | `Level` algebra, the `min()` cap, `effective_level`, `user_groups` |
-| `principal.rs` | resolve session / HTTP Basic / bearer → `Principal` (with a token level) |
+| `principal.rs` | resolve session / HTTP Basic / bearer → `Principal` (with a token level); the one place credential failures are counted + metered |
 | `keys.rs` | self-service API-key component (`section()` composed onto `/profile` via `Auth::profile_extra`; level-capped mint/revoke) |
 | `sync.rs` | serial bump + push enqueue (called from RR/zone `after_save` hooks and write paths) |
 | `audit.rs` | audit sink: `WriteObserver` for admin/auth writes + `record()` for DDNS/API/CF; writes the `audit` table |
@@ -53,9 +53,9 @@ password + 2FA), then exercise `/api/...`.
 | `cfapi/` | Cloudflare facade (`/client/v4`) |
 | `backend/` | `Backend` trait, `log` + `knot` impls, `worker` (journal drain), `zonefile` (BIND render) |
 | `ops.rs` | `/healthcheck` + `/metrics` |
-| `net.rs` | client-IP resolution + CIDR allow-list middleware |
+| `net.rs` | CIDR allow-list + access-log middleware. Client-IP resolution is **not** here: call `relativelylight::net::client_ip(cfg.trust_proxy, headers, peer)`, the same function the library's login route uses |
 | `metrics.rs` | Prometheus registry + instruments |
-| `ratelimit.rs` | in-memory per-record / per-token limiter |
+| `ratelimit.rs` | in-memory DDNS update budgets (per record / per token). The credential lockout is *not* here — it's relativelylight's DB-backed `auth::lockout`, via `AppState::{usernames, ips}` |
 | `sso.rs` | build relativelylight `Sso` (OIDC) from config; login-page buttons |
 | `web.rs` | admin console (crud::ui::Admin), page shell (header username→`/profile`, footer docs/GitHub/copyright), login/profile styling |
 | `zoneimport.rs` | BIND zone-file parser for `admin import` |
@@ -65,10 +65,35 @@ password + 2FA), then exercise `/api/...`.
 - **The app owns the roots.** `relativelylight` contributes routes, HTML
   fragments, and OpenAPI schemas; `app.rs` owns the axum router, the page shell
   (Bootstrap + Alpine, required by the crud fragments), and the OpenAPI document.
+- **One name for the admin group.** `app::ADMIN_GROUP` drives `Auth::admin_group`, the
+  console gate in `web.rs`, the L3 decision in `authz::user_groups`, the first-start seed,
+  and `--break-glass`. Never write the literal `"admin"` again — a mismatch mints an
+  "admin" outside the group the gate checks.
 - **One authorization model, three surfaces.** DDNS, the native API, and the CF
   facade all resolve a `Principal` (session/Basic/bearer) and check
   `authz::allowed(token_level, effective, need)`. The operator console is L3-only
-  via the library's `AdminOnly` gate. Never add a second authz path.
+  via the library's `GroupReadWrite` gate. Never add a second authz path.
+- **Credential checks go through `principal.rs`, which brakes them with the library's own
+  counters.** `from_basic` / `from_bearer` / `from_token` consult `AppState::{usernames, ips}`
+  (relativelylight's `auth::lockout`, from `Auth::username_lockout()` / `ip_lockout()`) *before*
+  touching the secret, and record a rejection afterwards — that's also the only place the
+  `auth_failures` metric is incremented, so don't re-count at the call site. **Never add a second
+  limiter:** account failures share one DB row with the console login, which is what makes a
+  lockout mean the same thing everywhere and makes "delete the row in the console" the unlock. A
+  lockout is `AuthError::Locked(retry)`; each surface renders it in its own vocabulary (429 +
+  `Retry-After`, `abuse` on DDNS). A request with no credential at all is *not* counted, and an
+  *authenticated* check (the profile password) is not limited at all. If you add a credential
+  source, route it through here.
+- **Cookie-authenticated writes need the CSRF token.** relativelylight's own forms and
+  the `crud` engine (`crud.csrf(auth.csrf())` in `web.rs`) enforce it; app-owned
+  cookie-auth posts must too — `keys.rs` is the worked example (hidden `_csrf` field
+  filled from the token cookie by `CSRF_SCRIPT`, verified with `Csrf::verify`).
+  Bearer-authenticated surfaces are exempt by design, so `/api` and `/client/v4` stay
+  header-only.
+- **The library schedules nothing; the worker does.** `relativelylight` spawns no tasks, so
+  `auth::prune` (expired sessions + expired lockout rows) is called hourly from
+  `backend::worker`, next to the reconcile and full-resync passes. Missing a prune is harmless
+  — expired rows read as absent — so it stays best-effort.
 - **Every mutation bumps the serial + enqueues a push.** RR/zone create+update go
   through SeaORM `ActiveModel::insert/update`, whose `after_save` hooks call
   `sync::*`. Bulk deletes bypass per-row hooks, so delete paths (native API, CF,
@@ -96,18 +121,24 @@ password + 2FA), then exercise `/api/...`.
   (create/edit do). Delete via the API/DDNS, or re-save the zone, to force a push.
 - **Native list pagination** reads the zone's rows then paginates in memory
   (correct; a DB-level cross-table optimization is deferred).
-- **CSRF/CORS/real-ip layers** beyond the IP allow-list are not added (the
-  library's are planned); cookie-auth forms have no CSRF token yet.
+- **CORS + a trusted-proxy real-ip layer** are still not added; client-IP resolution
+  is ours (`net.rs`, gated on `trust_proxy`) and the only network filter is the CIDR
+  allow-list. CSRF *is* in place for every cookie-authenticated write (see the
+  invariant above). Not yet (library-side): re-auth before a password/2FA change,
+  session invalidation after a password change, TOTP recovery codes.
 - **Admin timezone display (TODO, low priority).** The DB/API are UTC and the admin
   renders timestamps in UTC (relativelylight's `crud::ui::TIME_JS` + `TZ_PICKER_HTML`
   support UTC/browser-local/named zones — see relativelylight `docs/TIME.md`, not yet
   wired here). Consider a **server-timezone** option so the admin shows times in the
   host's zone, matching the Knot logs / syslog. Would mean: expose the server TZ (config
   or the host's `/etc/localtime`) via a tiny endpoint and set `$store.tz` from it on load.
-- `relativelylight` is a **git dependency pinned to a release tag** (`Cargo.toml`).
-  Bump the `tag` to adopt library changes; switch to a crates.io `version` once
-  it's published. Latest is `v0.1.2` (adds the `validate` module + auth username
-  validation).
+- `relativelylight` is a **git dependency pinned to an exact commit** (`Cargo.toml`) —
+  currently the **0.2.0 pre-release**, which turns the security defaults on: CSRF on
+  the auth forms, the DB-backed login lockout (`Auth::new(db, Lockout {..})`),
+  `set_password` as a reset (not an upsert) plus `reset_admin_access` for break-glass,
+  and an empty input on a *nullable* column stored as `NULL`. Move the pin to
+  `tag = "v0.2.0"` when it's cut, and to a crates.io `version` once published. See the
+  library's `CHANGELOG.md` (§Upgrading) and `docs/AUTH.md` §5e/§7.
 - **Audit** is written by `audit.rs`: it's the `WriteObserver` relativelylight
   fires for the admin auto-CRUD + auth handlers, and the DDNS/API/CF handlers call
   `Audit::record` directly. Rows land in the read-only `audit` table; retention is
