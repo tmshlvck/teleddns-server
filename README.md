@@ -127,9 +127,17 @@ native API instead, which is exempt (an `Authorization` header is not ambient).
 A drop-in **dyndns2** server — any generic dyndns2 client (`ddclient`, MikroTik,
 OPNsense/pfSense, UniFi, …) works with only a base-URL change. `GET
 /nic/update|/ddns/update|/update` with `hostname` + `myip`/`myipv6`. Auth is HTTP
-Basic (rejected for 2FA/SSO users — use a token) or `Authorization: Bearer <key>`.
-The path only creates/updates A/AAAA (never deletes); the per-record check gates
-what a token can touch.
+Basic or `Authorization: Bearer <key>`. The path only creates/updates A/AAAA (never
+deletes); the per-record check gates what a token can touch.
+
+> **Accounts with 2FA or SSO must use a bearer token — HTTP Basic will not work for
+> them.** If the account has TOTP enrolled, its password is only half the credential;
+> if it is an SSO account, the password isn't ours to check at all. Either way the
+> server answers `badauth` (401) and never even verifies the password, so it looks
+> exactly like wrong credentials. Mint a key on `/profile` and point the client at
+> `Authorization: Bearer <key>` instead — which is the better arrangement anyway,
+> since the key carries its own level cap (give a router an L1 key rather than your
+> own full authority). Password-only accounts may keep using Basic.
 
 `hostname` takes up to 20 comma-separated names and `myip` a comma-separated address
 list of either family (`myip=192.0.2.1,2001:db8::1` — dyn's dual-stack form; the
@@ -219,6 +227,12 @@ below password + 2FA): a user mints/revokes their own keys, with the level picke
 capped at their max level and re-capped server-side (so an L2 user can mint an L1
 key for a router). Only the key's hash is stored; the raw key is shown once.
 
+A key is the **only** credential that works on the management APIs (they are
+bearer-only), and the only one that works on DDNS for an account with **2FA or SSO**
+— see the DDNS section above. A password-only account can use HTTP Basic on DDNS, but
+a token is still preferable: it can be scoped below the owner's level and revoked on
+its own without changing anyone's password.
+
 ### Brute-force protection
 
 Every **unauthenticated** credential check — the login form, the TOTP step at login, DDNS HTTP Basic,
@@ -257,6 +271,11 @@ Optional OpenID Connect login (Authorization Code + PKCE), via relativelylight's
 the callback URL is `<public_url>/login/sso/<name>/callback` (register that at the
 IdP). On first login an SSO user is created (`auto_register: true` by default) as
 an external account — no local password/2FA.
+
+Because such an account has no local password, **an SSO user cannot use HTTP Basic on
+the DDNS endpoint** (the attempt is refused with `badauth`); they mint an API key on
+`/profile` after signing in and use `Authorization: Bearer <key>`. The same applies to
+any account with TOTP enrolled.
 
 **Group mapping.** Declarative `group_rules` run on **every** login and their
 result is *reconciled* onto the user (groups added/removed to match), and those
