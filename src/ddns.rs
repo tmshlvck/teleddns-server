@@ -154,7 +154,7 @@ pub async fn update(
         // No address given at all: fall back to the address the request came from, as the dyn API
         // does ("the best IP address the server can determine"). Only that one family is touched —
         // publishing a second address the client never mentioned would be a surprise. With
-        // `trust_proxy` the resolved IP is the left-most forwarded hop, so this works behind a proxy.
+        // `trust_proxy` the resolved IP is the hop the proxy appended, so this works behind a proxy.
         Ok(_) => match ip {
             Some(detected) => {
                 tracing::debug!(actor = %principal.username, src = %ip_s, "ddns: no address given, using the client address");

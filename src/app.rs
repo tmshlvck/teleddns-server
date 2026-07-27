@@ -45,8 +45,8 @@ pub struct AppState {
     pub ips: IpLockout,
     pub audit: Arc<crate::audit::Audit>,
     pub started_at: i64,
-    pub allowed_networks: Arc<Vec<ipnet::IpNet>>,
-    pub ops_allowed_networks: Arc<Vec<ipnet::IpNet>>,
+    pub ip_src_allowed: Arc<Vec<ipnet::IpNet>>,
+    pub ops_ip_src_allowed: Arc<Vec<ipnet::IpNet>>,
 }
 
 /// Run the HTTP server.
@@ -162,8 +162,8 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     );
     tracing::info!(backend = backend.name(), "backend sync worker started");
 
-    let allowed_networks = Arc::new(relativelylight::net::parse_nets(&cfg.allowed_networks));
-    let ops_allowed_networks = Arc::new(relativelylight::net::parse_nets(&cfg.ops_allowed_networks));
+    let ip_src_allowed = Arc::new(relativelylight::net::parse_nets(&cfg.ip_src_allowed));
+    let ops_ip_src_allowed = Arc::new(relativelylight::net::parse_nets(&cfg.ops_ip_src_allowed));
     let state = AppState {
         db,
         cfg,
@@ -177,8 +177,8 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         ips,
         audit,
         started_at: crate::model::now(),
-        allowed_networks,
-        ops_allowed_networks,
+        ip_src_allowed,
+        ops_ip_src_allowed,
     };
 
     // dyndns2 documents the parameters in the query string and prefers GET, but permits POST; any

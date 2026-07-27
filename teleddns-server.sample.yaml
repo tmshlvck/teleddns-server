@@ -20,16 +20,16 @@ listen_addr: ":8080"
 # Source admission: which networks may reach the server at all. CIDRs, or bare
 # addresses as single hosts; IPv4 and IPv6, and a rule in either form matches a client
 # arriving in the other. Empty (the default) = no restriction.
-# (Renamed: allowed_ips → allowed_networks, ops_allowed_ips → ops_allowed_networks. An
+# (Renamed: allowed_ips → ip_src_allowed, ops_allowed_ips → ops_ip_src_allowed. An
 # unknown key is now a startup error, so a stale name is caught rather than silently
 # dropping the gate.)
-# allowed_networks:
+# ip_src_allowed:
 #   - "127.0.0.1/32"
 #   - "10.0.0.0/8"
 
 # Narrows /healthcheck and /metrics further — a caller must satisfy both lists.
 # Evaluated after the proxy real-IP rewrite.   [no extra restriction]
-# ops_allowed_networks:
+# ops_ip_src_allowed:
 #   - "10.9.0.0/24"
 
 # Trust reverse-proxy headers (X-Forwarded-For / X-Real-IP) for the real client

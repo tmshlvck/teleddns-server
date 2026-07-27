@@ -1,6 +1,6 @@
 //! Operability endpoints: `/healthcheck` (always 200; OK/WARN first token) and `/metrics`
 //! (Prometheus text). Both refresh DB-derived state on demand. Source admission is applied by the
-//! `allow_from` middleware — `ops_allowed_networks` on top of `allowed_networks` (see `net.rs`).
+//! `allow_from` middleware — `ops_ip_src_allowed` on top of `ip_src_allowed` (see `net.rs`).
 
 use crate::app::AppState;
 use crate::backend::Probe;

@@ -334,8 +334,8 @@ then dead-letters. Set `debug: true` for verbose logs. (The in-DB **audit log** 
 who changed which record, visible in the admin UI — is separate and covers DNS
 changes; this is the operational log.)
 
-Restrict the operability endpoints with `ops_allowed_networks` — the source networks
-allowed to reach them, narrowing `allowed_networks` further (both must pass),
+Restrict the operability endpoints with `ops_ip_src_allowed` — the source networks
+allowed to reach them, narrowing `ip_src_allowed` further (both must pass),
 evaluated after the reverse-proxy real-IP rewrite.
 
 - **`GET /healthcheck`** — always HTTP 200; the body's first token is `OK` or
@@ -483,7 +483,7 @@ knotc_path: "/usr/sbin/knotc"
 knot_template: "master"
 
 public_url: "https://ddns.example.com"            # external HTTPS base (SSO + cookies)
-ops_allowed_networks: ["10.9.0.0/24"]                  # Prometheus / uptime host
+ops_ip_src_allowed: ["10.9.0.0/24"]                  # Prometheus / uptime host
 ```
 
 `/etc/systemd/system/teleddns-server.service`:
@@ -518,15 +518,25 @@ sudo journalctl -u teleddns-server | grep "seeded initial admin user"   # one-ti
 ### 4. TLS reverse proxy
 
 teleddns speaks plain HTTP on loopback; a proxy terminates TLS and forwards the
-real client IP (teleddns reads it because `trust_proxy: true` — needed for rate
-limiting, audit, and `ops_allowed_networks`). Pick one. (For an internal/eval box you
-can skip the proxy and bind `listen_addr: "0.0.0.0:8080"` directly.)
+real client IP (teleddns reads it because `trust_proxy: true` — needed for the
+lockout, the audit log, `ip_src_allowed` and the DDNS "use my source address"
+behaviour). Pick one. (For an internal/eval box you can skip the proxy and bind
+`listen_addr: "0.0.0.0:8080"` directly, leaving `trust_proxy: false`.)
+
+All three configurations below **append** to `X-Forwarded-For`, which is what you
+want: teleddns reads the **right-most** entry — the hop your proxy added — so a
+caller that sends its own `X-Forwarded-For` cannot choose which address it appears
+to come from. Two things follow. Set `trust_proxy: true` **only** when nothing can
+reach teleddns except the proxy (otherwise a direct caller supplies the whole
+header, and with it its own identity). And if you put a second hop in front — a
+CDN ahead of your proxy — the right-most entry becomes your proxy's view of the
+CDN, not the end user; teleddns has no trusted-proxy list to unwind that yet.
 
 **Caddy** — automatic certificates:
 
 ```
 ddns.example.com {
-    reverse_proxy 127.0.0.1:8080     # sets X-Forwarded-For / -Proto by default
+    reverse_proxy 127.0.0.1:8080     # appends X-Forwarded-For and sets -Proto by default
 }
 ```
 
@@ -541,7 +551,7 @@ server {
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;   # appends; we read the last hop
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
@@ -555,7 +565,8 @@ frontend https
     default_backend teleddns
 backend teleddns
     http-request set-header X-Forwarded-Proto https
-    server t1 127.0.0.1:8080     # HAProxy appends X-Forwarded-For with `option forwardfor`
+    option forwardfor            # appends X-Forwarded-For; teleddns reads the entry HAProxy added
+    server t1 127.0.0.1:8080
 ```
 
 Then confirm `public_url` matches the proxy's hostname (the SSO callback base).
@@ -625,7 +636,7 @@ kdig @<secondary> www.example.com. A +short         # → 1.2.3.4 (auto-provisio
 | `conf-set zone[...]` fails | Knot must run from the **confdb** (step 2) — `conf-set` on a file-configured `knotd` fails. |
 | Zone served but secondary empty | catalog wiring: `knotc zone-status catalog.example.`; TSIG secret matches; ACL/notify. |
 | DDNS `!yours` for a valid user | the token's level + the group's zone/rr grant (see [Authorization model](#authorization-model)). |
-| Real client IP wrong | `trust_proxy: true` and the proxy sets `X-Forwarded-For`. |
+| Real client IP wrong | `trust_proxy: true`, and the proxy sets `X-Forwarded-For` (we read its right-most entry). Two proxies in front? The inner one's view wins — not supported yet. |
 
 ---
 

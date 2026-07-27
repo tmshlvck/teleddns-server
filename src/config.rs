@@ -7,7 +7,7 @@ use std::time::Duration;
 
 /// The full server configuration. All fields have defaults, so an empty file (or none) is valid — but
 /// an **unknown** key is a hard error, not a shrug: a typo (or a key renamed by an upgrade) in
-/// `allowed_networks` would otherwise silently drop the source-admission gate and open the server up.
+/// `ip_src_allowed` would otherwise silently drop the source-admission gate and open the server up.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -19,10 +19,10 @@ pub struct Config {
     /// Empty = no restriction. IPv4 and IPv6 both, and a rule in either form matches a client arriving
     /// in the other. This is an admission policy, not a set of exceptions — contrast
     /// `ip_lockout_whitelist`, which exempts addresses from *automatic* blocking.
-    pub allowed_networks: Vec<String>,
-    /// Source networks permitted to reach `/healthcheck` + `/metrics`, narrowing `allowed_networks`
+    pub ip_src_allowed: Vec<String>,
+    /// Source networks permitted to reach `/healthcheck` + `/metrics`, narrowing `ip_src_allowed`
     /// further: a caller must satisfy both. Empty = no extra restriction.
-    pub ops_allowed_networks: Vec<String>,
+    pub ops_ip_src_allowed: Vec<String>,
     /// Trust reverse-proxy headers (X-Forwarded-For / X-Real-IP / X-Forwarded-Proto).
     pub trust_proxy: bool,
     /// Verbose (debug-level) logging.
@@ -143,8 +143,8 @@ impl Default for Config {
         Config {
             db_dsn: "sqlite://teleddns.sqlite".into(),
             listen_addr: ":8080".into(),
-            allowed_networks: vec![],
-            ops_allowed_networks: vec![],
+            ip_src_allowed: vec![],
+            ops_ip_src_allowed: vec![],
             trust_proxy: false,
             debug: false,
             ui_title: "TeleDDNS Server Manager".into(),

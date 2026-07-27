@@ -1,5 +1,5 @@
-//! The two network middlewares: source admission and the access log. `allowed_networks` says which
-//! source networks may reach the server at all; `ops_allowed_networks` narrows `/healthcheck` and
+//! The two network middlewares: source admission and the access log. `ip_src_allowed` says which
+//! source networks may reach the server at all; `ops_ip_src_allowed` narrows `/healthcheck` and
 //! `/metrics` further (both must pass). Either empty means "no restriction" — this is an admission
 //! policy, not a set of exceptions, which is why neither is called a whitelist (the lockout's
 //! `ip_lockout_whitelist` is: it exempts addresses from automatic blocking).
@@ -8,7 +8,8 @@
 //! lockout and the audit log use, so a rule cannot mean one thing here and another there.
 //!
 //! Nothing about addresses is implemented here — `relativelylight::net` owns it: `client_ip`
-//! (socket peer, or the left-most `X-Forwarded-For` / `X-Real-IP` hop when `trust_proxy`, IPv4-mapped
+//! (socket peer, or the right-most `X-Forwarded-For` hop — the one the proxy appended — when
+//! `trust_proxy`, else `X-Real-IP`; IPv4-mapped
 //! collapsed to IPv4), `parse_nets` and `in_nets` (CIDR rules, matching across families and the mapped
 //! form). Everything that needs an address calls those directly — `ddns`, `api::req_ip`, `audit`, the
 //! two middlewares below, the lockout's whitelist, and relativelylight's own login route — so there is
@@ -56,7 +57,7 @@ pub async fn access_log(
     res
 }
 
-/// Middleware: enforce `allowed_networks` globally and `ops_allowed_networks` on the operability
+/// Middleware: enforce `ip_src_allowed` globally and `ops_ip_src_allowed` on the operability
 /// endpoints.
 pub async fn allow_from(
     State(app): State<AppState>,
@@ -67,13 +68,13 @@ pub async fn allow_from(
     let ip = client_ip(app.cfg.trust_proxy, req.headers(), Some(peer.ip()))
         .unwrap_or_else(|| canonical(peer.ip())); // `None` needs no peer, and we have one
 
-    if !app.allowed_networks.is_empty() && !in_nets(&app.allowed_networks, ip) {
+    if !app.ip_src_allowed.is_empty() && !in_nets(&app.ip_src_allowed, ip) {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
     let path = req.uri().path();
     if (path == "/healthcheck" || path == "/metrics")
-        && !app.ops_allowed_networks.is_empty()
-        && !in_nets(&app.ops_allowed_networks, ip)
+        && !app.ops_ip_src_allowed.is_empty()
+        && !in_nets(&app.ops_ip_src_allowed, ip)
     {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }

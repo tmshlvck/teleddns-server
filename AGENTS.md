@@ -53,7 +53,7 @@ password + 2FA), then exercise `/api/...`.
 | `cfapi/` | Cloudflare facade (`/client/v4`) |
 | `backend/` | `Backend` trait, `log` + `knot` impls, `worker` (journal drain), `zonefile` (BIND render) |
 | `ops.rs` | `/healthcheck` + `/metrics` |
-| `net.rs` | just two middlewares (source admission via `allowed_networks`/`ops_allowed_networks`, access log). Addresses are `relativelylight::net`'s: `client_ip` (peer vs `X-Forwarded-For`, per `trust_proxy`), `parse_nets`/`in_nets` (CIDRs across both families and the `::ffff:` form) |
+| `net.rs` | just two middlewares (source admission via `ip_src_allowed`/`ops_ip_src_allowed`, access log). Addresses are `relativelylight::net`'s: `client_ip` (peer vs `X-Forwarded-For`, per `trust_proxy`), `parse_nets`/`in_nets` (CIDRs across both families and the `::ffff:` form) |
 | `metrics.rs` | Prometheus registry + instruments |
 | `sso.rs` | build relativelylight `Sso` (OIDC) from config; login-page buttons |
 | `web.rs` | admin console (crud::ui::Admin), page shell (header username→`/profile`, footer docs/GitHub/copyright), login/profile styling |
@@ -128,7 +128,7 @@ password + 2FA), then exercise `/api/...`.
   (correct; a DB-level cross-table optimization is deferred).
 - **CORS + a trusted-proxy real-ip layer** are still not added; client-IP resolution
   is ours (`net.rs`, gated on `trust_proxy`) and the only network filter is the CIDR
-  source-admission list (`allowed_networks`). CSRF *is* in place for every cookie-authenticated write (see the
+  source-admission list (`ip_src_allowed`). CSRF *is* in place for every cookie-authenticated write (see the
   invariant above). Not yet (library-side): re-auth before a password/2FA change,
   session invalidation after a password change, TOTP recovery codes.
 - **Admin timezone display (TODO, low priority).** The DB/API are UTC and the admin

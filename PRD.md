@@ -78,8 +78,8 @@ form-encode them in the body (query wins on a clash):
 With **no** address parameter the request's own source address is published — the
 family it connected over, and only that family (an explicit `myip` is never extended
 with a detected address of the other family). The address is the one
-`relativelylight::net::client_ip` yields, so behind a proxy it is the left-most
-forwarded hop **only when `trust_proxy` is set**; without a resolvable address the
+`relativelylight::net::client_ip` yields, so behind a proxy it is the
+right-most forwarded hop **only when `trust_proxy` is set**; without a resolvable address the
 request is `notfqdn`.
 
 At most **one address per family** per request: the same address repeated is fine,
@@ -288,8 +288,10 @@ Expired rows are cleared by `relativelylight::auth::prune` (which also drops exp
 hourly from the sync worker — the library schedules nothing itself. Skipping a prune is harmless: an
 expired row reads as unlocked and resets itself on the next failure.
 
-**One answer to "who is the client".** `trust_proxy` selects it — the left-most forwarded hop when set,
-the socket peer otherwise, IPv4-mapped addresses collapsed either way — and there is a single
+**One answer to "who is the client".** `trust_proxy` selects it — the **right-most** forwarded hop when
+set (the one the proxy appended; everything left of it is caller-supplied, so reading the left-most
+entry would let a caller choose its own identity), the socket peer otherwise, IPv4-mapped addresses
+collapsed either way — and there is a single
 implementation: `relativelylight::net::client_ip`, called directly by the library's login route and by
 every surface of ours (DDNS, the APIs, the access log, the audit sink). So proxy trust is decided in
 exactly one place, our config, and one client's failures always land on one row.
@@ -577,8 +579,8 @@ default merges.
 
 ## 8. Operability
 
-Two operability endpoints, both `text/plain`, both honoring **`ops_allowed_networks`**
-— the source networks allowed to reach them, narrowing the global `allowed_networks`
+Two operability endpoints, both `text/plain`, both honoring **`ops_ip_src_allowed`**
+— the source networks allowed to reach them, narrowing the global `ip_src_allowed`
 (both must pass), evaluated after
 the reverse-proxy real-IP rewrite (so a monitoring host works behind a proxy).
 
@@ -657,10 +659,10 @@ Key groups:
   migrator**: a fresh database is built to the latest schema in one shot; an
   existing one has pending migrations applied in order. Migrations are
   append-only.
-- **HTTP** — listen address; `allowed_networks` (source networks admitted at all);
+- **HTTP** — listen address; `ip_src_allowed` (source networks admitted at all);
   `trust_proxy`
   (parse `X-Forwarded-For`/`X-Real-IP`/`X-Forwarded-Proto` from a trusted proxy);
-  `ops_allowed_networks`; `ui_title` (navbar brand, default "TeleDDNS Server Manager").
+  `ops_ip_src_allowed`; `ui_title` (navbar brand, default "TeleDDNS Server Manager").
 - **TTLs** — `default_ttl` (API-created records, default 3600), `ddns_rr_ttl`
   (DDNS-touched A/AAAA, default 60).
 - **Backend sync** — `backend` (`log` | `knot`), `knot_zone_dir`, `knotc_path`,
@@ -791,7 +793,7 @@ Knot backend + worker, §8 operability, §9 config + CLI.
   TOTP recovery codes — all in relativelylight's auth module, tracked there.
 - **CORS and trusted-proxy real-IP parsing** are not middleware yet: client-IP
   resolution is ours (`net.rs`, gated on `trust_proxy`), and the only network filter
-  is source admission (`allowed_networks`). CSRF *is* in place for cookie-authenticated
+  is source admission (`ip_src_allowed`). CSRF *is* in place for cookie-authenticated
   writes (§4.1).
 - **Admin timezone display** — the DB/API are UTC and the admin renders UTC; a
   server-timezone option (to match Knot/syslog) is deferred (see `AGENTS.md`).
