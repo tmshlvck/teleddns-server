@@ -334,8 +334,9 @@ then dead-letters. Set `debug: true` for verbose logs. (The in-DB **audit log** 
 who changed which record, visible in the admin UI — is separate and covers DNS
 changes; this is the operational log.)
 
-Restrict the operability endpoints with `ops_ip_whitelist` (a CIDR whitelist
-applied on top of `ip_whitelist`, after the reverse-proxy real-IP rewrite).
+Restrict the operability endpoints with `ops_allowed_networks` — the source networks
+allowed to reach them, narrowing `allowed_networks` further (both must pass),
+evaluated after the reverse-proxy real-IP rewrite.
 
 - **`GET /healthcheck`** — always HTTP 200; the body's first token is `OK` or
   `WARN`:
@@ -482,7 +483,7 @@ knotc_path: "/usr/sbin/knotc"
 knot_template: "master"
 
 public_url: "https://ddns.example.com"            # external HTTPS base (SSO + cookies)
-ops_ip_whitelist: ["10.9.0.0/24"]                  # Prometheus / uptime host
+ops_allowed_networks: ["10.9.0.0/24"]                  # Prometheus / uptime host
 ```
 
 `/etc/systemd/system/teleddns-server.service`:
@@ -518,7 +519,7 @@ sudo journalctl -u teleddns-server | grep "seeded initial admin user"   # one-ti
 
 teleddns speaks plain HTTP on loopback; a proxy terminates TLS and forwards the
 real client IP (teleddns reads it because `trust_proxy: true` — needed for rate
-limiting, audit, and `ops_ip_whitelist`). Pick one. (For an internal/eval box you
+limiting, audit, and `ops_allowed_networks`). Pick one. (For an internal/eval box you
 can skip the proxy and bind `listen_addr: "0.0.0.0:8080"` directly.)
 
 **Caddy** — automatic certificates:

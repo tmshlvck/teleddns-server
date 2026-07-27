@@ -17,16 +17,19 @@ db_dsn: "sqlite://teleddns.sqlite"
 listen_addr: ":8080"
 
 # CIDRs allowed to connect; empty/omitted = allow all.   [all]
-# CIDR whitelists. (Renamed in 0.5: allowed_ips → ip_whitelist, ops_allowed_ips →
-# ops_ip_whitelist. An unknown key is now a startup error, so a stale name is caught
-# instead of silently dropping the gate.)
-# ip_whitelist:
+# Source admission: which networks may reach the server at all. CIDRs, or bare
+# addresses as single hosts; IPv4 and IPv6, and a rule in either form matches a client
+# arriving in the other. Empty (the default) = no restriction.
+# (Renamed: allowed_ips → allowed_networks, ops_allowed_ips → ops_allowed_networks. An
+# unknown key is now a startup error, so a stale name is caught rather than silently
+# dropping the gate.)
+# allowed_networks:
 #   - "127.0.0.1/32"
 #   - "10.0.0.0/8"
 
-# Extra whitelist for /healthcheck and /metrics, ON TOP OF ip_whitelist.
+# Narrows /healthcheck and /metrics further — a caller must satisfy both lists.
 # Evaluated after the proxy real-IP rewrite.   [no extra restriction]
-# ops_ip_whitelist:
+# ops_allowed_networks:
 #   - "10.9.0.0/24"
 
 # Trust reverse-proxy headers (X-Forwarded-For / X-Real-IP) for the real client

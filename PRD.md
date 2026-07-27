@@ -577,8 +577,9 @@ default merges.
 
 ## 8. Operability
 
-Two operability endpoints, both `text/plain`, both honoring **`ops_ip_whitelist`**
-— a CIDR whitelist applied *on top of* the global `ip_whitelist`, evaluated after
+Two operability endpoints, both `text/plain`, both honoring **`ops_allowed_networks`**
+— the source networks allowed to reach them, narrowing the global `allowed_networks`
+(both must pass), evaluated after
 the reverse-proxy real-IP rewrite (so a monitoring host works behind a proxy).
 
 ### 8.1 `GET /healthcheck`
@@ -630,7 +631,7 @@ standalone log files. Three concerns, deliberately distinct:
 - **Access log** — one INFO line per HTTP request on every surface (DDNS, native
   API, CF facade, UI, `/metrics`, `/healthcheck`), emitted by an outer middleware:
   method, path+query, status, the resolved client IP (proxy-aware after the real-IP
-  rewrite), User-Agent, and latency. Denied (whitelist 403) requests are logged
+  rewrite), User-Agent, and latency. Denied (403 by source admission) requests are logged
   too.
 - **State changes / backend** — INFO for zone-file writes, zone declarations, and
   successful pushes; **WARN/ERROR** when a push fails or a reload is accepted but
@@ -656,9 +657,10 @@ Key groups:
   migrator**: a fresh database is built to the latest schema in one shot; an
   existing one has pending migrations applied in order. Migrations are
   append-only.
-- **HTTP** — listen address; `ip_whitelist` (global CIDR whitelist); `trust_proxy`
+- **HTTP** — listen address; `allowed_networks` (source networks admitted at all);
+  `trust_proxy`
   (parse `X-Forwarded-For`/`X-Real-IP`/`X-Forwarded-Proto` from a trusted proxy);
-  `ops_ip_whitelist`; `ui_title` (navbar brand, default "TeleDDNS Server Manager").
+  `ops_allowed_networks`; `ui_title` (navbar brand, default "TeleDDNS Server Manager").
 - **TTLs** — `default_ttl` (API-created records, default 3600), `ddns_rr_ttl`
   (DDNS-touched A/AAAA, default 60).
 - **Backend sync** — `backend` (`log` | `knot`), `knot_zone_dir`, `knotc_path`,
@@ -789,6 +791,7 @@ Knot backend + worker, §8 operability, §9 config + CLI.
   TOTP recovery codes — all in relativelylight's auth module, tracked there.
 - **CORS and trusted-proxy real-IP parsing** are not middleware yet: client-IP
   resolution is ours (`net.rs`, gated on `trust_proxy`), and the only network filter
-  is the CIDR whitelist. CSRF *is* in place for cookie-authenticated writes (§4.1).
+  is source admission (`allowed_networks`). CSRF *is* in place for cookie-authenticated
+  writes (§4.1).
 - **Admin timezone display** — the DB/API are UTC and the admin renders UTC; a
   server-timezone option (to match Knot/syslog) is deferred (see `AGENTS.md`).

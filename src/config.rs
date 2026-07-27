@@ -7,7 +7,7 @@ use std::time::Duration;
 
 /// The full server configuration. All fields have defaults, so an empty file (or none) is valid — but
 /// an **unknown** key is a hard error, not a shrug: a typo (or a key renamed by an upgrade) in
-/// `ip_whitelist` would otherwise silently drop a network gate and open the server to everyone.
+/// `allowed_networks` would otherwise silently drop the source-admission gate and open the server up.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -15,11 +15,14 @@ pub struct Config {
     pub db_dsn: String,
     /// Address the HTTP server binds.
     pub listen_addr: String,
-    /// CIDRs allowed to connect at all; empty = no restriction. Bare addresses count as single
-    /// hosts, IPv4 and IPv6 both, and a rule in either form matches a client arriving in the other.
-    pub ip_whitelist: Vec<String>,
-    /// Extra CIDR whitelist for `/healthcheck` + `/metrics`, applied *on top of* `ip_whitelist`.
-    pub ops_ip_whitelist: Vec<String>,
+    /// Source networks permitted to reach the server at all (CIDRs; a bare address is a single host).
+    /// Empty = no restriction. IPv4 and IPv6 both, and a rule in either form matches a client arriving
+    /// in the other. This is an admission policy, not a set of exceptions — contrast
+    /// `ip_lockout_whitelist`, which exempts addresses from *automatic* blocking.
+    pub allowed_networks: Vec<String>,
+    /// Source networks permitted to reach `/healthcheck` + `/metrics`, narrowing `allowed_networks`
+    /// further: a caller must satisfy both. Empty = no extra restriction.
+    pub ops_allowed_networks: Vec<String>,
     /// Trust reverse-proxy headers (X-Forwarded-For / X-Real-IP / X-Forwarded-Proto).
     pub trust_proxy: bool,
     /// Verbose (debug-level) logging.
@@ -140,8 +143,8 @@ impl Default for Config {
         Config {
             db_dsn: "sqlite://teleddns.sqlite".into(),
             listen_addr: ":8080".into(),
-            ip_whitelist: vec![],
-            ops_ip_whitelist: vec![],
+            allowed_networks: vec![],
+            ops_allowed_networks: vec![],
             trust_proxy: false,
             debug: false,
             ui_title: "TeleDDNS Server Manager".into(),

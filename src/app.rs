@@ -45,8 +45,8 @@ pub struct AppState {
     pub ips: IpLockout,
     pub audit: Arc<crate::audit::Audit>,
     pub started_at: i64,
-    pub ip_whitelist: Arc<Vec<ipnet::IpNet>>,
-    pub ops_ip_whitelist: Arc<Vec<ipnet::IpNet>>,
+    pub allowed_networks: Arc<Vec<ipnet::IpNet>>,
+    pub ops_allowed_networks: Arc<Vec<ipnet::IpNet>>,
 }
 
 /// Run the HTTP server.
@@ -162,8 +162,8 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     );
     tracing::info!(backend = backend.name(), "backend sync worker started");
 
-    let ip_whitelist = Arc::new(relativelylight::net::parse_nets(&cfg.ip_whitelist));
-    let ops_ip_whitelist = Arc::new(relativelylight::net::parse_nets(&cfg.ops_ip_whitelist));
+    let allowed_networks = Arc::new(relativelylight::net::parse_nets(&cfg.allowed_networks));
+    let ops_allowed_networks = Arc::new(relativelylight::net::parse_nets(&cfg.ops_allowed_networks));
     let state = AppState {
         db,
         cfg,
@@ -177,8 +177,8 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         ips,
         audit,
         started_at: crate::model::now(),
-        ip_whitelist,
-        ops_ip_whitelist,
+        allowed_networks,
+        ops_allowed_networks,
     };
 
     // dyndns2 documents the parameters in the query string and prefers GET, but permits POST; any
@@ -208,7 +208,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         None => app,
     };
     let app =
-        app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::whitelist));
+        app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::allow_from));
     // Outermost: one access-log line per request (logs allow-list denials too).
     let app =
         app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::access_log));
