@@ -16,25 +16,43 @@ db_dsn: "sqlite://teleddns.sqlite"
 # Address the HTTP server listens on. A leading ":" means all interfaces. [":8080"]
 listen_addr: ":8080"
 
-# CIDRs allowed to connect; empty/omitted = allow all.   [all]
-# Source admission: which networks may reach the server at all. CIDRs, or bare
-# addresses as single hosts; IPv4 and IPv6, and a rule in either form matches a client
-# arriving in the other. Empty (the default) = no restriction.
+# WHICH ADDRESS COUNTS AS "THE CLIENT"   [false]
+#
+# Everything below that matches an address — ip_src_allowed, ops_ip_src_allowed, the
+# lockout and its whitelist, the audit log, the access log, and the DDNS fallback that
+# publishes your source address — uses one resolved address, decided by this flag:
+#
+#   false  the socket peer, i.e. the real TCP source. X-Forwarded-For and X-Real-IP are
+#          IGNORED, because when anyone can reach us directly those headers are just
+#          something the caller typed.
+#   true   the RIGHT-MOST X-Forwarded-For entry (or X-Real-IP if there is no XFF): the
+#          hop your proxy appended. Entries to its left came from the caller, so they
+#          are not believed — a caller cannot pick which address it appears to come
+#          from, and so cannot slip past ip_src_allowed, sit inside the lockout
+#          whitelist, or dodge a lockout by rotating the value.
+#
+# Set true ONLY when nothing can reach teleddns except your proxy (bind it to loopback).
+# With two hops in front — a CDN ahead of your proxy — the right-most entry is your
+# proxy's view of the CDN, not the end user; that is not unwound yet.
+#
+# IPv4-mapped IPv6 (::ffff:a.b.c.d, what a dual-stack listener reports) is normalized to
+# plain IPv4 everywhere, so a rule and an address always meet in the same form.
+trust_proxy: false
+
+# Source admission: which networks may reach the server at all, matched against the
+# resolved address above. CIDRs, or bare addresses as single hosts; IPv4 and IPv6, and a
+# rule in either form matches a client arriving in the other. Empty = no restriction.
 # (Renamed: allowed_ips → ip_src_allowed, ops_allowed_ips → ops_ip_src_allowed. An
 # unknown key is now a startup error, so a stale name is caught rather than silently
-# dropping the gate.)
+# dropping the gate.)   [no restriction]
 # ip_src_allowed:
 #   - "127.0.0.1/32"
 #   - "10.0.0.0/8"
 
-# Narrows /healthcheck and /metrics further — a caller must satisfy both lists.
-# Evaluated after the proxy real-IP rewrite.   [no extra restriction]
+# The same, for /healthcheck and /metrics only: narrows ip_src_allowed further, so a
+# caller must satisfy both lists.   [no extra restriction]
 # ops_ip_src_allowed:
 #   - "10.9.0.0/24"
-
-# Trust reverse-proxy headers (X-Forwarded-For / X-Real-IP) for the real client
-# IP. Enable only behind a proxy you control.   [false]
-trust_proxy: false
 
 # Verbose (debug-level) logging.   [false]
 debug: false
@@ -70,14 +88,18 @@ username_lockout_duration: "15m"
 # username spraying. While an address is locked, *valid* callers from it are refused
 # too, so keep this well above what a misconfigured client produces if your users share
 # an address (CGNAT, an office NAT). 0 = off.
-#   The address is whatever trust_proxy says it is (forwarded hop vs socket peer), the
-#   same for the login form, DDNS, the APIs and the audit log.
+#   Keyed on the resolved client address (see trust_proxy at the top) — the same address
+#   the login form, DDNS, the APIs, the audit log and ip_src_allowed use.
 ip_lockout_after: 100
 ip_lockout_duration: "15m"
 # Addresses that are never locked out: your office range, a monitoring probe, the NAT
 # a device fleet shares. CIDRs or bare addresses, IPv4 and IPv6 — a rule written either
-# way matches a client that arrives the other way. There is no username equivalent: an
-# account that can never lock is an account whose password can be guessed at forever.
+# way matches a client that arrives the other way — matched against the same resolved
+# address as everything else (see trust_proxy). Note what that implies: with
+# trust_proxy: false a caller cannot reach this list by sending a header, and with
+# trust_proxy: true it still cannot, because only the hop your proxy appended is read.
+# There is no username equivalent: an account that can never lock is an account whose
+# password can be guessed at forever.
 # ip_lockout_whitelist: ["203.0.113.0/24", "2001:db8::/32", "198.51.100.7"]
 
 # Backend. "log" (default) just logs what it would push — safe for first boot
