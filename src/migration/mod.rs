@@ -17,7 +17,11 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(m0001_init::Migration), Box::new(m0002_lockout::Migration)]
+        vec![
+            Box::new(m0001_init::Migration),
+            Box::new(m0002_lockout::Migration),
+            Box::new(m0003_drop_api_key_level::Migration),
+        ]
     }
 }
 
@@ -165,6 +169,50 @@ mod m0002_lockout {
                 m.drop_table(Table::drop().table(Alias::new(table)).if_exists().to_owned()).await?;
             }
             Ok(())
+        }
+    }
+}
+
+/// Drop `api_key.level`. The level was a *ceiling* on what a key could do relative to its owner, and
+/// it went away with the L1/L2/L3 ladder, now the named roles of PRD §3: a key simply authenticates
+/// as its owner, and
+/// narrowing a device means giving the device its own account with its own grant. A fresh database
+/// never had the column — `m0001` builds `api_key` from the current entity — so this only does work on
+/// a database created before the change.
+mod m0003_drop_api_key_level {
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0003_drop_api_key_level"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            if !m.has_column("api_key", "level").await? {
+                return Ok(());
+            }
+            m.alter_table(
+                Table::alter().table(Alias::new("api_key")).drop_column(Alias::new("level")).to_owned(),
+            )
+            .await
+        }
+
+        async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            if m.has_column("api_key", "level").await? {
+                return Ok(());
+            }
+            m.alter_table(
+                Table::alter()
+                    .table(Alias::new("api_key"))
+                    .add_column(ColumnDef::new(Alias::new("level")).integer().not_null().default(3))
+                    .to_owned(),
+            )
+            .await
         }
     }
 }

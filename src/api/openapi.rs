@@ -82,7 +82,7 @@ fn native_paths(sec: &Value) -> Vec<(String, Value)> {
             json!({
                 "get": op("List zones (paginated; X-Total-Count)", sec, "native-api"),
                 "post": op_doc(
-                    "Create a zone (L3; auto SOA + apex NS; Idempotency-Key)",
+                    "Create a zone (Superadmin; auto SOA + apex NS; Idempotency-Key)",
                     "Body: `{ \"origin\": \"example.com.\" }`. `origin` must be a valid DNS name; it \
                      is normalized to an absolute FQDN. The SOA (with MNAME `ns.<origin>`, RNAME \
                      `hostmaster.<origin>`) and a default apex NS are generated automatically.",
@@ -92,32 +92,32 @@ fn native_paths(sec: &Value) -> Vec<(String, Value)> {
         (
             "/api/zones/{id}".into(),
             json!({
-                "get": op("Get a zone (L2)", sec, "native-api"),
+                "get": op("Get a zone (Zone Manager)", sec, "native-api"),
                 "put": op_doc(
-                    "Update a zone's SOA (L2; bumps serial)",
+                    "Update a zone's SOA (Zone Manager; bumps serial)",
                     "Body may set any of `mname`/`rname` (DNS names) and `refresh`/`retry`/`expire`/\
                      `minimum`/`ttl` (0..2147483647 seconds). The serial is bumped automatically.",
                     sec, "native-api"),
-                "delete": op("Delete a zone (L3)", sec, "native-api"),
+                "delete": op("Delete a zone (Superadmin)", sec, "native-api"),
             }),
         ),
         (
             "/api/zones/{id}/rr".into(),
             json!({
-                "get": op("List records (L2; ?type/?name; paginated)", sec, "native-api"),
+                "get": op("List records (Zone Manager; ?type/?name; paginated)", sec, "native-api"),
                 "post": op_doc(
-                    "Create a record (L2; unified type-discriminated body; Idempotency-Key)",
+                    "Create a record (Zone Manager; unified type-discriminated body; Idempotency-Key)",
                     record_body_doc(), sec, "native-api"),
             }),
         ),
         (
             "/api/zones/{id}/rr/{rrid}".into(),
             json!({
-                "get": op("Get a record (A/AAAA L1, else L2)", sec, "native-api"),
+                "get": op("Get a record (A/AAAA: RR Manager, else Zone Manager)", sec, "native-api"),
                 "put": op_doc(
-                    "Update a record (A/AAAA L1, else L2)",
+                    "Update a record (A/AAAA: RR Manager, else Zone Manager)",
                     record_body_doc(), sec, "native-api"),
-                "delete": op("Delete a record (L2)", sec, "native-api"),
+                "delete": op("Delete a record (Zone Manager)", sec, "native-api"),
             }),
         ),
         (

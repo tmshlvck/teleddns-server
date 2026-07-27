@@ -11,9 +11,10 @@ use sea_orm::{DatabaseConnection, EntityTrait, PaginatorTrait};
 use sea_orm_migration::MigratorTrait;
 use std::sync::Arc;
 
-/// The group whose members hold L3 (global authority). **One name for all of it**: the library's
+/// The group whose members hold the **Superadmin** role (global authority). **One name for all of
+/// it**: the library's
 /// `Auth::admin_group` (which drives the profile-manager default), the console's `GroupReadWrite` gate
-/// (`web.rs`), the L3 decision in `authz::user_groups`, the first-start seed, and `admin
+/// (`web.rs`), the Superadmin decision in `authz::user_groups`, the first-start seed, and `admin
 /// reset-password --break-glass`. If those ever disagree, an "admin" ends up outside the group the gate
 /// checks — able to log in, able to administer nothing. Not configurable on purpose: it is baked into
 /// the grants (PRD §3.2), so renaming it would need a migration, not a config edit.

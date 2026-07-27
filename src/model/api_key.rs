@@ -1,5 +1,7 @@
 //! `api_key` — a bearer token belonging to a user. Only the SHA-256 hash is stored; the raw key is
-//! shown once on mint. The key's `level` (1–3) caps what it can do, independent of the owner's level.
+//! shown once on mint. A key has **no rights of its own**: it authenticates as its owner, and what that
+//! owner may do is decided by the grant tables on every request (see `authz`). Only `disabled` and
+//! `expires_at` limit it here.
 
 use sea_orm::entity::prelude::*;
 
@@ -17,8 +19,6 @@ pub struct Model {
     pub hashed_key: String,
     /// Short visible prefix of the raw key (for identification in listings).
     pub prefix: String,
-    /// Access level 1–3 (capped at mint time by the owner's max level).
-    pub level: i32,
     /// Optional expiry (unix seconds).
     pub expires_at: Option<i64>,
     /// Last time the key authenticated a request (unix seconds).

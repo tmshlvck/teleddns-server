@@ -110,7 +110,7 @@ For each hostname, and within it for each `(family, address)`:
 1. Resolve `(zone, label)`; resolve the record set (A for v4, AAAA for v6).
 2. Authorize (§3). Insufficient access → `!yours` (403).
 3. Empty set → **create** the record (`good`). Auto-create is allowed because an
-   L1 grant is scoped to the exact `(zone, label)`.
+   RR Manager grant is scoped to the exact `(zone, label)`.
 4. One record, same value → no-op (`nochg`).
 5. One record, different value → update in place (`good`).
 6. Multiple records → keep the first, delete the rest, update if needed (`good`).
@@ -183,85 +183,84 @@ The core of the product. One authorization decision serves the DDNS endpoint, th
 native API, and the Cloudflare facade; the operator UI uses the same model at the
 table/global level.
 
-### 3.1 Levels
+### 3.1 The three roles
 
-Three levels, combined by a `min()` cap so a leaked low-level token never
-escalates past its own level even if its owner is more privileged:
+Three **nested scopes** — not numbered levels, and no arithmetic anywhere:
 
-| Level | Scope | Powers |
-|-------|-------|--------|
-| **L1** | a record set at `(zone, label)` | read & update the A/AAAA set; no create/delete. |
-| **L2** | a whole zone | full CRUD on every RR in the zone (SOA, NS, …). |
-| **L3** | global | anything: any zone, any user, group, grant; grants the operator UI. |
+| Role | Scope | May |
+|------|-------|-----|
+| **RR Manager** | one `(zone, name)` record set | create & update its **A/AAAA** records; nothing else, no deletes. |
+| **Zone Manager** | a whole zone | every record in it, of any type (SOA, NS, …): create, update, delete. |
+| **Superadmin** | global | anything: any zone, any user, group or grant, and the operator console. |
 
-### 3.2 How a level is held
+The nesting runs one way only. A Zone Manager is an RR Manager everywhere in their
+zone and a Superadmin is both everywhere, but an RR Manager cannot delete a record or
+touch a non-address type — a DDNS client, which is what the role exists for, never
+needs to.
+
+### 3.2 How a role is held
 
 Access is **group-based**, never a column on the user:
 
-- **L3** = membership in the **admin group** (a group literally named `admin`).
-  It is not a user flag; it is group membership — the same gate the operator UI's
-  admin uses.
-- **L2** = a **zone-role grant** joining one of the user's groups to a zone. The
-  grant is the row's existence — there is no level column on it.
-- **L1** = a **record-role grant** joining one of the user's groups to a
-  `(zone, label)`.
+- **Superadmin** = membership of the **admin group** (a group literally named
+  `admin`). Not a user flag: the same group membership the operator console gates on,
+  so there is one notion of "admin" in the system.
+- **Zone Manager** = a **zone grant** joining one of the user's groups to a zone.
+- **RR Manager** = a **record grant** joining one of the user's groups to a
+  `(zone, name)`.
 
-A user in several groups gets the **union** of their grants.
+A grant **is the existence of its row** — neither table has a level column. A user in
+several groups gets the **union** of their grants.
 
 ### 3.3 Permission check
 
+Two predicates, and every surface calls one of them:
+
 ```
+zone_manager(caller, zone)        = superadmin or a zone grant on `zone`
+rr_manager(caller, zone, name)    = zone_manager(caller, zone) or a record grant on (zone, name)
+
 required(action, target):
-    read/update of an A/AAAA set   -> L1
-    any other RR or zone action    -> L2
-    zone create/delete, admin objs -> L3
-
-effective(user, zone, label):
-    admin group        -> L3
-    zone-role(zone)    -> L2
-    record-role(zone,label) -> L1
-    else 0
-
-authorized = min(token.level, effective) >= required
+    create/update an A/AAAA set        -> rr_manager(zone, name)
+    any other record, or any delete    -> zone_manager(zone)
+    read/update a zone (SOA)           -> zone_manager(zone)
+    create/delete a zone, admin objects-> superadmin
 ```
 
-### 3.4 API keys (bearer tokens) and the token cap
+There is deliberately no third input. Earlier revisions carried a per-credential
+*level* that was `min()`ed with the caller's own, so a token could be weaker than its
+owner; that ladder is gone (§3.4) — a capability ceiling that isn't a scope confused
+more than it protected, and two of the checks silently escaped it.
 
-A **token** (API key) **is its owner**: every authorization decision it takes uses the
-owner's identity — user id, group memberships, admin flag — read from the database at
-*verify* time, not baked into the key. A key grants nothing by itself; the grants come
-from the owner's groups (§3.2), so revoking a group membership or deactivating the
-account disarms every key that user holds, immediately.
+### 3.4 API keys (bearer tokens)
 
-What the key adds is its own `level` (1–3), which acts as a **ceiling, never a grant**:
-`min(token_level, effective_level)` (§3.3). Tokens are **self-service** — a user mints
-and revokes their own in the profile page — and the picker is capped at the owner's
-maximum level (L3 for admins, else the highest role level they hold anywhere) and
-re-capped server-side. So an L2 user can mint an L1 key for a router, and a compromised
-router cannot escalate; an admin can mint an L1 key that cannot create or delete zones.
-Because the cap is a `min()`, editing a key's level in the console cannot escalate it
-either: a level 3 on a user who holds only an L1 grant is still L1 in effect.
+A **token is its owner**, and nothing else. Every decision uses the owner's identity —
+user id, group memberships, Superadmin flag — read from the database at *verify* time,
+never baked into the key. The key itself grants nothing, so revoking a grant, removing
+a group membership or deactivating the account disarms every key that user holds
+immediately, with no key bookkeeping.
 
-The ceiling is a **capability limit, not a scope**. An L1 key of an admin may update
-A/AAAA at *any* name in *any* zone — what it cannot do is anything needing L2 or L3. To
-tie a device to one record, give the device its own account with an rr-role grant on
-that `(zone, label)` and let it hold a key of that account; the scoping then comes from
-the grant, and the key's level is defence in depth on top.
+Tokens are **self-service**: a user mints and revokes their own on the profile page.
+There is nothing to choose but a label and an optional expiry — no level, no scope.
+
+**To give a device narrow access, give the device its own account.** A thermostat gets
+a user, a group with one record grant on `thermostat.example.com`, and a key of that
+account. The scope then lives in the grants table, where an operator can see it and
+revoke it on its own, and the audit log names the device instead of a person. Handing a
+device a key of an admin account gives it that account's authority; no property of the
+key can take that back.
 
 - Only a one-way hash of the key is stored; the raw key is shown **once** on mint.
-- A key carries: a display name, its level, an optional expiry, a last-used
-  timestamp, and a disabled flag.
+- A key carries: a display name, an optional expiry, a last-used timestamp, and a
+  disabled flag. `expires_at` and `disabled` are the only limits on it.
 - Tokens authenticate the API surfaces and the DDNS endpoint (§2, §6); they never
-  grant the interactive operator UI (that requires an interactive login session).
-- Every authorization decision — including the global ones with no zone to scope
-  against, zone create and zone delete — goes through the `min()` cap. Reading the
-  owner's admin flag directly would silently exempt those from the ceiling.
+  grant the interactive operator console (that needs an interactive login session).
 
 ### 3.5 Identity providers
 
 - **Local users** — username + argon2id password; optional TOTP 2FA and passkeys.
 - **Single sign-on (OIDC)** — optional; see §4.2. SSO controls group membership,
-  and group membership is what carries L1/L2/L3.
+  and group membership is what carries the roles.
 
 ### 3.6 Credential lockout (brute-force brake)
 
@@ -297,7 +296,7 @@ mitigations — and counting them would let a stolen session lock the real user 
 Basic and the console login spend the *same* account budget — there is no way for one account to have
 two budgets. The rows live in `auth_username_lockout` / `auth_ip_lockout`, so they survive a restart (a
 deploy must not hand every attacker a fresh budget), and — the point — **the operator unlock is
-deleting a row in the admin console**: gated at L3, CSRF-checked and written to the audit log like any
+deleting a row in the admin console**: Superadmin-gated, CSRF-checked and written to the audit log like any
 other change, with no bespoke endpoint and no shell access. The console shows both tables ("Locked
 accounts", "Locked addresses"), which is also the only place the fact of an attack is visible.
 
@@ -359,16 +358,16 @@ a `public_url` (external HTTPS base) and one entry per IdP.
   provider's rule targets (its *managed set*) is **reconciled** on each login
   (deprovision included), while groups no rule names (manual grants) are left
   untouched. Rule-named groups are auto-created only when `create_groups` is set.
-- **No admin special-casing** — a rule that names the admin group grants L3, so
+- **No admin special-casing** — a rule that names the admin group makes those users Superadmins, so
   rules must be scoped carefully.
 
 This is provider config only; **none of it is on the API**. The local groups it
-maintains are what carry L1/L2/L3 via zone-role / record-role grants.
+maintains are what carry the roles, via zone / record grants.
 
 ### 4.3 Admin console
 
 Server-rendered CRUD over zones, records (per type), users, groups, and grants,
-gated at L3 (admin group). Write controls are hidden from callers who lack write
+gated on Superadmin (the admin group). Write controls are hidden from callers who lack write
 access, but the API/handler remains the actual enforcement point (hiding is
 cosmetic).
 
@@ -452,8 +451,8 @@ are out of scope.
 
 - **API keys** — belong to a user; hash, prefix, name, level ∈ {1,2,3}, expiry,
   last-used, disabled (§3.4).
-- **Zone-role grant** — L2; unique on `(group, zone)`.
-- **Record-role grant** — L1; unique on `(group, zone, label)`.
+- **Zone grant** — Zone Manager; unique on `(group, zone)`.
+- **Record grant** — RR Manager; unique on `(group, zone, label)`.
 - **Users / groups / group membership / sessions** — the auth model (§3.5, §4).
 - **Push journal** — the backend-push work queue (§7).
 - **Idempotency store** — saved responses for `Idempotency-Key` replay (§6).
@@ -479,13 +478,13 @@ An OpenAPI-described JSON API (spec at `/openapi.json`, human docs served).
 check.
 
 - **Zones:** `GET/POST /api/zones`, `GET/PUT/DELETE /api/zones/{id}`. Read/update
-  need L2 in-scope; create/delete need L3. Create auto-generates SOA + apex NS;
+  need Zone Manager; create/delete need Superadmin. Create auto-generates SOA + apex NS;
   SOA edits bump the serial.
 - **Records:** one **unified, type-discriminated** object over the per-type
   storage — `{id, type, name, ttl, …rdata}` with an **opaque, type-prefixed** id
   (`a-12`, `mx-7`); `type` selects the kind and only its rdata fields apply.
   `GET/POST /api/zones/{id}/rr`, `GET/PUT/DELETE /api/zones/{id}/rr/{rrid}`.
-  A/AAAA read+update need L1; other types and any create/delete need L2.
+  A/AAAA read+update need RR Manager on the name; other types and any create/delete need Zone Manager.
 - **Pagination:** lists paginate at the storage level (default 50, max 500; a
   `X-Total-Count` header) with `?type` / `?name` filters pushed into the query —
   only the page's rows are read, never the whole zone. `?page` / `?per_page`.
@@ -750,10 +749,11 @@ over our entities; `crud::ui::Admin`/`Table` fragments; OpenAPI + CSV; and
 `validate` (the shared field-validator predicates — §5.2).
 
 **We build (app code):** the DNS domain model (`zone` + one entity per RR type); the
-bearer **API-key** entity + a principal resolver that attaches a *level* (the
-library's session identity has no level/token concept); the **L1/L2/L3
-authorization** module (row/scope-aware, beyond the library's header-only per-model
-gate), shared by all three request surfaces; the **DDNS** endpoint; the **native**
+bearer **API-key** entity + a principal resolver (the library authenticates browsers,
+not machine callers); the **role/grant authorization** module — Superadmin / Zone
+Manager / RR Manager over two grant tables, which is row- and scope-aware and so
+beyond the library's header-only per-model gate — shared by all three request
+surfaces; the **DDNS** endpoint; the **native**
 and **Cloudflare** management APIs; the **Knot backend + sync worker + push
 journal**; and config, migrations, metrics, healthcheck, CLI, and zone-file import.
 
@@ -764,9 +764,10 @@ journal**; and config, migrations, metrics, healthcheck, CLI, and zone-file impo
   fragments), and the OpenAPI document; the library only contributes routes, HTML
   fragments, and schemas.
 - **One authorization model, three surfaces.** DDNS, the native API, and the CF
-  facade all resolve a `Principal` (session / HTTP Basic / bearer) and run the same
-  `min(token_level, effective) ≥ required` check (§3). The operator console is
-  L3-only via the library's admin gate. There is never a second authz path.
+  facade all resolve a `Principal` (session / HTTP Basic / bearer) and then ask one of
+  two predicates, `zone_manager` or `rr_manager` (§3.3). A credential never carries
+  rights of its own. The operator console is Superadmin-only via the library's admin
+  gate. There is never a second authz path.
 - **The native API is hand-written, not `crud`.** The library serves one flat
   endpoint set per entity; the native API deliberately presents a *single* record
   resource keyed by an opaque `type`-prefixed id over the many per-type tables,
@@ -798,7 +799,8 @@ Knot backend + worker, §8 operability, §9 config + CLI.
   claim by regex/equals (global) and *other* claims by exact value only; a regex on
   a non-username claim is ignored (logged). Scope rules accordingly.
 - **Row-level authz lives in app code**, not the library gate (which is
-  header-only by design); the admin console stays L3-only.
+  header-only by design and cannot see the target row); the admin console stays
+  Superadmin-only, which *is* the library's gate.
 - **Multi-process deployments** would need row-level locking on the push journal
   (`SELECT … FOR UPDATE SKIP LOCKED`); the single co-located instance doesn't. (The
   lockout counters are DB-backed, so those *are* replica-safe — §3.6.)

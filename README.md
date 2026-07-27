@@ -28,7 +28,7 @@ design + product spec is in [`PRD.md`](PRD.md); contributor orientation is in
 
 - [Quick start](#quick-start) — build, configure, run on `:8080`
 - [The four surfaces](#the-four-surfaces) — UI, DDNS, native API, Cloudflare facade
-- [Authorization model](#authorization-model) — L1/L2/L3, API keys, SSO
+- [Authorization model](#authorization-model) — the three roles, API keys, SSO
 - [Monitoring](#monitoring) — `/healthcheck`, `/metrics`
 - [Production deployment](#production-deployment) — Knot, systemd, TLS proxy, secondaries
 
@@ -111,9 +111,9 @@ users, groups and grants; the APIs manage only zones and records.
 
 A server-rendered console (login required) for zones, records (one editor per RR
 type), users, groups, access grants, API keys, and a read-only audit log. Every
-field is validated on input and carries inline help. The full console is L3
-(admin group); non-admin users work through the DDNS/API surfaces and the
-self-service profile page.
+field is validated on input and carries inline help. The whole console is
+**Superadmin**-only (the `admin` group); everyone else works through the DDNS/API
+surfaces and the self-service profile page.
 
 Cookie-authenticated writes (the login/profile forms, the API-key card, the console's
 own JSON API under `/admin/api`) require a **double-submit CSRF token** and answer
@@ -135,9 +135,7 @@ deletes); the per-record check gates what a token can touch.
 > if it is an SSO account, the password isn't ours to check at all. Either way the
 > server answers `badauth` (401) and never even verifies the password, so it looks
 > exactly like wrong credentials. Mint a key on `/profile` and point the client at
-> `Authorization: Bearer <key>` instead — which is the better arrangement anyway,
-> since the key carries its own level cap (give a router an L1 key rather than your
-> own full authority). Password-only accounts may keep using Basic.
+> `Authorization: Bearer <key>` instead. Password-only accounts may keep using Basic.
 
 `hostname` takes up to 20 comma-separated names and `myip` a comma-separated address
 list of either family (`myip=192.0.2.1,2001:db8::1` — dyn's dual-stack form; the
@@ -177,8 +175,9 @@ curl $URL/api/zones/1/rr -H "Authorization: Bearer $KEY"          # X-Total-Coun
 curl -X DELETE $URL/api/zones/1/rr/a-1 -H "Authorization: Bearer $KEY"
 ```
 
-Zones: read/update need L2, create/delete need L3. Records: A/AAAA read+update
-need L1, everything else L2. Input is validated per type (IP literals, DNS names,
+Zones: reading/updating needs Zone Manager, creating/deleting needs Superadmin.
+Records: an A/AAAA needs RR Manager on its name, everything else needs Zone
+Manager. Input is validated per type (IP literals, DNS names,
 hex/base64 rdata, numeric ranges) — a bad value returns `400`/`422` with
 `{ "error": … }`. The same shared validators guard every write surface (DDNS, this
 API, the CF facade, `admin import`, the admin forms), so nothing that would break
@@ -211,32 +210,34 @@ it can touch, same as the native API.
 Access is group-based with three levels, combined by a `min()` cap so a leaked
 low-level token never escalates past its own level:
 
-| Level | Scope | Powers |
-|-------|-------|--------|
-| **L1** | a record set at `(zone, label)` | read & update the A/AAAA set |
-| **L2** | a whole zone | full CRUD on every RR in the zone |
-| **L3** | global (the `admin` group) | anything, incl. the operator console |
+| Role | Held by | May |
+|------|---------|-----|
+| **RR Manager** | a **record grant** (group ↔ zone + name) | create & update the A/AAAA set at that one name — what a DDNS client needs |
+| **Zone Manager** | a **zone grant** (group ↔ zone) | everything inside that zone: any record type, create, update, delete |
+| **Superadmin** | membership of the `admin` group | everything, including the console and creating/deleting zones |
 
-L3 = membership in the `admin` group; L2 = a **zone-role** grant (group ↔ zone);
-L1 = an **rr-role** grant (group ↔ zone+label). A user gets the union of their
-groups' grants. Users, groups, and grants are managed **only** in the operator
-console (or via SSO), never on the API.
+They are nested **scopes**, not numbered levels: a Zone Manager is an RR Manager
+everywhere in their zone, and a Superadmin is both everywhere. It does not nest the
+other way — an RR Manager cannot delete records or touch other record types, because
+the DDNS client it exists for never needs to. A user gets the union of their groups'
+grants; users, groups and grants are managed **only** in the operator console (or via
+SSO), never on the API.
 
 **API keys (bearer tokens)** are self-service on the profile page (`/profile`,
 below password + 2FA): a user mints/revokes their own keys. Only the key's hash is
 stored; the raw key is shown once.
 
-A key **is its owner** — it carries no rights of its own. Every check uses the owner's
+A key **is its owner** — it carries no rights of its own, and there is nothing to
+choose at mint time but a label and an optional expiry. Every check uses the owner's
 groups and grants, looked up at request time, so removing a grant or deactivating the
-account disarms that user's keys at once. The level picker only sets a **ceiling**
-(`min(key level, what the owner may do)`): it can restrict a key, never widen it, and
-it is capped at the owner's own maximum. So an admin can mint an L1 key for a router
-that cannot create or delete zones, and a compromised router cannot escalate.
+account disarms that user's keys at once.
 
-Note what the ceiling is not: it is a capability limit, not a scope. An L1 key of an
-admin can update A/AAAA at any name in any zone. To pin a device to one record, give
-the device its own account with a record grant on that name and let it hold a key of
-that account.
+Which means: **to give a device narrow access, give the device its own account.** Create
+a user for the thermostat, put it in a group with one record grant on
+`thermostat.example.com`, and let it hold a key of that account. The scope then lives in
+the grants table where you can see and revoke it on its own, and the audit log says
+`thermostat` rather than your name. Handing a device a key of your own admin account
+gives it your authority — no key setting can take that back.
 
 A key is the **only** credential that works on the management APIs (they are
 bearer-only), and the only one that works on DDNS for an account with **2FA or SSO**
@@ -271,7 +272,7 @@ enrolment) are deliberately not counted — that's session theft, not brute forc
 **Unlocking is a row delete in the console.** The counters live in the database
 (`auth_username_lockout`, `auth_ip_lockout`), and the admin console shows them as **Locked accounts**
 and **Locked addresses**. Delete a row and that account or address is free immediately; leave it and it
-clears itself when the lockout expires. The delete is L3-gated and lands in the audit log like any
+clears itself when the lockout expires. The delete is Superadmin-gated and lands in the audit log like any
 other change. Because the rows are durable, a restart no longer resets anyone's budget.
 
 The client address is resolved (and CIDR-matched) the same way everywhere — the forwarded hop when `trust_proxy: true`,
@@ -296,7 +297,7 @@ any account with TOTP enrolled.
 
 **Group mapping.** Declarative `group_rules` run on **every** login and their
 result is *reconciled* onto the user (groups added/removed to match), and those
-groups carry L1/L2/L3 via the zone/rr grants. Each rule keys off a `claim`
+groups carry the roles above via the zone/record grants. Each rule keys off a `claim`
 (default `email`):
 
 - a rule whose `claim` is the provider's **`username_claim`** (default `email`) is
@@ -307,7 +308,7 @@ groups carry L1/L2/L3 via the zone/rr grants. Each rule keys off a `claim`
   value. (Regex on a non-username claim isn't supported and is ignored.)
 
 Rule-named groups are created automatically. There is no admin special-casing — a
-rule that names the `admin` group grants L3, so scope rules carefully.
+rule that names the `admin` group makes that user a Superadmin, so scope rules carefully.
 
 ```yaml
 public_url: "https://ddns.example.com"
@@ -619,7 +620,7 @@ zone "catalog.example." {
 ### 6. Verify end to end
 
 ```sh
-# Log in at https://ddns.example.com/, mint an L3 API key on /profile, then:
+# Log in at https://ddns.example.com/ as a Superadmin, mint an API key on /profile, then:
 KEY=…; URL=https://ddns.example.com
 curl -X POST $URL/api/zones -H "Authorization: Bearer $KEY" \
      -H 'Content-Type: application/json' -d '{"origin":"example.com."}'

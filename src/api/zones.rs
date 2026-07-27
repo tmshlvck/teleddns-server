@@ -1,9 +1,10 @@
-//! Native API zone endpoints. Read/update need L2 in-scope; create/delete need L3. Create
+//! Native API zone endpoints. Reading/updating a zone needs Zone Manager on it; creating or deleting
+//! one needs Superadmin. Create
 //! auto-generates the SOA + apex NS; delete removes the zone, its records, and enqueues a Knot removal.
 
 use super::{err, req_ip, require_bearer, Page};
 use crate::app::AppState;
-use crate::authz::{self, Level};
+use crate::authz;
 use crate::dns;
 use crate::model::{now, rr, zone};
 use crate::principal::Principal;
@@ -61,7 +62,7 @@ pub async fn list(
         .into_response()
 }
 
-/// GET /api/zones/{id} — needs L2 in-scope.
+/// GET /api/zones/{id} — needs Zone Manager on it.
 pub async fn get_one(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -75,13 +76,13 @@ pub async fn get_one(
     let Some(z) = load_zone(&app, id).await else {
         return err(StatusCode::NOT_FOUND, "zone not found");
     };
-    if !zone_allowed(&app, &who, id, Level::L2).await {
+    if !zone_allowed(&app, &who, id).await {
         return err(StatusCode::FORBIDDEN, "insufficient access");
     }
     Json(zone_view(&z)).into_response()
 }
 
-/// POST /api/zones — needs L3. Auto SOA + apex NS. Honors Idempotency-Key.
+/// POST /api/zones — needs Superadmin. Auto SOA + apex NS. Honors Idempotency-Key.
 pub async fn create(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -92,10 +93,8 @@ pub async fn create(
         Ok(p) => p,
         Err(r) => return r,
     };
-    // L3 *through the token cap*: `is_admin` alone would let an admin's deliberately-lowered key
-    // create zones, defeating the point of minting one (PRD §3.4).
-    if !authz::allowed(who.token_level, authz::global_level(who.is_admin), Level::L3) {
-        return err(StatusCode::FORBIDDEN, "zone create requires admin (L3) and an L3 token");
+    if !who.is_superadmin {
+        return err(StatusCode::FORBIDDEN, "creating a zone requires Superadmin");
     }
     // Idempotency.
     let idem = super::idempotency::begin(&app, &who, &headers, &body).await;
@@ -146,7 +145,7 @@ pub async fn create(
     (StatusCode::CREATED, Json(view)).into_response()
 }
 
-/// PUT /api/zones/{id} — needs L2. Updates SOA fields; bumps the serial + enqueues a push.
+/// PUT /api/zones/{id} — needs Zone Manager. Updates SOA fields; bumps the serial + enqueues a push.
 pub async fn update(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -161,7 +160,7 @@ pub async fn update(
     let Some(z) = load_zone(&app, id).await else {
         return err(StatusCode::NOT_FOUND, "zone not found");
     };
-    if !zone_allowed(&app, &who, id, Level::L2).await {
+    if !zone_allowed(&app, &who, id).await {
         return err(StatusCode::FORBIDDEN, "insufficient access");
     }
     let mut am: zone::ActiveModel = z.clone().into();
@@ -211,7 +210,7 @@ pub async fn update(
     Json(view).into_response()
 }
 
-/// DELETE /api/zones/{id} — needs L3. Removes the zone + all its records and enqueues a Knot removal.
+/// DELETE /api/zones/{id} — needs Superadmin. Removes the zone + all its records and enqueues a Knot removal.
 pub async fn delete(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -222,9 +221,9 @@ pub async fn delete(
         Ok(p) => p,
         Err(r) => return r,
     };
-    // As with create: L3 through the cap, since deleting a zone takes every record with it.
-    if !authz::allowed(who.token_level, authz::global_level(who.is_admin), Level::L3) {
-        return err(StatusCode::FORBIDDEN, "zone delete requires admin (L3) and an L3 token");
+    // Deleting a zone takes every record in it, so it stays with the Superadmin.
+    if !who.is_superadmin {
+        return err(StatusCode::FORBIDDEN, "deleting a zone requires Superadmin");
     }
     let Some(z) = load_zone(&app, id).await else {
         return err(StatusCode::NOT_FOUND, "zone not found");
@@ -265,9 +264,9 @@ async fn load_zone(app: &AppState, id: i32) -> Option<zone::Model> {
     zone::Entity::find_by_id(id).one(&app.db).await.ok().flatten()
 }
 
-/// The set of zone ids visible to the caller; `None` means "all" (admin).
+/// The set of zone ids visible to the caller; `None` means "all" (a Superadmin).
 async fn visible_zone_ids(app: &AppState, who: &Principal) -> Result<Option<Vec<i32>>, Response> {
-    if who.is_admin {
+    if who.is_superadmin {
         return Ok(None);
     }
     if who.group_ids.is_empty() {
@@ -295,12 +294,9 @@ async fn visible_zone_ids(app: &AppState, who: &Principal) -> Result<Option<Vec<
     Ok(Some(ids))
 }
 
-/// Whether the caller has at least `need` on the whole zone (no per-label scope).
-pub async fn zone_allowed(app: &AppState, who: &Principal, zone_id: i32, need: Level) -> bool {
-    match authz::effective_level(&app.db, &who.group_ids, who.is_admin, zone_id, None).await {
-        Ok(eff) => authz::allowed(who.token_level, eff, need),
-        Err(_) => false,
-    }
+/// Whether the caller manages this whole zone (Zone Manager grant, or Superadmin).
+pub async fn zone_allowed(app: &AppState, who: &Principal, zone_id: i32) -> bool {
+    authz::zone_manager(&app.db, &who.group_ids, who.is_superadmin, zone_id).await.unwrap_or(false)
 }
 
 async fn delete_all_rrs(app: &AppState, zone_id: i32) -> Result<(), sea_orm::DbErr> {

@@ -40,7 +40,7 @@ pub async fn list(
             }
         }
         // Visibility: admins see all; others only zones they hold a grant on.
-        if !who.is_admin && !has_any_grant(&app, &who, z.id).await {
+        if !who.is_superadmin && !has_any_grant(&app, &who, z.id).await {
             continue;
         }
         result.push(cf_zone(&z));

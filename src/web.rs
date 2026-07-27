@@ -1,6 +1,7 @@
 //! The operator web console: a relativelylight `crud::ui::Admin` panel over our entities, plus the
 //! app-owned page shell, login/profile styling, and the home/docs handlers. The full console is
-//! L3-gated (admin group); non-admin users act through the DDNS/API surfaces and the profile page.
+//! Superadmin-gated (the `admin` group); everyone else acts through the DDNS/API surfaces and the
+//! profile page.
 
 use crate::app::AppState;
 use axum::extract::State;
@@ -42,7 +43,7 @@ fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E
     mm.field("updated_at").datetime();
 }
 
-/// Build the CRUD engine over every managed entity, all gated admin-only (L3). `audit` is registered
+/// Build the CRUD engine over every managed entity, all gated Superadmin-only. `audit` is registered
 /// as the write observer so admin-UI edits are recorded.
 pub fn build_engine(
     db: DatabaseConnection,
@@ -193,11 +194,6 @@ pub fn build_engine(
     apikey.field("prefix").label = Some("Prefix".into());
     apikey.field("prefix").description =
         Some("Short visible start of the key, shown to help identify it.".into());
-    apikey.field("level").label = Some("Access level".into());
-    apikey.field("level").description = Some(
-        "1 = one record set, 2 = a whole zone, 3 = admin. Capped by the owner's level.".into(),
-    );
-    apikey.field("level").validate_int(relativelylight::validate::int_range(1, 3));
     apikey.field("expires_at").label = Some("Expires at".into());
     apikey.field("expires_at").description = Some("Optional expiry (UTC). Empty = never.".into());
     apikey.field("expires_at").datetime();
@@ -213,15 +209,18 @@ pub fn build_engine(
     zr.relation("group").label = Some("Group".into());
     zr.relation("group").description = Some("The group being granted access.".into());
     zr.relation("zone").label = Some("Zone".into());
-    zr.relation("zone").description = Some("The zone the group may fully manage.".into());
+    zr.relation("zone").description = Some("The zone the group may fully manage (Zone Manager).".into());
     crud.register(zr, gate.clone());
 
     let mut rrr = MetaModel::new(crate::model::rr_role::Entity);
     rrr.relation("group").label = Some("Group".into());
     rrr.relation("zone").label = Some("Zone".into());
     rrr.field("label").label = Some("Record name".into());
-    rrr.field("label").description =
-        Some("The record label this grant is scoped to (@ = the zone apex).".into());
+    rrr.field("label").description = Some(
+        "The record label this grant is scoped to (@ = the zone apex); the grant covers its A/AAAA \
+         records only."
+            .into(),
+    );
     rrr.field("label").validate_str(check::record_label);
     crud.register(rrr, gate.clone());
 
@@ -257,14 +256,14 @@ pub fn build_engine(
     // The relation's name is the target model's slug (auth_group / auth_user).
     user.relation("auth_group").label = Some("Groups".into());
     user.relation("auth_group").description =
-        Some("Group memberships — these drive the L1/L2/L3 access grants.".into());
+        Some("Group memberships — the zone/record grants hang off these, and `admin` means Superadmin.".into());
     group.relation("auth_user").label = Some("Members".into());
     crud.register(user, gate.clone());
     crud.register(group, gate.clone());
 
     // Lockout rows (relativelylight `auth::lockout`): who is currently locked out of the login form /
     // DDNS Basic / the token surfaces, and the operator's unlock — **deleting the row**. Everything is
-    // maintained by the limiter, so nothing here is editable; the delete is gated (L3), CSRF-checked
+    // maintained by the limiter, so nothing here is editable; the delete is gated (Superadmin), CSRF-checked
     // and audited like any other write, which is exactly why the counters live in the DB (PRD §3.6).
     let mut ul = MetaModel::new(relativelylight::auth::lockout::username_entity::Entity);
     ul.field("username").label = Some("Account".into());
@@ -347,27 +346,35 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
         .group("Access")
         .entity_with("api_key", |t| {
             t.title("API keys").description(
-                "Bearer tokens for the HTTP API and DDNS. Only the hash is stored; the raw key is \
-                 shown once at mint.",
+                "Bearer tokens for the HTTP API and DDNS. A key has no rights of its own — it acts as \
+                 its owner, so what it may touch is whatever that account's grants allow. Only the \
+                 hash is stored; the raw key is shown once at mint.",
             )
         })
         .entity_with("zone_role", |t| {
-            t.title("Zone grants").description("Give a group full control of a whole zone (L2).")
+            t.title("Zone grants").description(
+                "Zone Manager: the group may manage every record in the zone, of any type, including \
+                 deletes.",
+            )
         })
         .entity_with("rr_role", |t| {
-            t.title("Record grants")
-                .description("Give a group control of a single record set — a (zone, name) pair (L1).")
+            t.title("Record grants").description(
+                "RR Manager: the group may create and update the A/AAAA set at one (zone, name) — what \
+                 a DDNS client needs, and nothing else.",
+            )
         })
         .separator()
         .group("Accounts")
         .entity_with("auth_user", |t| {
             t.title("Users").description(
-                "Login accounts. Set an SSO provider on an account to make it external (no local \
-                 password / 2FA).",
+                "Login accounts — for people, and for devices that need their own narrow grant. Set an \
+                 SSO provider on an account to make it external (no local password / 2FA).",
             )
         })
         .entity_with("auth_group", |t| {
-            t.title("Groups").description("Groups drive access grants and the admin gate.")
+            t.title("Groups").description(
+                "Groups carry the grants below; membership of `admin` is the Superadmin role.",
+            )
         })
         .entity_with("auth_username_lockout", |t| {
             t.title("Locked accounts").description(

@@ -1,6 +1,7 @@
-//! Access-grant entities. Both join one of the user's groups to a scope; the grant *is* the row's
-//! existence (no level column). `zone_role` = L2 (a whole zone); `rr_role` = L1 (a `(zone, label)`
-//! record set). Uniqueness is enforced in app code (and by an index in the migrator).
+//! Access-grant entities. Both join one of the user's groups to a scope, and the grant *is* the row's
+//! existence — there is no level column: `zone_role` confers **Zone Manager** on a whole zone,
+//! `rr_role` confers **RR Manager** on one `(zone, label)` record set (its A/AAAA only). Uniqueness is
+//! enforced in app code (and by an index in the migrator).
 
 pub mod zone_role {
     use sea_orm::entity::prelude::*;

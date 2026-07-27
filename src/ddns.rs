@@ -1,6 +1,7 @@
 //! The dyndns2 DDNS endpoint (PRD §2, wire protocol in `DYNDNS2.md`). Three paths behave
 //! identically and take `GET` or `POST`; any other method is `405 badagent`. Auth is HTTP Basic or
-//! Bearer; per-record authorization is L1; the path only ever creates/updates A and AAAA (never
+//! Bearer; a caller needs the RR Manager role on the name (§3); the path only ever creates/updates
+//! A and AAAA (never
 //! deletes). On any data change it bumps the SOA serial and enqueues a push (via the RR after_save
 //! hook).
 //!
@@ -12,7 +13,7 @@
 //! instead. The HTTP status is the worst of the lines.
 
 use crate::app::AppState;
-use crate::authz::{self, Level};
+use crate::authz;
 use crate::dns;
 use crate::model::rr;
 use crate::principal::{self, AuthError, Principal, Source};
@@ -373,21 +374,13 @@ async fn update_one(
     ip: Option<std::net::IpAddr>,
     auth_type: &str,
 ) -> Outcome {
-    // Authorize: L1 on this exact (zone, label).
-    let eff = match authz::effective_level(
-        &app.db,
-        &principal.group_ids,
-        principal.is_admin,
-        zone.id,
-        Some(label),
-    )
-    .await
+    // Authorize: RR Manager on this exact (zone, label) — or anyone who manages the zone.
+    match authz::rr_manager(&app.db, &principal.group_ids, principal.is_superadmin, zone.id, label)
+        .await
     {
-        Ok(l) => l,
+        Ok(true) => {}
+        Ok(false) => return Outcome::NotYours,
         Err(_) => return Outcome::Error,
-    };
-    if !authz::allowed(principal.token_level, eff, Level::L1) {
-        return Outcome::NotYours;
     }
 
     let ttl = app.cfg.ddns_rr_ttl as i32;

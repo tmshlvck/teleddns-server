@@ -7,7 +7,7 @@ use crate::app::AppState;
 use crate::api::record_view;
 use crate::api::req_ip;
 use crate::api::zones::zone_allowed;
-use crate::authz::{self, Level};
+use crate::authz;
 use crate::dns;
 use crate::model::zone;
 use crate::principal::Principal;
@@ -46,8 +46,8 @@ pub async fn list(
         Ok(z) => z,
         Err(r) => return r,
     };
-    if !zone_allowed(&app, &who, zid, Level::L1).await && !zone_allowed(&app, &who, zid, Level::L2).await {
-        // A reader needs at least some zone-wide access to list; keep it simple (L1 zone-wide/L2).
+    if !zone_allowed(&app, &who, zid).await {
+        // Listing is zone-wide, so it needs Zone Manager — an RR Manager reads its own record instead.
         return cf_err(StatusCode::FORBIDDEN, 1002, "insufficient access");
     }
     let type_filter = q.get("type").cloned();
@@ -122,8 +122,8 @@ pub async fn create(
         Ok(z) => z,
         Err(r) => return r,
     };
-    if !zone_allowed(&app, &who, zid, Level::L2).await {
-        return cf_err(StatusCode::FORBIDDEN, 1002, "record create requires L2 on the zone");
+    if !zone_allowed(&app, &who, zid).await {
+        return cf_err(StatusCode::FORBIDDEN, 1002, "creating a record requires Zone Manager on the zone");
     }
     let native = match cf_to_native(&body, &zone) {
         Ok(n) => n,
@@ -208,8 +208,8 @@ pub async fn delete(
     if zone_or_err(&app, zid).await.is_err() {
         return cf_err(StatusCode::NOT_FOUND, 1003, "zone not found");
     }
-    if !zone_allowed(&app, &who, zid, Level::L2).await {
-        return cf_err(StatusCode::FORBIDDEN, 1002, "record delete requires L2 on the zone");
+    if !zone_allowed(&app, &who, zid).await {
+        return cf_err(StatusCode::FORBIDDEN, 1002, "deleting a record requires Zone Manager on the zone");
     }
     match record_view::delete_record(&app.db, zid, &rid).await {
         // CF returns { id } on delete.
@@ -304,12 +304,11 @@ fn map_err(e: record_view::ApiError) -> Response {
 
 async fn read_ok(app: &AppState, who: &Principal, zid: i32, typ: &str, label: &str) -> bool {
     if record_view::is_addr_type(typ) {
-        let eff = authz::effective_level(&app.db, &who.group_ids, who.is_admin, zid, Some(label))
+        authz::rr_manager(&app.db, &who.group_ids, who.is_superadmin, zid, label)
             .await
-            .unwrap_or(Level::None);
-        authz::allowed(who.token_level, eff, Level::L1)
+            .unwrap_or(false)
     } else {
-        zone_allowed(app, who, zid, Level::L2).await
+        zone_allowed(app, who, zid).await
     }
 }
 

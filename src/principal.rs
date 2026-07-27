@@ -1,7 +1,10 @@
-//! Resolve a request to an authenticated `Principal` with an effective *token level*. Three sources:
-//! the operator session cookie (via relativelylight `auth`), HTTP Basic (DDNS only), and a Bearer API
-//! key. The token level caps what the principal can do (§3); the per-target `effective_level` lookup
-//! (see `authz`) does the rest.
+//! Resolve a request to an authenticated `Principal`. Three sources: the operator session cookie (via
+//! relativelylight `auth`), HTTP Basic (DDNS only), and a Bearer API key.
+//!
+//! **A credential carries no rights of its own** — least of all a bearer token. Whichever source
+//! authenticated, the `Principal` is built from the *user*: their group memberships and their Superadmin
+//! flag, read from the database on this request. What they may then do is `authz`'s two predicates over
+//! the grant tables.
 //!
 //! **Every credential check here goes through the brute-force brake** — `AppState::{usernames, ips}`,
 //! which are relativelylight's own lockout counters (`auth::lockout`), not a second implementation: a
@@ -11,7 +14,6 @@
 //! here and only here (with its metric) — don't re-count at the call site.
 
 use crate::app::AppState;
-use crate::authz::Level;
 use crate::model::{api_key, now};
 use axum::http::HeaderMap;
 use relativelylight::auth::{self, Auth};
@@ -41,18 +43,18 @@ impl Source {
     }
 }
 
-/// An authenticated caller and the level their credential carries.
+/// An authenticated caller: who they are and what groups they hold. Nothing about *how* they
+/// authenticated changes what they may do.
 #[derive(Clone, Debug)]
 pub struct Principal {
     pub user_id: i32,
     pub username: String,
     pub group_ids: Vec<i32>,
-    /// Group names the caller belongs to (kept for audit/diagnostics; admin status is `is_admin`).
+    /// Group names the caller belongs to (kept for audit/diagnostics; the role flag is `is_superadmin`).
     #[allow(dead_code)]
     pub group_names: Vec<String>,
-    pub is_admin: bool,
-    /// The credential's own level cap: L3 for a session/Basic login, the key's level for a token.
-    pub token_level: Level,
+    /// Membership of the `admin` group — the Superadmin role (see `authz`).
+    pub is_superadmin: bool,
     pub source: Source,
     /// The API-key id, when authenticated by a token (for audit).
     pub key_id: Option<i32>,
@@ -79,7 +81,7 @@ pub fn hash_key(raw: &str) -> String {
     hex::encode(h.finalize())
 }
 
-/// Resolve from the operator session cookie (token level = L3, capped by effective access).
+/// Resolve from the operator session cookie.
 pub async fn from_session(
     auth: &Auth,
     db: &DatabaseConnection,
@@ -89,14 +91,13 @@ pub async fn from_session(
         return Ok(None);
     };
     let user_id: i32 = id.id.parse().unwrap_or(0);
-    let (group_ids, group_names, is_admin) = crate::authz::user_groups(db, user_id).await?;
+    let (group_ids, group_names, is_superadmin) = crate::authz::user_groups(db, user_id).await?;
     Ok(Some(Principal {
         user_id,
         username: id.username,
         group_ids,
         group_names,
-        is_admin,
-        token_level: Level::L3,
+        is_superadmin,
         source: Source::Ui,
         key_id: None,
     }))
@@ -173,21 +174,20 @@ async fn principal_for_token(
         Some(u) if u.is_active => u,
         _ => return Ok(None),
     };
-    let (group_ids, group_names, is_admin) = crate::authz::user_groups(db, key.user_id).await?;
+    let (group_ids, group_names, is_superadmin) = crate::authz::user_groups(db, key.user_id).await?;
     Ok(Some(Principal {
         user_id: key.user_id,
         username: user.username,
         group_ids,
         group_names,
-        is_admin,
-        token_level: Level::from_i32(key.level),
+        is_superadmin,
         source,
         key_id: Some(key.id),
     }))
 }
 
 /// Resolve from HTTP Basic credentials (DDNS only). Rejects users with any strong factor (TOTP or
-/// SSO) — they must use a token. Token level = L3, capped by effective access.
+/// SSO) — they must use a token.
 ///
 /// This is the one surface where a *password* is guessable, so it is limited per account as well as
 /// per source address: while either is locked the argon2 verification is never run.
@@ -227,7 +227,7 @@ pub async fn from_basic(
     if !auth::verify_password(&user.password_hash, password) {
         return Err(rejected(app, Source::Ddns, ip, Some(username), "bad_password").await);
     }
-    let (group_ids, group_names, is_admin) = crate::authz::user_groups(&app.db, user.id)
+    let (group_ids, group_names, is_superadmin) = crate::authz::user_groups(&app.db, user.id)
         .await
         .map_err(|_| AuthError::Internal)?;
     // A good password clears the account's failures — including any it collected on the console login
@@ -239,8 +239,7 @@ pub async fn from_basic(
         username: user.username,
         group_ids,
         group_names,
-        is_admin,
-        token_level: Level::L3,
+        is_superadmin,
         source: Source::Ddns,
         key_id: None,
     })

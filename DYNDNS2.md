@@ -40,9 +40,10 @@ credentials → `badauth` + HTTP 401.
 
 ## 3. Authorization
 
-Each `(hostname, address-family)` needs level **L1** on the resolved
-`(zone, record-name)` — granted per record set or inherited from a zone-wide (L2) or
-admin (L3) grant, and capped by the token's own level. Insufficient access →
+Each `(hostname, address-family)` needs the **RR Manager** role on the resolved
+`(zone, record-name)` — granted for that record set, or inherited by a Zone Manager of
+the zone or a Superadmin. A credential is its owner, so a bearer token has exactly the
+access the account it belongs to has. Insufficient access →
 `!yours` for that hostname. A caller that may write the name may also **create** it
 if it does not exist yet.
 
@@ -342,7 +343,7 @@ curl -s -H "Authorization: Bearer wrong" "$U/nic/update?hostname=a.example.com&m
 # -> badauth                           (401)
 
 # a token scoped to one record set, two names requested
-curl -s -H "Authorization: Bearer $L1KEY" "$U/nic/update?hostname=mine.example.com,other.example.com&myip=192.0.2.20"
+curl -s -H "Authorization: Bearer $KEY" "$U/nic/update?hostname=mine.example.com,other.example.com&myip=192.0.2.20"
 # -> good 192.0.2.20
 #    !yours                            (403)
 ```

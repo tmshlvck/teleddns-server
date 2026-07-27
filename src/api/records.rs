@@ -1,12 +1,13 @@
-//! Native API record endpoints over the unified view. List needs L2; A/AAAA read+update need L1 (on
-//! the record's label); other reads/updates and any create/delete need L2. Pagination + `?type`/
+//! Native API record endpoints over the unified view. Listing needs Zone Manager; reading/updating an
+//! A/AAAA needs RR Manager on that label; every other read/update and any create/delete needs Zone
+//! Manager. Pagination + `?type`/
 //! `?name` filters + `X-Total-Count`; POST honors Idempotency-Key.
 
 use super::record_view;
 use super::zones::zone_allowed;
 use super::{err, map_api_error, req_ip, require_bearer, Page};
 use crate::app::AppState;
-use crate::authz::{self, Level};
+use crate::authz;
 use crate::model::zone;
 use crate::principal::Principal;
 use axum::extract::{ConnectInfo, Path, Query, State};
@@ -27,7 +28,7 @@ async fn zone_or_404(app: &AppState, id: i32) -> Result<zone::Model, Response> {
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "zone not found"))
 }
 
-/// GET /api/zones/{id}/rr — list (L2), paginated, `?type`/`?name` filters, `X-Total-Count`.
+/// GET /api/zones/{id}/rr — list (Zone Manager), paginated, `?type`/`?name` filters, `X-Total-Count`.
 pub async fn list(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -42,7 +43,7 @@ pub async fn list(
     if let Err(r) = zone_or_404(&app, id).await {
         return r;
     }
-    if !zone_allowed(&app, &who, id, Level::L2).await {
+    if !zone_allowed(&app, &who, id).await {
         return err(StatusCode::FORBIDDEN, "insufficient access");
     }
     let page = Page::from_query(&q);
@@ -59,7 +60,7 @@ pub async fn list(
         .into_response()
 }
 
-/// GET /api/zones/{id}/rr/{rrid} — A/AAAA need L1 on the label; else L2.
+/// GET /api/zones/{id}/rr/{rrid} — A/AAAA need RR Manager on the label; else Zone Manager.
 pub async fn get_one(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -85,7 +86,7 @@ pub async fn get_one(
     Json(view).into_response()
 }
 
-/// POST /api/zones/{id}/rr — create (L2). Honors Idempotency-Key.
+/// POST /api/zones/{id}/rr — create (Zone Manager). Honors Idempotency-Key.
 pub async fn create(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -100,9 +101,9 @@ pub async fn create(
     if let Err(r) = zone_or_404(&app, id).await {
         return r;
     }
-    // Create of any type needs L2 on the zone.
-    if !zone_allowed(&app, &who, id, Level::L2).await {
-        return err(StatusCode::FORBIDDEN, "record create requires L2 on the zone");
+    // Creating any type needs the whole zone.
+    if !zone_allowed(&app, &who, id).await {
+        return err(StatusCode::FORBIDDEN, "creating a record requires Zone Manager on the zone");
     }
     match super::idempotency::begin(&app, &who, &headers, &body).await {
         super::idempotency::Outcome::Replay(s) => return s.to_response(),
@@ -126,7 +127,7 @@ pub async fn create(
     (StatusCode::CREATED, Json(view)).into_response()
 }
 
-/// PUT /api/zones/{id}/rr/{rrid} — A/AAAA need L1 on the label; else L2.
+/// PUT /api/zones/{id}/rr/{rrid} — A/AAAA need RR Manager on the label; else Zone Manager.
 pub async fn update(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -141,7 +142,7 @@ pub async fn update(
     if let Err(r) = zone_or_404(&app, id).await {
         return r;
     }
-    // Determine the record's current label for the L1 check.
+    // Determine the record's current label for the RR Manager check.
     let existing = match record_view::get_record(&app.db, id, &rrid).await {
         Ok(v) => v,
         Err(e) => return map_api_error(e),
@@ -162,7 +163,7 @@ pub async fn update(
     Json(view).into_response()
 }
 
-/// DELETE /api/zones/{id}/rr/{rrid} — needs L2.
+/// DELETE /api/zones/{id}/rr/{rrid} — needs Zone Manager (an RR Manager never deletes).
 pub async fn delete(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -176,8 +177,8 @@ pub async fn delete(
     if let Err(r) = zone_or_404(&app, id).await {
         return r;
     }
-    if !zone_allowed(&app, &who, id, Level::L2).await {
-        return err(StatusCode::FORBIDDEN, "record delete requires L2 on the zone");
+    if !zone_allowed(&app, &who, id).await {
+        return err(StatusCode::FORBIDDEN, "deleting a record requires Zone Manager on the zone");
     }
     match record_view::delete_record(&app.db, id, &rrid).await {
         Ok(v) => {
@@ -191,19 +192,18 @@ pub async fn delete(
     }
 }
 
-/// Read gate: A/AAAA → L1 on the label; other types → L2 on the zone.
+/// Read gate: an A/AAAA record needs RR Manager on its label; any other type needs Zone Manager.
 async fn read_allowed(app: &AppState, who: &Principal, zone_id: i32, typ: &str, label: &str) -> bool {
     if record_view::is_addr_type(typ) {
-        let eff = authz::effective_level(&app.db, &who.group_ids, who.is_admin, zone_id, Some(label))
+        authz::rr_manager(&app.db, &who.group_ids, who.is_superadmin, zone_id, label)
             .await
-            .unwrap_or(Level::None);
-        authz::allowed(who.token_level, eff, Level::L1)
+            .unwrap_or(false)
     } else {
-        zone_allowed(app, who, zone_id, Level::L2).await
+        zone_allowed(app, who, zone_id).await
     }
 }
 
-/// Update gate: same shape as read (A/AAAA → L1, else L2).
+/// Update gate: same shape as read (A/AAAA → RR Manager, else Zone Manager).
 async fn write_allowed(app: &AppState, who: &Principal, zone_id: i32, typ: &str, label: &str) -> bool {
     read_allowed(app, who, zone_id, typ, label).await
 }
