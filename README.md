@@ -223,9 +223,20 @@ groups' grants. Users, groups, and grants are managed **only** in the operator
 console (or via SSO), never on the API.
 
 **API keys (bearer tokens)** are self-service on the profile page (`/profile`,
-below password + 2FA): a user mints/revokes their own keys, with the level picker
-capped at their max level and re-capped server-side (so an L2 user can mint an L1
-key for a router). Only the key's hash is stored; the raw key is shown once.
+below password + 2FA): a user mints/revokes their own keys. Only the key's hash is
+stored; the raw key is shown once.
+
+A key **is its owner** — it carries no rights of its own. Every check uses the owner's
+groups and grants, looked up at request time, so removing a grant or deactivating the
+account disarms that user's keys at once. The level picker only sets a **ceiling**
+(`min(key level, what the owner may do)`): it can restrict a key, never widen it, and
+it is capped at the owner's own maximum. So an admin can mint an L1 key for a router
+that cannot create or delete zones, and a compromised router cannot escalate.
+
+Note what the ceiling is not: it is a capability limit, not a scope. An L1 key of an
+admin can update A/AAAA at any name in any zone. To pin a device to one record, give
+the device its own account with a record grant on that name and let it hold a key of
+that account.
 
 A key is the **only** credential that works on the management APIs (they are
 bearer-only), and the only one that works on DDNS for an account with **2FA or SSO**

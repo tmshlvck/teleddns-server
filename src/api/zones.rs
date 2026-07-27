@@ -92,8 +92,10 @@ pub async fn create(
         Ok(p) => p,
         Err(r) => return r,
     };
-    if !who.is_admin {
-        return err(StatusCode::FORBIDDEN, "zone create requires admin (L3)");
+    // L3 *through the token cap*: `is_admin` alone would let an admin's deliberately-lowered key
+    // create zones, defeating the point of minting one (PRD §3.4).
+    if !authz::allowed(who.token_level, authz::global_level(who.is_admin), Level::L3) {
+        return err(StatusCode::FORBIDDEN, "zone create requires admin (L3) and an L3 token");
     }
     // Idempotency.
     let idem = super::idempotency::begin(&app, &who, &headers, &body).await;
@@ -220,8 +222,9 @@ pub async fn delete(
         Ok(p) => p,
         Err(r) => return r,
     };
-    if !who.is_admin {
-        return err(StatusCode::FORBIDDEN, "zone delete requires admin (L3)");
+    // As with create: L3 through the cap, since deleting a zone takes every record with it.
+    if !authz::allowed(who.token_level, authz::global_level(who.is_admin), Level::L3) {
+        return err(StatusCode::FORBIDDEN, "zone delete requires admin (L3) and an L3 token");
     }
     let Some(z) = load_zone(&app, id).await else {
         return err(StatusCode::NOT_FOUND, "zone not found");

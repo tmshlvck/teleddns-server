@@ -68,6 +68,12 @@ password + 2FA), then exercise `/api/...`.
   console gate in `web.rs`, the L3 decision in `authz::user_groups`, the first-start seed,
   and `--break-glass`. Never write the literal `"admin"` again — a mismatch mints an
   "admin" outside the group the gate checks.
+- **A token is its owner, plus a ceiling.** `principal.rs` fills `Principal` from the *user*
+  (groups, admin flag, live from the DB); the key contributes only `token_level`. Every decision
+  is `authz::allowed(token_level, effective, need)` — a `min()`, so a key can only ever be
+  narrower than its owner. Operations with no zone to scope against (zone create/delete) use
+  `authz::global_level(is_admin)` for the effective side; **never branch on `who.is_admin`
+  directly**, or that operation silently escapes the ceiling.
 - **One authorization model, three surfaces.** DDNS, the native API, and the CF
   facade all resolve a `Principal` (session/Basic/bearer) and check
   `authz::allowed(token_level, effective, need)`. The operator console is L3-only

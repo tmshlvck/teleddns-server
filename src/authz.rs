@@ -41,6 +41,19 @@ pub fn allowed(token_level: Level, effective: Level, need: Level) -> bool {
     token_level.cap(effective) >= need
 }
 
+/// The level a caller holds **globally**, with no zone to scope against: L3 for the admin group, and
+/// nothing otherwise — a zone-role or rr-role grant is scoped to its target and confers no global
+/// authority. Pair it with [`allowed`] for operations that have no zone to check yet (creating one) or
+/// whose blast radius is the whole zone plus its contents (deleting one), so those go through the
+/// token cap like every other decision instead of reading `is_admin` directly.
+pub fn global_level(is_admin: bool) -> Level {
+    if is_admin {
+        Level::L3
+    } else {
+        Level::None
+    }
+}
+
 /// The level a set of groups grants at a specific `(zone, label)`. `label = None` asks only about
 /// zone-wide authority (admin/L2). Admin group → L3; a zone-role → L2; an rr-role on the label → L1.
 pub async fn effective_level<C: ConnectionTrait>(
@@ -150,6 +163,20 @@ mod tests {
         assert!(!allowed(Level::L3, Level::L2, Level::L3));
         // No effective access denies everything.
         assert!(!allowed(Level::L3, Level::None, Level::L1));
+    }
+
+    #[test]
+    fn a_capped_token_cannot_reach_a_global_operation() {
+        // Zone create/delete need L3 *through the cap*: an admin who deliberately minted a
+        // low-level key must not be able to create or delete zones with it, which is the whole
+        // promise of the level picker ("an L1 key for a router can't escalate").
+        let admin = global_level(true);
+        assert!(allowed(Level::L3, admin, Level::L3), "an L3 token of an admin: yes");
+        assert!(!allowed(Level::L2, admin, Level::L3), "an L2 token of an admin: no");
+        assert!(!allowed(Level::L1, admin, Level::L3), "an L1 token of an admin: no");
+        // A non-admin holds nothing globally, whatever their token says or their zone grants are.
+        assert_eq!(global_level(false), Level::None);
+        assert!(!allowed(Level::L3, global_level(false), Level::L3));
     }
 
     #[test]

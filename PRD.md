@@ -227,18 +227,35 @@ authorized = min(token.level, effective) >= required
 
 ### 3.4 API keys (bearer tokens) and the token cap
 
-A **token** (API key) belongs to a user and carries its own `level` (1–3). Tokens
-are **self-service**: a user mints and revokes their own keys in their profile page
-in the operator UI. The level picker is **capped** at the user's maximum level (L3
-for admins, else the highest role level they hold anywhere) and re-capped
-server-side. This lets an L2 user mint an L1 key for a router so a compromised
-router can't escalate.
+A **token** (API key) **is its owner**: every authorization decision it takes uses the
+owner's identity — user id, group memberships, admin flag — read from the database at
+*verify* time, not baked into the key. A key grants nothing by itself; the grants come
+from the owner's groups (§3.2), so revoking a group membership or deactivating the
+account disarms every key that user holds, immediately.
+
+What the key adds is its own `level` (1–3), which acts as a **ceiling, never a grant**:
+`min(token_level, effective_level)` (§3.3). Tokens are **self-service** — a user mints
+and revokes their own in the profile page — and the picker is capped at the owner's
+maximum level (L3 for admins, else the highest role level they hold anywhere) and
+re-capped server-side. So an L2 user can mint an L1 key for a router, and a compromised
+router cannot escalate; an admin can mint an L1 key that cannot create or delete zones.
+Because the cap is a `min()`, editing a key's level in the console cannot escalate it
+either: a level 3 on a user who holds only an L1 grant is still L1 in effect.
+
+The ceiling is a **capability limit, not a scope**. An L1 key of an admin may update
+A/AAAA at *any* name in *any* zone — what it cannot do is anything needing L2 or L3. To
+tie a device to one record, give the device its own account with an rr-role grant on
+that `(zone, label)` and let it hold a key of that account; the scoping then comes from
+the grant, and the key's level is defence in depth on top.
 
 - Only a one-way hash of the key is stored; the raw key is shown **once** on mint.
 - A key carries: a display name, its level, an optional expiry, a last-used
   timestamp, and a disabled flag.
 - Tokens authenticate the API surfaces and the DDNS endpoint (§2, §6); they never
   grant the interactive operator UI (that requires an interactive login session).
+- Every authorization decision — including the global ones with no zone to scope
+  against, zone create and zone delete — goes through the `min()` cap. Reading the
+  owner's admin flag directly would silently exempt those from the ceiling.
 
 ### 3.5 Identity providers
 
