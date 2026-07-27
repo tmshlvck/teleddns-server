@@ -14,6 +14,17 @@ use relativelylight::crud::ui::Admin;
 use sea_orm::DatabaseConnection;
 use std::sync::Arc;
 
+/// Canonicalize a name as it is written: DNS is case-insensitive but our lookups are exact string
+/// matches, so a label or origin typed `WWW` here would never meet the lower-cased `www` a DDNS or API
+/// request resolves to (`dns::normalize_label`). Applied to every record label, every zone origin, and
+/// the label on a record grant.
+fn lowercase() -> relativelylight::crud::seaorm::WriteTransform {
+    Box::new(|v| match v.as_str() {
+        Some(s) => serde_json::Value::String(crate::dns::normalize_label(s)),
+        None => v,
+    })
+}
+
 /// Shared per-RR field metadata: the common Name / TTL / Zone columns every record type carries.
 /// `default_ttl` pre-fills the TTL field on the create form (`config.default_ttl` — the same value
 /// the native API applies when a caller omits it).
@@ -25,6 +36,7 @@ fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E
             .into(),
     );
     mm.field("label").validate_str(crate::dns::check::record_label);
+    mm.field("label").on_write = Some(lowercase());
     mm.field("ttl").label = Some("TTL (seconds)".into());
     mm.field("ttl").description = Some(
         "How long resolvers may cache this record, e.g. 3600 (=1h); use 300 (=5m) for records that \
@@ -106,6 +118,7 @@ pub fn build_engine(
     z.field("updated_at").read_only = true;
     z.field("updated_at").datetime();
     z.field("origin").validate_str(crate::dns::check::zone_origin);
+    z.field("origin").on_write = Some(lowercase());
     z.field("mname").validate_str(crate::dns::check::target_name);
     z.field("rname").validate_str(crate::dns::check::target_name);
     z.field("serial").validate_int(crate::dns::check::serial);
@@ -222,6 +235,7 @@ pub fn build_engine(
             .into(),
     );
     rrr.field("label").validate_str(check::record_label);
+    rrr.field("label").on_write = Some(lowercase());
     crud.register(rrr, gate.clone());
 
     // Auth accounts + groups (admin-only, read included).

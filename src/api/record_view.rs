@@ -396,6 +396,7 @@ fn name_of(obj: &Map<String, Value>) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::Validation("name is required".into()))?;
     let n = if n.is_empty() { "@" } else { n };
     dns::check::record_label(n).map_err(ApiError::Validation)?;
+    let n = &dns::normalize_label(n);
     Ok(n.to_string())
 }
 

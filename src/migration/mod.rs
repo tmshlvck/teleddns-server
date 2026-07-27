@@ -21,6 +21,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0001_init::Migration),
             Box::new(m0002_lockout::Migration),
             Box::new(m0003_drop_api_key_level::Migration),
+            Box::new(m0004_lowercase_names::Migration),
         ]
     }
 }
@@ -213,6 +214,82 @@ mod m0003_drop_api_key_level {
                     .to_owned(),
             )
             .await
+        }
+    }
+}
+
+/// Canonicalize stored names to lower case. DNS is case-insensitive (RFC 4343), but our lookups are
+/// exact string matches and a request always resolves to a lower-cased name — so a zone `Example.com.`
+/// was never found, a `WWW` record was a second row beside `www`, and a `Thermostat` record grant
+/// silently authorized nothing. Every write path now canonicalizes (`dns::normalize_label`); this
+/// fixes what is already stored.
+///
+/// The two tables with a uniqueness constraint (`zone.origin`, `rr_role`) are updated only where the
+/// lower-cased value is still free, and the step then **fails loudly** if any mixed-case row is left:
+/// that means a genuine duplicate pair (`Example.com.` *and* `example.com.`), which only an operator
+/// can resolve — silently dropping one would take records with it.
+mod m0004_lowercase_names {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::prelude::*;
+
+    /// Every table with a record `label` column (no uniqueness constraint on them).
+    const RR_TABLES: [&str; 14] = [
+        "rr_a", "rr_aaaa", "rr_ns", "rr_ptr", "rr_cname", "rr_txt", "rr_mx", "rr_srv", "rr_caa",
+        "rr_sshfp", "rr_tlsa", "rr_dnskey", "rr_ds", "rr_naptr",
+    ];
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0004_lowercase_names"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            let db = m.get_connection();
+            for t in RR_TABLES {
+                db.execute_unprepared(&format!(
+                    "UPDATE {t} SET label = lower(label) WHERE label <> lower(label)"
+                ))
+                .await?;
+            }
+            // Unique on `origin`: skip a row whose lower-cased origin is already taken.
+            db.execute_unprepared(
+                "UPDATE zone SET origin = lower(origin) WHERE origin <> lower(origin) \
+                 AND NOT EXISTS (SELECT 1 FROM zone z2 WHERE z2.origin = lower(zone.origin))",
+            )
+            .await?;
+            // Unique on (group_id, zone_id, label): same treatment.
+            db.execute_unprepared(
+                "UPDATE rr_role SET label = lower(label) WHERE label <> lower(label) \
+                 AND NOT EXISTS (SELECT 1 FROM rr_role r2 WHERE r2.group_id = rr_role.group_id \
+                 AND r2.zone_id = rr_role.zone_id AND r2.label = lower(rr_role.label))",
+            )
+            .await?;
+            for (table, column) in [("zone", "origin"), ("rr_role", "label")] {
+                let sql = format!("SELECT count(*) AS n FROM {table} WHERE {column} <> lower({column})");
+                let left = db
+                    .query_one(sea_orm::Statement::from_string(db.get_database_backend(), sql))
+                    .await?
+                    .map(|r| r.try_get::<i64>("", "n").unwrap_or(0))
+                    .unwrap_or(0);
+                if left > 0 {
+                    return Err(DbErr::Custom(format!(
+                        "{left} row(s) in `{table}` differ from their lower-cased `{column}` only by \
+                         case, and the lower-cased value is already taken — DNS treats them as the \
+                         same name. Merge or delete the duplicates in the admin console, then restart."
+                    )));
+                }
+            }
+            Ok(())
+        }
+
+        /// Case cannot be restored, and restoring it would only bring the bug back.
+        async fn down(&self, _m: &SchemaManager) -> Result<(), DbErr> {
+            Ok(())
         }
     }
 }

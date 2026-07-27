@@ -804,6 +804,15 @@ Knot backend + worker, §8 operability, §9 config + CLI.
 - **Multi-process deployments** would need row-level locking on the push journal
   (`SELECT … FOR UPDATE SKIP LOCKED`); the single co-located instance doesn't. (The
   lockout counters are DB-backed, so those *are* replica-safe — §3.6.)
+- **Grants target groups, not users** (§3.2), so a device account needs four objects:
+  the user, a group, a membership and the grant. Worse, a group *shared* by several
+  devices lets each of them update every name granted to it, so per-device isolation
+  means a group per device. **Future extension:** let a grant point at a user *or* a
+  group (nullable `user_id` / `group_id`, exactly one set), making a device two
+  objects with a scope of its own. Deferred as not worth the effort now: the model is
+  unchanged either way, and the cost is almost entirely the SQLite migration —
+  relaxing `NOT NULL` on `group_id` needs the create-copy-drop-rename dance on both
+  grant tables, with their unique indexes rebuilt and new ones for the user column.
 - **No *username* whitelist on the lockout** (§3.6) — addresses can be exempted,
   accounts cannot, deliberately: an account that can never lock is an account whose
   password can be guessed at forever.

@@ -14,6 +14,15 @@ pub fn normalize_fqdn(s: &str) -> String {
     n
 }
 
+/// The stored form of a record label. DNS names are case-insensitive (RFC 4343) but our lookups are
+/// exact string matches — a request always arrives lower-cased (via [`normalize_fqdn`]), so anything
+/// written in another case would simply never match: a `Thermostat` grant silently authorizes nothing,
+/// and a `WWW` record is a second row beside the `www` a DDNS client writes, rendering two records at
+/// one name. So every write path canonicalizes here instead of every read path guessing.
+pub fn normalize_label(s: &str) -> String {
+    s.trim().to_ascii_lowercase()
+}
+
 /// Resolve an FQDN to `(zone, label)` by longest matching origin. `label` is `@` for the apex.
 pub async fn resolve_zone<C: ConnectionTrait>(
     db: &C,

@@ -36,6 +36,9 @@ pub async fn import(
     // The origin comes from the file ($ORIGIN / SOA) or --origin; validate it like any other zone
     // create would, so a malformed name can't become a zone (and a zone file Knot won't load).
     dns::check::zone_origin(&origin)?;
+    // Zone files are conventionally written in mixed case; store the canonical (lower) form so the
+    // origin matches what a DDNS/API request resolves to.
+    let origin = dns::normalize_label(&origin);
     println!("importing {} records into {origin}", parsed.records.len());
 
     // Ensure the zone exists.
@@ -172,7 +175,7 @@ fn owner_to_label(owner: &str, origin: &str) -> String {
     } else if owner.ends_with('.') {
         dns::label_in_zone(owner, origin)
     } else {
-        owner.to_string() // already relative to $ORIGIN
+        dns::normalize_label(owner) // already relative to $ORIGIN
     }
 }
 
