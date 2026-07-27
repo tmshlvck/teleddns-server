@@ -81,6 +81,11 @@ pub struct Config {
     /// address is a coarser subject, so it is usually worth a shorter (or longer) lock than an account.
     #[serde(with = "humantime_serde_opt")]
     pub ip_lockout_duration: Duration,
+    /// CIDRs (or bare addresses) that are **never** locked out — your office range, a monitoring probe,
+    /// the NAT a device fleet shares. IPv4 and IPv6 both, and a rule written in either form matches a
+    /// client that arrives in the other. Empty = no exemptions. There is no username equivalent: an
+    /// account that can never lock is an account whose password can be guessed at forever.
+    pub ip_lockout_allow: Vec<String>,
 
     /// Externally reachable base URL (scheme + host), used to derive SSO redirect URLs.
     pub public_url: String,
@@ -155,6 +160,7 @@ impl Default for Config {
             username_lockout_duration: Duration::from_secs(900),
             ip_lockout_after: 100,
             ip_lockout_duration: Duration::from_secs(900),
+            ip_lockout_allow: vec![],
             public_url: String::new(),
             sso_providers: vec![],
         }

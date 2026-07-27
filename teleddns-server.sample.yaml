@@ -68,6 +68,11 @@ username_lockout_duration: "15m"
 #   same for the login form, DDNS, the APIs and the audit log.
 ip_lockout_after: 100
 ip_lockout_duration: "15m"
+# Addresses that are never locked out: your office range, a monitoring probe, the NAT
+# a device fleet shares. CIDRs or bare addresses, IPv4 and IPv6 — a rule written either
+# way matches a client that arrives the other way. There is no username equivalent: an
+# account that can never lock is an account whose password can be guessed at forever.
+# ip_lockout_allow: ["203.0.113.0/24", "2001:db8::/32", "198.51.100.7"]
 
 # Backend. "log" (default) just logs what it would push — safe for first boot
 # and dev. "knot" writes <knot_zone_dir>/<origin>.zone, declares the zone in

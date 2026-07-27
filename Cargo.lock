@@ -2483,7 +2483,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "relativelylight"
 version = "0.1.2"
-source = "git+https://github.com/tmshlvck/relativelylight?rev=1d76722144611b0192976d7ab9cc81ba9d1d406f#1d76722144611b0192976d7ab9cc81ba9d1d406f"
+source = "git+https://github.com/tmshlvck/relativelylight?rev=4ab96f0ff367ab972d5a4ee0b16a0e31faf89df8#4ab96f0ff367ab972d5a4ee0b16a0e31faf89df8"
 dependencies = [
  "argon2",
  "askama",
@@ -2493,6 +2493,7 @@ dependencies = [
  "base64 0.22.1",
  "csv",
  "http",
+ "ipnet",
  "openidconnect",
  "rand_core 0.6.4",
  "regex",

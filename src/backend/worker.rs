@@ -87,7 +87,7 @@ pub fn spawn(
             // correctness (an expired row reads as unlocked, an expired session never authenticates),
             // so failures are logged and forgotten. Runs once on the first tick, then hourly.
             if now() - last_auth_prune >= AUTH_PRUNE_PERIOD_SECS {
-                match relativelylight::auth::prune(&db, lockout).await {
+                match relativelylight::auth::prune(&db, &lockout).await {
                     Ok(0) => {}
                     Ok(n) => tracing::debug!(rows = n, "pruned expired sessions/lockout rows"),
                     Err(e) => tracing::warn!(error = %e, "auth prune failed"),

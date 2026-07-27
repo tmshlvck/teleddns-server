@@ -1,68 +1,21 @@
 //! CIDR allow-lists and the request log. `allowed_ips` gates every request; `ops_allowed_ips`
 //! additionally gates `/healthcheck` and `/metrics` (on top of `allowed_ips`).
 //!
-//! Client-IP *resolution* is not implemented here: it is `relativelylight::net::client_ip(trust_proxy,
-//! headers, peer)` — the socket peer, or the left-most `X-Forwarded-For` / `X-Real-IP` hop when
-//! `trust_proxy` is set, IPv4-mapped addresses collapsed to IPv4. Everything that needs an address calls
-//! that directly (`ddns`, `api::req_ip`, `audit`, the access log below, and relativelylight's own login
-//! route), so there is one implementation and one place where proxy trust is decided — our config.
+//! Nothing about addresses is implemented here — `relativelylight::net` owns it: `client_ip`
+//! (socket peer, or the left-most `X-Forwarded-For` / `X-Real-IP` hop when `trust_proxy`, IPv4-mapped
+//! collapsed to IPv4), `parse_nets` and `in_nets` (CIDR rules, matching across families and the mapped
+//! form). Everything that needs an address calls those directly — `ddns`, `api::req_ip`, `audit`, the
+//! two middlewares below, the lockout's allow-list, and relativelylight's own login route — so there is
+//! one implementation and one place where proxy trust is decided: our config.
 
 use crate::app::AppState;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use ipnet::{IpNet, Ipv4Net};
-use std::net::{IpAddr, SocketAddr};
+use relativelylight::net::{canonical, client_ip, in_nets};
+use std::net::SocketAddr;
 
-/// Parse a list of CIDR strings (bare IPs are accepted as /32 or /128). IPv4-mapped IPv6 entries are
-/// canonicalized to IPv4 so they match unmapped IPv4 clients (the same normalization
-/// `relativelylight::net::canonical` applies to the source address).
-pub fn parse_nets(cidrs: &[String]) -> Vec<IpNet> {
-    cidrs
-        .iter()
-        .filter_map(|s| {
-            s.parse::<IpNet>()
-                .ok()
-                .or_else(|| s.parse::<IpAddr>().ok().map(IpNet::from))
-                .map(canonical_net)
-        })
-        .collect()
-}
-
-fn in_any(nets: &[IpNet], ip: IpAddr) -> bool {
-    nets.iter().any(|n| n.contains(&ip))
-}
-
-/// The rule-side counterpart of `relativelylight::net::canonical` (which normalizes the *client*
-/// address the same way, so a rule and an address always meet in the same form): an IPv4-mapped IPv6
-/// network (`::ffff:a.b.c.d/N`, N≥96)
-/// becomes the equivalent IPv4 network (`/N-96`), so a rule written in mapped form still matches an
-/// unmapped IPv4 client. Genuine IPv6 networks are left untouched.
-fn canonical_net(net: IpNet) -> IpNet {
-    if let IpNet::V6(v6) = net {
-        if let Some(v4) = v6.addr().to_ipv4_mapped() {
-            if v6.prefix_len() >= 96 {
-                if let Ok(n) = Ipv4Net::new(v4, v6.prefix_len() - 96) {
-                    return IpNet::V4(n);
-                }
-            }
-        }
-    }
-    net
-}
-
-/// `relativelylight::net::client_ip` for a request we already hold a peer for — the allow-list and the
-/// access log always do, so they want a plain `IpAddr` rather than the library's `Option`.
-fn client_ip(app: &AppState, headers: &axum::http::HeaderMap, peer: IpAddr) -> IpAddr {
-    relativelylight::net::client_ip(app.cfg.trust_proxy, headers, Some(peer))
-        .unwrap_or_else(|| relativelylight::net::canonical(peer))
-}
-
-/// Middleware: one INFO access-log line per HTTP request, to stderr (no standalone access.log). Covers
-/// every surface — DDNS, native API, CF facade, UI, `/metrics`, `/healthcheck`. Fields: method, the
-/// path+query, response status, the resolved client IP (proxy-aware when `trust_proxy`), the
-/// User-Agent, and the latency. Placed outermost, so even allow-list-denied (403) requests are logged.
 pub async fn access_log(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -75,7 +28,8 @@ pub async fn access_log(
         .path_and_query()
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| req.uri().path().to_string());
-    let ip = client_ip(&app, req.headers(), peer.ip());
+    let ip = client_ip(app.cfg.trust_proxy, req.headers(), Some(peer.ip()))
+        .unwrap_or_else(|| canonical(peer.ip())); // `None` needs no peer, and we have one
     let ua = req
         .headers()
         .get(header::USER_AGENT)
@@ -103,63 +57,18 @@ pub async fn allow_list(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = client_ip(&app, req.headers(), peer.ip());
+    let ip = client_ip(app.cfg.trust_proxy, req.headers(), Some(peer.ip()))
+        .unwrap_or_else(|| canonical(peer.ip())); // `None` needs no peer, and we have one
 
-    if !app.allowed_nets.is_empty() && !in_any(&app.allowed_nets, ip) {
+    if !app.allowed_nets.is_empty() && !in_nets(&app.allowed_nets, ip) {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
     let path = req.uri().path();
     if (path == "/healthcheck" || path == "/metrics")
         && !app.ops_nets.is_empty()
-        && !in_any(&app.ops_nets, ip)
+        && !in_nets(&app.ops_nets, ip)
     {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
     next.run(req).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cidr_membership() {
-        let nets = parse_nets(&["10.0.0.0/8".into(), "127.0.0.1".into()]);
-        assert!(in_any(&nets, "10.9.9.9".parse().unwrap()));
-        assert!(in_any(&nets, "127.0.0.1".parse().unwrap()));
-        assert!(!in_any(&nets, "192.168.1.1".parse().unwrap()));
-    }
-
-    #[test]
-    fn ipv4_mapped_is_canonicalized() {
-        // A dual-stack (::)-bound listener reports an IPv4 client as ::ffff:a.b.c.d; it must match an
-        // IPv4 CIDR after canonicalization.
-        let mapped: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
-        assert_eq!(relativelylight::net::canonical(mapped), "127.0.0.1".parse::<IpAddr>().unwrap());
-        let nets = parse_nets(&["127.0.0.1".into()]);
-        assert!(in_any(&nets, relativelylight::net::canonical(mapped)));
-        assert!(!in_any(&nets, mapped)); // (unmapped it would not match)
-        // A genuine IPv6 address is left alone.
-        let v6: IpAddr = "2001:db8::1".parse().unwrap();
-        assert_eq!(relativelylight::net::canonical(v6), v6);
-    }
-
-    #[test]
-    fn mapped_rules_are_canonicalized_symmetrically() {
-        // A rule written in IPv4-mapped form matches an (unmapped) IPv4 client.
-        let nets = parse_nets(&["::ffff:127.0.0.1".into()]);
-        assert_eq!(nets, parse_nets(&["127.0.0.1".into()])); // both → 127.0.0.1/32
-        assert!(in_any(&nets, "127.0.0.1".parse().unwrap()));
-
-        // A mapped CIDR (prefix ≥ 96) converts to the equivalent IPv4 CIDR (prefix − 96).
-        let nets = parse_nets(&["::ffff:10.0.0.0/104".into()]);
-        assert_eq!(nets, parse_nets(&["10.0.0.0/8".into()]));
-        assert!(in_any(&nets, "10.9.9.9".parse().unwrap()));
-        assert!(!in_any(&nets, "11.0.0.1".parse().unwrap()));
-
-        // Genuine IPv6 rules are untouched and still match IPv6 clients with the right prefix.
-        let nets = parse_nets(&["2001:db8::/32".into()]);
-        assert!(in_any(&nets, "2001:db8::5".parse().unwrap()));
-        assert!(!in_any(&nets, "2001:dead::5".parse().unwrap()));
-    }
 }

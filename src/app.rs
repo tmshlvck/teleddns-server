@@ -87,8 +87,11 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         // own surfaces call too — one client's failures land on one row whichever surface they came
         // from, and proxy trust is decided in exactly one place: this config flag.
         trust_proxy: cfg.trust_proxy,
+        // Never locked out (empty by default): the office range, a monitoring probe, the NAT a fleet
+        // shares — a locked address turns away the valid callers behind it too.
+        ip_allow: relativelylight::net::parse_nets(&cfg.ip_lockout_allow),
     };
-    let auth = Auth::new(db.clone(), lockout)
+    let auth = Auth::new(db.clone(), lockout.clone())
         .secure_cookies(secure)
         .admin_group(ADMIN_GROUP)
         .cookie_name(SESSION_COOKIE)
@@ -159,8 +162,8 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     );
     tracing::info!(backend = backend.name(), "backend sync worker started");
 
-    let allowed_nets = Arc::new(crate::net::parse_nets(&cfg.allowed_ips));
-    let ops_nets = Arc::new(crate::net::parse_nets(&cfg.ops_allowed_ips));
+    let allowed_nets = Arc::new(relativelylight::net::parse_nets(&cfg.allowed_ips));
+    let ops_nets = Arc::new(relativelylight::net::parse_nets(&cfg.ops_allowed_ips));
     let state = AppState {
         db,
         cfg,

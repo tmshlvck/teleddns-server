@@ -246,6 +246,12 @@ too, and vice versa. A locked subject is refused with `429` + `Retry-After` (`ab
 | per account | `username_lockout_after: 10`, `username_lockout_duration: "15m"` | password + TOTP checks; cleared by a success |
 | per client IP | `ip_lockout_after: 100`, `ip_lockout_duration: "15m"` | bearer-token guessing (a token names no account) and username spraying |
 
+`ip_lockout_allow` exempts addresses that must never be locked out — your office range,
+a monitoring probe, the NAT a fleet shares — as CIDRs or bare addresses, IPv4 and IPv6
+(a rule in either form matches a client arriving in the other). There is no username
+equivalent on purpose: an account that can never lock is an account whose password can
+be guessed at forever.
+
 `0` turns either counter off, and the two windows are independent. Requests carrying **no** credential
 are a plain `401` and are not counted, so an anonymous scanner can't lock out everyone sharing its
 address. Checks made by an *already authenticated* caller (the password confirmation on `/profile`, 2FA
@@ -257,7 +263,7 @@ and **Locked addresses**. Delete a row and that account or address is free immed
 clears itself when the lockout expires. The delete is L3-gated and lands in the audit log like any
 other change. Because the rows are durable, a restart no longer resets anyone's budget.
 
-The client address is resolved the same way everywhere — the forwarded hop when `trust_proxy: true`,
+The client address is resolved (and CIDR-matched) the same way everywhere — the forwarded hop when `trust_proxy: true`,
 the socket peer otherwise — so the login form, the DDNS endpoint, the APIs and the audit log all agree
 on who a caller is. One operational note: while an address is locked, *valid* callers from it are
 refused too, so keep `ip_lockout_after` well above what a broken client produces if your users share an

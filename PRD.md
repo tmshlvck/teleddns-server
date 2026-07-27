@@ -261,6 +261,10 @@ counters, each with its own limit and window:
   address turns away valid callers too, which matters on a shared one (CGNAT, an office NAT). Not
   cleared by a success.
 
+An **allow-list** (`ip_lockout_allow`, CIDRs across both families and the IPv4-mapped form) exempts
+addresses that must never be locked — an office range, a probe, a shared NAT — on every surface at
+once, since they all go through the same counter. There is no username equivalent by design.
+
 A failure records `failures += 1, last_failure_at = now` **unless the subject is already locked** — a
 locked key records nothing, so an attacker cannot push the expiry out by continuing. The lock lifts
 `duration` after the last counted failure, at which point the row reads as absent and the pruner
@@ -665,7 +669,8 @@ Key groups:
   (default true; prune backend zones under `knot_template` not in the DB).
 - **Credential lockout** (§3.6) — `username_lockout_after` (default 10) +
   `username_lockout_duration` (15 m), `ip_lockout_after` (100) + `ip_lockout_duration`
-  (15 m); `0` disables either counter, and the two windows are independent.
+  (15 m), `ip_lockout_allow` (never-locked CIDRs); `0` disables either counter, and the
+  two windows are independent.
   `trust_proxy` decides whether the library's login route may count the socket peer, so
   there is no separate setting for that.
 - **SSO** — `public_url` and `sso_providers[]` (§4.2).
@@ -776,9 +781,9 @@ Knot backend + worker, §8 operability, §9 config + CLI.
 - **Multi-process deployments** would need row-level locking on the push journal
   (`SELECT … FOR UPDATE SKIP LOCKED`); the single co-located instance doesn't. (The
   lockout counters are DB-backed, so those *are* replica-safe — §3.6.)
-- **No allow-lists on the lockout** (§3.6): a service account or an office range can
-  still be locked out by someone else's failures. Tracked in relativelylight
-  (usernames by regex, addresses by CIDR).
+- **No *username* allow-list on the lockout** (§3.6) — addresses can be exempted,
+  accounts cannot, deliberately: an account that can never lock is an account whose
+  password can be guessed at forever.
 - **Re-authentication is not required** before changing a password or disabling 2FA,
   a password change does not invalidate the user's other sessions, and there are no
   TOTP recovery codes — all in relativelylight's auth module, tracked there.

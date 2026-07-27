@@ -53,7 +53,7 @@ password + 2FA), then exercise `/api/...`.
 | `cfapi/` | Cloudflare facade (`/client/v4`) |
 | `backend/` | `Backend` trait, `log` + `knot` impls, `worker` (journal drain), `zonefile` (BIND render) |
 | `ops.rs` | `/healthcheck` + `/metrics` |
-| `net.rs` | CIDR allow-list + access-log middleware. Client-IP resolution is **not** here: call `relativelylight::net::client_ip(cfg.trust_proxy, headers, peer)`, the same function the library's login route uses |
+| `net.rs` | just two middlewares (CIDR allow-list, access log). Addresses are `relativelylight::net`'s: `client_ip` (peer vs `X-Forwarded-For`, per `trust_proxy`), `parse_nets`/`in_nets` (CIDRs across both families and the `::ffff:` form) |
 | `metrics.rs` | Prometheus registry + instruments |
 | `sso.rs` | build relativelylight `Sso` (OIDC) from config; login-page buttons |
 | `web.rs` | admin console (crud::ui::Admin), page shell (header username→`/profile`, footer docs/GitHub/copyright), login/profile styling |
