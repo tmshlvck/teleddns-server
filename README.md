@@ -246,7 +246,7 @@ too, and vice versa. A locked subject is refused with `429` + `Retry-After` (`ab
 | per account | `username_lockout_after: 10`, `username_lockout_duration: "15m"` | password + TOTP checks; cleared by a success |
 | per client IP | `ip_lockout_after: 100`, `ip_lockout_duration: "15m"` | bearer-token guessing (a token names no account) and username spraying |
 
-`ip_lockout_allow` exempts addresses that must never be locked out — your office range,
+`ip_lockout_whitelist` exempts addresses that must never be locked out — your office range,
 a monitoring probe, the NAT a fleet shares — as CIDRs or bare addresses, IPv4 and IPv6
 (a rule in either form matches a client arriving in the other). There is no username
 equivalent on purpose: an account that can never lock is an account whose password can
@@ -334,8 +334,8 @@ then dead-letters. Set `debug: true` for verbose logs. (The in-DB **audit log** 
 who changed which record, visible in the admin UI — is separate and covers DNS
 changes; this is the operational log.)
 
-Restrict the operability endpoints with `ops_allowed_ips` (a CIDR allow-list
-applied on top of `allowed_ips`, after the reverse-proxy real-IP rewrite).
+Restrict the operability endpoints with `ops_ip_whitelist` (a CIDR whitelist
+applied on top of `ip_whitelist`, after the reverse-proxy real-IP rewrite).
 
 - **`GET /healthcheck`** — always HTTP 200; the body's first token is `OK` or
   `WARN`:
@@ -482,7 +482,7 @@ knotc_path: "/usr/sbin/knotc"
 knot_template: "master"
 
 public_url: "https://ddns.example.com"            # external HTTPS base (SSO + cookies)
-ops_allowed_ips: ["10.9.0.0/24"]                  # Prometheus / uptime host
+ops_ip_whitelist: ["10.9.0.0/24"]                  # Prometheus / uptime host
 ```
 
 `/etc/systemd/system/teleddns-server.service`:
@@ -518,7 +518,7 @@ sudo journalctl -u teleddns-server | grep "seeded initial admin user"   # one-ti
 
 teleddns speaks plain HTTP on loopback; a proxy terminates TLS and forwards the
 real client IP (teleddns reads it because `trust_proxy: true` — needed for rate
-limiting, audit, and `ops_allowed_ips`). Pick one. (For an internal/eval box you
+limiting, audit, and `ops_ip_whitelist`). Pick one. (For an internal/eval box you
 can skip the proxy and bind `listen_addr: "0.0.0.0:8080"` directly.)
 
 **Caddy** — automatic certificates:

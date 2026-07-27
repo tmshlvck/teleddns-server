@@ -45,8 +45,8 @@ pub struct AppState {
     pub ips: IpLockout,
     pub audit: Arc<crate::audit::Audit>,
     pub started_at: i64,
-    pub allowed_nets: Arc<Vec<ipnet::IpNet>>,
-    pub ops_nets: Arc<Vec<ipnet::IpNet>>,
+    pub ip_whitelist: Arc<Vec<ipnet::IpNet>>,
+    pub ops_ip_whitelist: Arc<Vec<ipnet::IpNet>>,
 }
 
 /// Run the HTTP server.
@@ -89,7 +89,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         trust_proxy: cfg.trust_proxy,
         // Never locked out (empty by default): the office range, a monitoring probe, the NAT a fleet
         // shares — a locked address turns away the valid callers behind it too.
-        ip_allow: relativelylight::net::parse_nets(&cfg.ip_lockout_allow),
+        ip_whitelist: relativelylight::net::parse_nets(&cfg.ip_lockout_whitelist),
     };
     let auth = Auth::new(db.clone(), lockout.clone())
         .secure_cookies(secure)
@@ -162,8 +162,8 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     );
     tracing::info!(backend = backend.name(), "backend sync worker started");
 
-    let allowed_nets = Arc::new(relativelylight::net::parse_nets(&cfg.allowed_ips));
-    let ops_nets = Arc::new(relativelylight::net::parse_nets(&cfg.ops_allowed_ips));
+    let ip_whitelist = Arc::new(relativelylight::net::parse_nets(&cfg.ip_whitelist));
+    let ops_ip_whitelist = Arc::new(relativelylight::net::parse_nets(&cfg.ops_ip_whitelist));
     let state = AppState {
         db,
         cfg,
@@ -177,8 +177,8 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         ips,
         audit,
         started_at: crate::model::now(),
-        allowed_nets,
-        ops_nets,
+        ip_whitelist,
+        ops_ip_whitelist,
     };
 
     // dyndns2 documents the parameters in the query string and prefers GET, but permits POST; any
@@ -208,7 +208,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         None => app,
     };
     let app =
-        app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::allow_list));
+        app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::whitelist));
     // Outermost: one access-log line per request (logs allow-list denials too).
     let app =
         app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::access_log));

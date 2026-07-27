@@ -53,7 +53,7 @@ password + 2FA), then exercise `/api/...`.
 | `cfapi/` | Cloudflare facade (`/client/v4`) |
 | `backend/` | `Backend` trait, `log` + `knot` impls, `worker` (journal drain), `zonefile` (BIND render) |
 | `ops.rs` | `/healthcheck` + `/metrics` |
-| `net.rs` | just two middlewares (CIDR allow-list, access log). Addresses are `relativelylight::net`'s: `client_ip` (peer vs `X-Forwarded-For`, per `trust_proxy`), `parse_nets`/`in_nets` (CIDRs across both families and the `::ffff:` form) |
+| `net.rs` | just two middlewares (CIDR whitelists, access log). Addresses are `relativelylight::net`'s: `client_ip` (peer vs `X-Forwarded-For`, per `trust_proxy`), `parse_nets`/`in_nets` (CIDRs across both families and the `::ffff:` form) |
 | `metrics.rs` | Prometheus registry + instruments |
 | `sso.rs` | build relativelylight `Sso` (OIDC) from config; login-page buttons |
 | `web.rs` | admin console (crud::ui::Admin), page shell (header username→`/profile`, footer docs/GitHub/copyright), login/profile styling |
@@ -76,7 +76,7 @@ password + 2FA), then exercise `/api/...`.
   facade all trust an authenticated, authorized caller (this is a fleet's own server, not a public
   service), and the backend is protected structurally by the journal's per-zone coalescing. The one
   thing braked is *failed* credentials; `abuse`/`429` means a lockout, nothing else. Don't reintroduce
-  a per-request budget without an operator-visible store and an allow-list — see the lockout tables
+  a per-request budget without an operator-visible store and an whitelist — see the lockout tables
   for the shape that would take.
 - **Credential checks go through `principal.rs`, which brakes them with the library's own
   counters.** `from_basic` / `from_bearer` / `from_token` consult `AppState::{usernames, ips}`
@@ -128,7 +128,7 @@ password + 2FA), then exercise `/api/...`.
   (correct; a DB-level cross-table optimization is deferred).
 - **CORS + a trusted-proxy real-ip layer** are still not added; client-IP resolution
   is ours (`net.rs`, gated on `trust_proxy`) and the only network filter is the CIDR
-  allow-list. CSRF *is* in place for every cookie-authenticated write (see the
+  whitelist. CSRF *is* in place for every cookie-authenticated write (see the
   invariant above). Not yet (library-side): re-auth before a password/2FA change,
   session invalidation after a password change, TOTP recovery codes.
 - **Admin timezone display (TODO, low priority).** The DB/API are UTC and the admin

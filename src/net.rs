@@ -1,11 +1,13 @@
-//! CIDR allow-lists and the request log. `allowed_ips` gates every request; `ops_allowed_ips`
-//! additionally gates `/healthcheck` and `/metrics` (on top of `allowed_ips`).
+//! The two network middlewares: the CIDR whitelists and the access log. `ip_whitelist` gates every
+//! request; `ops_ip_whitelist` additionally gates `/healthcheck` and `/metrics` (on top of it). Both
+//! lists are matched against the *resolved* client address with the same canonicalization the lockout
+//! and the audit log use, so a rule cannot mean one thing here and another there.
 //!
 //! Nothing about addresses is implemented here — `relativelylight::net` owns it: `client_ip`
 //! (socket peer, or the left-most `X-Forwarded-For` / `X-Real-IP` hop when `trust_proxy`, IPv4-mapped
 //! collapsed to IPv4), `parse_nets` and `in_nets` (CIDR rules, matching across families and the mapped
 //! form). Everything that needs an address calls those directly — `ddns`, `api::req_ip`, `audit`, the
-//! two middlewares below, the lockout's allow-list, and relativelylight's own login route — so there is
+//! two middlewares below, the lockout's whitelist, and relativelylight's own login route — so there is
 //! one implementation and one place where proxy trust is decided: our config.
 
 use crate::app::AppState;
@@ -50,8 +52,8 @@ pub async fn access_log(
     res
 }
 
-/// Middleware: enforce `allowed_ips` globally and `ops_allowed_ips` on the operability endpoints.
-pub async fn allow_list(
+/// Middleware: enforce `ip_whitelist` globally and `ops_ip_whitelist` on the operability endpoints.
+pub async fn whitelist(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     req: Request<axum::body::Body>,
@@ -60,13 +62,13 @@ pub async fn allow_list(
     let ip = client_ip(app.cfg.trust_proxy, req.headers(), Some(peer.ip()))
         .unwrap_or_else(|| canonical(peer.ip())); // `None` needs no peer, and we have one
 
-    if !app.allowed_nets.is_empty() && !in_nets(&app.allowed_nets, ip) {
+    if !app.ip_whitelist.is_empty() && !in_nets(&app.ip_whitelist, ip) {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
     let path = req.uri().path();
     if (path == "/healthcheck" || path == "/metrics")
-        && !app.ops_nets.is_empty()
-        && !in_nets(&app.ops_nets, ip)
+        && !app.ops_ip_whitelist.is_empty()
+        && !in_nets(&app.ops_ip_whitelist, ip)
     {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }

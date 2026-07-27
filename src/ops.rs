@@ -1,6 +1,6 @@
 //! Operability endpoints: `/healthcheck` (always 200; OK/WARN first token) and `/metrics`
 //! (Prometheus text). Both refresh DB-derived state on demand. IP gating is applied by the
-//! allow-list middleware (see `net.rs`).
+//! whitelist middleware (see `net.rs`).
 
 use crate::app::AppState;
 use crate::backend::Probe;

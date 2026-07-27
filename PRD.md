@@ -261,7 +261,7 @@ counters, each with its own limit and window:
   address turns away valid callers too, which matters on a shared one (CGNAT, an office NAT). Not
   cleared by a success.
 
-An **allow-list** (`ip_lockout_allow`, CIDRs across both families and the IPv4-mapped form) exempts
+An **whitelist** (`ip_lockout_whitelist`, CIDRs across both families and the IPv4-mapped form) exempts
 addresses that must never be locked — an office range, a probe, a shared NAT — on every surface at
 once, since they all go through the same counter. There is no username equivalent by design.
 
@@ -577,8 +577,8 @@ default merges.
 
 ## 8. Operability
 
-Two operability endpoints, both `text/plain`, both honoring **`ops_allowed_ips`**
-— a CIDR allow-list applied *on top of* the global `allowed_ips`, evaluated after
+Two operability endpoints, both `text/plain`, both honoring **`ops_ip_whitelist`**
+— a CIDR whitelist applied *on top of* the global `ip_whitelist`, evaluated after
 the reverse-proxy real-IP rewrite (so a monitoring host works behind a proxy).
 
 ### 8.1 `GET /healthcheck`
@@ -630,7 +630,7 @@ standalone log files. Three concerns, deliberately distinct:
 - **Access log** — one INFO line per HTTP request on every surface (DDNS, native
   API, CF facade, UI, `/metrics`, `/healthcheck`), emitted by an outer middleware:
   method, path+query, status, the resolved client IP (proxy-aware after the real-IP
-  rewrite), User-Agent, and latency. Denied (allow-list 403) requests are logged
+  rewrite), User-Agent, and latency. Denied (whitelist 403) requests are logged
   too.
 - **State changes / backend** — INFO for zone-file writes, zone declarations, and
   successful pushes; **WARN/ERROR** when a push fails or a reload is accepted but
@@ -656,9 +656,9 @@ Key groups:
   migrator**: a fresh database is built to the latest schema in one shot; an
   existing one has pending migrations applied in order. Migrations are
   append-only.
-- **HTTP** — listen address; `allowed_ips` (global CIDR allow-list); `trust_proxy`
+- **HTTP** — listen address; `ip_whitelist` (global CIDR whitelist); `trust_proxy`
   (parse `X-Forwarded-For`/`X-Real-IP`/`X-Forwarded-Proto` from a trusted proxy);
-  `ops_allowed_ips`; `ui_title` (navbar brand, default "TeleDDNS Server Manager").
+  `ops_ip_whitelist`; `ui_title` (navbar brand, default "TeleDDNS Server Manager").
 - **TTLs** — `default_ttl` (API-created records, default 3600), `ddns_rr_ttl`
   (DDNS-touched A/AAAA, default 60).
 - **Backend sync** — `backend` (`log` | `knot`), `knot_zone_dir`, `knotc_path`,
@@ -669,7 +669,7 @@ Key groups:
   (default true; prune backend zones under `knot_template` not in the DB).
 - **Credential lockout** (§3.6) — `username_lockout_after` (default 10) +
   `username_lockout_duration` (15 m), `ip_lockout_after` (100) + `ip_lockout_duration`
-  (15 m), `ip_lockout_allow` (never-locked CIDRs); `0` disables either counter, and the
+  (15 m), `ip_lockout_whitelist` (never-locked CIDRs); `0` disables either counter, and the
   two windows are independent.
   `trust_proxy` decides whether the library's login route may count the socket peer, so
   there is no separate setting for that.
@@ -781,7 +781,7 @@ Knot backend + worker, §8 operability, §9 config + CLI.
 - **Multi-process deployments** would need row-level locking on the push journal
   (`SELECT … FOR UPDATE SKIP LOCKED`); the single co-located instance doesn't. (The
   lockout counters are DB-backed, so those *are* replica-safe — §3.6.)
-- **No *username* allow-list on the lockout** (§3.6) — addresses can be exempted,
+- **No *username* whitelist on the lockout** (§3.6) — addresses can be exempted,
   accounts cannot, deliberately: an account that can never lock is an account whose
   password can be guessed at forever.
 - **Re-authentication is not required** before changing a password or disabling 2FA,
@@ -789,6 +789,6 @@ Knot backend + worker, §8 operability, §9 config + CLI.
   TOTP recovery codes — all in relativelylight's auth module, tracked there.
 - **CORS and trusted-proxy real-IP parsing** are not middleware yet: client-IP
   resolution is ours (`net.rs`, gated on `trust_proxy`), and the only network filter
-  is the CIDR allow-list. CSRF *is* in place for cookie-authenticated writes (§4.1).
+  is the CIDR whitelist. CSRF *is* in place for cookie-authenticated writes (§4.1).
 - **Admin timezone display** — the DB/API are UTC and the admin renders UTC; a
   server-timezone option (to match Knot/syslog) is deferred (see `AGENTS.md`).

@@ -23,7 +23,7 @@ builds is listed in §14 — check it if you wrote a client against 0.3.x.
 | Response | `text/plain`, dyndns2 keywords (§7) |
 
 Any other method returns **`405 badagent`**. Requests are also subject to the
-operator's IP allow-list, which answers `403` with the body `forbidden` — that is
+operator's IP whitelist, which answers `403` with the body `forbidden` — that is
 *not* a dyndns2 keyword, treat an unparseable body per §12.2.
 
 ## 2. Authentication

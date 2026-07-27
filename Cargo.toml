@@ -15,7 +15,7 @@ path = "src/main.rs"
 # 0.2.0 pre-release (CSRF, the DB-backed login lockout + `net::client_ip`, nullable-column handling);
 # move to `tag = "v0.2.0"` once it is cut, and to `version = "0.2"` once it is published to crates.io.
 # `validate-base64` enables validate::base64 (used for the DNSKEY public-key field check).
-relativelylight = { git = "https://github.com/tmshlvck/relativelylight", rev = "4ab96f0ff367ab972d5a4ee0b16a0e31faf89df8", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso", "validate-base64"] }
+relativelylight = { git = "https://github.com/tmshlvck/relativelylight", rev = "6e6fc501cda536df391ee53f07ce94dc4146e569", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso", "validate-base64"] }
 
 sea-orm = { version = "1.1", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }

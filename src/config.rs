@@ -5,18 +5,21 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The full server configuration. All fields have defaults, so an empty file (or none) is valid.
+/// The full server configuration. All fields have defaults, so an empty file (or none) is valid — but
+/// an **unknown** key is a hard error, not a shrug: a typo (or a key renamed by an upgrade) in
+/// `ip_whitelist` would otherwise silently drop a network gate and open the server to everyone.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Database DSN; scheme selects the engine (`sqlite://…` or `postgres://…`).
     pub db_dsn: String,
     /// Address the HTTP server binds.
     pub listen_addr: String,
-    /// CIDRs allowed to connect; empty = allow all.
-    pub allowed_ips: Vec<String>,
-    /// Extra CIDR allow-list for `/healthcheck` + `/metrics`, on top of `allowed_ips`.
-    pub ops_allowed_ips: Vec<String>,
+    /// CIDRs allowed to connect at all; empty = no restriction. Bare addresses count as single
+    /// hosts, IPv4 and IPv6 both, and a rule in either form matches a client arriving in the other.
+    pub ip_whitelist: Vec<String>,
+    /// Extra CIDR whitelist for `/healthcheck` + `/metrics`, applied *on top of* `ip_whitelist`.
+    pub ops_ip_whitelist: Vec<String>,
     /// Trust reverse-proxy headers (X-Forwarded-For / X-Real-IP / X-Forwarded-Proto).
     pub trust_proxy: bool,
     /// Verbose (debug-level) logging.
@@ -82,10 +85,9 @@ pub struct Config {
     #[serde(with = "humantime_serde_opt")]
     pub ip_lockout_duration: Duration,
     /// CIDRs (or bare addresses) that are **never** locked out — your office range, a monitoring probe,
-    /// the NAT a device fleet shares. IPv4 and IPv6 both, and a rule written in either form matches a
-    /// client that arrives in the other. Empty = no exemptions. There is no username equivalent: an
+    /// the NAT a device fleet shares. Empty = no exemptions. There is no username equivalent: an
     /// account that can never lock is an account whose password can be guessed at forever.
-    pub ip_lockout_allow: Vec<String>,
+    pub ip_lockout_whitelist: Vec<String>,
 
     /// Externally reachable base URL (scheme + host), used to derive SSO redirect URLs.
     pub public_url: String,
@@ -95,7 +97,7 @@ pub struct Config {
 
 /// One OpenID Connect provider.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SsoProvider {
     /// URL-safe key: the `/login/sso/<name>/…` segment and the account's `sso_provider` value.
     pub name: String,
@@ -121,7 +123,7 @@ pub struct SsoProvider {
 
 /// A rule mapping an IdP claim to local groups on every login.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GroupRule {
     /// Claim to match; defaults to "email".
     pub claim: String,
@@ -138,8 +140,8 @@ impl Default for Config {
         Config {
             db_dsn: "sqlite://teleddns.sqlite".into(),
             listen_addr: ":8080".into(),
-            allowed_ips: vec![],
-            ops_allowed_ips: vec![],
+            ip_whitelist: vec![],
+            ops_ip_whitelist: vec![],
             trust_proxy: false,
             debug: false,
             ui_title: "TeleDDNS Server Manager".into(),
@@ -160,7 +162,7 @@ impl Default for Config {
             username_lockout_duration: Duration::from_secs(900),
             ip_lockout_after: 100,
             ip_lockout_duration: Duration::from_secs(900),
-            ip_lockout_allow: vec![],
+            ip_lockout_whitelist: vec![],
             public_url: String::new(),
             sso_providers: vec![],
         }
