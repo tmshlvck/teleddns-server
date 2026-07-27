@@ -38,7 +38,6 @@ pub struct AppState {
     pub backend: Arc<dyn crate::backend::Backend>,
     pub worker: crate::backend::worker::WorkerHandle,
     pub metrics: Arc<crate::metrics::Metrics>,
-    pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
     /// Brute-force brake on the credential checks *we* make (DDNS Basic, bearer tokens) — the very same
     /// DB-backed counters relativelylight brakes the console login with, so an account has one budget
     /// across every surface and deleting one row in the admin panel unlocks all of them.
@@ -171,7 +170,6 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         backend,
         worker,
         metrics,
-        ratelimit: Arc::new(crate::ratelimit::RateLimiter::new()),
         usernames,
         ips,
         audit,

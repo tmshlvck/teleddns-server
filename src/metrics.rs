@@ -10,7 +10,6 @@ pub struct Metrics {
     pub registry: Registry,
     pub ddns_updates: IntCounterVec,
     pub auth_failures: IntCounterVec,
-    pub ratelimited: IntCounterVec,
     pub backend_push: IntCounterVec,
     /// Wall-clock seconds a backend push (render+write+reload+confirm) takes, by kind.
     pub backend_push_seconds: HistogramVec,
@@ -35,11 +34,6 @@ impl Metrics {
         let auth_failures = IntCounterVec::new(
             Opts::new("teleddns_auth_failures_total", "authentication failures"),
             &["surface", "reason"],
-        )
-        .unwrap();
-        let ratelimited = IntCounterVec::new(
-            Opts::new("teleddns_ratelimited_total", "rate-limited requests"),
-            &["surface"],
         )
         .unwrap();
         let backend_push = IntCounterVec::new(
@@ -75,7 +69,6 @@ impl Metrics {
 
         registry.register(Box::new(ddns_updates.clone())).ok();
         registry.register(Box::new(auth_failures.clone())).ok();
-        registry.register(Box::new(ratelimited.clone())).ok();
         registry.register(Box::new(backend_push.clone())).ok();
         registry.register(Box::new(backend_push_seconds.clone())).ok();
         registry.register(Box::new(zones.clone())).ok();
@@ -90,7 +83,6 @@ impl Metrics {
             registry,
             ddns_updates,
             auth_failures,
-            ratelimited,
             backend_push,
             backend_push_seconds,
             zones,
@@ -108,9 +100,6 @@ impl Metrics {
     }
     pub fn auth_failure(&self, surface: &str, reason: &str) {
         self.auth_failures.with_label_values(&[surface, reason]).inc();
-    }
-    pub fn ratelimit_hit(&self, surface: &str) {
-        self.ratelimited.with_label_values(&[surface]).inc();
     }
 
     /// Render the registry to the Prometheus text exposition format.

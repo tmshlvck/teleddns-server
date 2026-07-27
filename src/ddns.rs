@@ -390,14 +390,6 @@ async fn update_one(
         return Outcome::NotYours;
     }
 
-    // Rate limit (per record + per token).
-    let token_key = format!("tok:{}", principal.key_id.map(|k| k.to_string()).unwrap_or_else(|| format!("u{}", principal.user_id)));
-    let record_key = format!("rec:{}:{}:{:?}", zone.id, label, family);
-    if !app.ratelimit.allow_update(&token_key, &record_key) {
-        app.metrics.ratelimit_hit("ddns");
-        return Outcome::Abuse;
-    }
-
     let ttl = app.cfg.ddns_rr_ttl as i32;
     let res = match family {
         Family::V4 => set_a(&app.db, zone.id, label, addr, ttl).await,

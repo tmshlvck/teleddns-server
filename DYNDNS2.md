@@ -163,7 +163,7 @@ nohost
 | `!yours` | 403 | authenticated, but not authorized for that name | permanent — fix the grant |
 | `nohost` | 404 | no served zone matches the name | permanent — fix the name |
 | `badagent` | 405 | request did not follow the client requirements (here: non-GET) | permanent — fix the client |
-| `abuse` | 429 | update rate limit tripped, or too many failed credential checks (§10) | back off, retry later |
+| `abuse` | 429 | too many failed credential checks — the account or your address is locked out (§10) | fix the credentials, then retry after the lockout |
 | `911` | 500 | server-side failure | transient — retry with backoff |
 
 Not implemented (never returned): `dnserr`, `!donator`, `!active`.
@@ -186,18 +186,21 @@ A partial failure reports the failure, **but the family that succeeded has still
 been applied** — the retry will simply report `nochg` for it. A client that needs
 per-family resolution should send one family per request (both forms are supported).
 
-## 10. Rate limits
+## 10. Limits
 
-**60 updates/hour per record set** and **600 updates/hour per token**, counted
-in-memory per family. Exceeding either yields `abuse` (429). Regular updates are not
-expected of a DDNS client: update when your address actually changes, not on a timer.
+**Successful updates are not rate-limited.** A client holding a valid credential is
+authorized for exactly the records its grant covers, and this is a server you run for
+your own fleet — so there is no update budget and no `abuse` for updating too often.
+That is not licence to poll: dyndns2 asks a client to update **when its address
+actually changes, not on a timer**, and re-sending an unchanged address just earns
+`nochg` (§8).
 
-**Failed credentials are limited too.** Repeated `badauth` answers lock the account
-(by default 10 failures in 15 minutes) and the source address (100 in 15 minutes);
-while locked, the request is answered `abuse` (429) without the credentials being
-checked at all — including a *correct* one, so a client that keeps retrying wrong
-credentials locks itself out until the window passes. Treat `badauth` as permanent
-(§8): fix the credentials, don't retry them on a timer.
+**Failed credentials are limited**, and that is what `abuse` now means. Repeated
+`badauth` answers lock the account (by default 10 failures in 15 minutes) and the
+source address (100 in 15 minutes); while locked, the request is answered `abuse`
+(429) without the credentials being checked at all — including a *correct* one, so a
+client that keeps retrying wrong credentials locks itself out until the window passes.
+Treat `badauth` as permanent (§8): fix the credentials, don't retry them on a timer.
 
 ## 11. Deviations from the dyn API
 

@@ -55,7 +55,6 @@ password + 2FA), then exercise `/api/...`.
 | `ops.rs` | `/healthcheck` + `/metrics` |
 | `net.rs` | CIDR allow-list + access-log middleware. Client-IP resolution is **not** here: call `relativelylight::net::client_ip(cfg.trust_proxy, headers, peer)`, the same function the library's login route uses |
 | `metrics.rs` | Prometheus registry + instruments |
-| `ratelimit.rs` | in-memory DDNS update budgets (per record / per token). The credential lockout is *not* here — it's relativelylight's DB-backed `auth::lockout`, via `AppState::{usernames, ips}` |
 | `sso.rs` | build relativelylight `Sso` (OIDC) from config; login-page buttons |
 | `web.rs` | admin console (crud::ui::Admin), page shell (header username→`/profile`, footer docs/GitHub/copyright), login/profile styling |
 | `zoneimport.rs` | BIND zone-file parser for `admin import` |
@@ -73,6 +72,12 @@ password + 2FA), then exercise `/api/...`.
   facade all resolve a `Principal` (session/Basic/bearer) and check
   `authz::allowed(token_level, effective, need)`. The operator console is L3-only
   via the library's `GroupReadWrite` gate. Never add a second authz path.
+- **Successful writes are not rate-limited on any surface** — DDNS, the native API and the CF
+  facade all trust an authenticated, authorized caller (this is a fleet's own server, not a public
+  service), and the backend is protected structurally by the journal's per-zone coalescing. The one
+  thing braked is *failed* credentials; `abuse`/`429` means a lockout, nothing else. Don't reintroduce
+  a per-request budget without an operator-visible store and an allow-list — see the lockout tables
+  for the shape that would take.
 - **Credential checks go through `principal.rs`, which brakes them with the library's own
   counters.** `from_basic` / `from_bearer` / `from_token` consult `AppState::{usernames, ips}`
   (relativelylight's `auth::lockout`, from `Auth::username_lockout()` / `ip_lockout()`) *before*

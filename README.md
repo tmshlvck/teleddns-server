@@ -139,8 +139,10 @@ behind a proxy that needs `trust_proxy`). `POST` is accepted as well as `GET`, w
 the parameters in the query string or a form-encoded body. Responses are `text/plain`
 in dyndns2 vocabulary (`good`/`nochg`/`nohost`/`!yours`/`notfqdn`/`numhost`/`badauth`/
 `abuse`/`badagent`/`911`), **one line per hostname in request order**; the HTTP status
-is the worst of them. Per-record (60/h) and per-token (600/h) rate limits return
-`429 abuse`, and so does a credential lockout (below) — a client that retries wrong
+is the worst of them. Successful updates are not rate-limited — a valid credential is
+authorized for the record it touches, and the backend is protected by coalescing
+instead (one Knot reload per zone per `backend_sync_delay`, however many updates
+arrive). `429 abuse` means a credential lockout (below): a client that retries wrong
 credentials on a timer locks itself out. Full client-facing contract:
 [`DYNDNS2.md`](DYNDNS2.md).
 
@@ -326,7 +328,7 @@ applied on top of `allowed_ips`, after the reverse-proxy real-IP rewrite).
 - **`GET /metrics`** — Prometheus exposition: `teleddns_zones`,
   `teleddns_records`(+`_by_type`), `teleddns_ddns_updates_total{result}`,
   `teleddns_auth_failures_total{surface,reason}` (`reason="locked"` = refused by the
-  brute-force brake), `teleddns_ratelimited_total`,
+  brute-force brake),
   `teleddns_backend_push_total`, `teleddns_backend_push_seconds` (reconcile
   latency), `teleddns_pending_pushes{state}`, `teleddns_zones_out_of_sync`,
   `teleddns_worker_last_tick_seconds`, `teleddns_knot_up`. Since regular updates

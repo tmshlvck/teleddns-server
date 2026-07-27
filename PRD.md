@@ -117,7 +117,7 @@ For each hostname, and within it for each `(family, address)`:
 7. On any data change: bump the zone SOA serial and enqueue a backend push (§7).
 
 Each hostname resolves independently (so one `nohost` among 20 names doesn't sink the
-others), and rate limiting + authorization are decided per `(zone, label, family)`.
+others), and authorization is decided per `(zone, label, family)`.
 
 TTL of records touched via DDNS is `ddns_rr_ttl` (default 60 s); records created
 through the management API use `default_ttl` (default 3600 s).
@@ -139,7 +139,7 @@ lines and always agrees with the body.
 | 403  | `!yours`    | authenticated but not authorized for the resolved record. |
 | 404  | `nohost`    | no configured zone matches `hostname`. |
 | 405  | `badagent`  | non-GET method (dyndns2's catch-all for a client that does not follow the update-client requirements). |
-| 429  | `abuse`     | rate limit tripped, or the account/source is locked out after too many failed credential checks. |
+| 429  | `abuse`     | the account or the source address is locked out after too many failed credential checks (§3.6). |
 | 500  | `911`       | internal error. |
 
 A dual-stack request reports **one** line for the hostname: the most severe failure
@@ -159,17 +159,21 @@ per-family resolution send one family per request.
 The DDNS endpoint accepts tokens of any level; the per-record check (§3) gates
 what a token can actually touch.
 
-### Rate limiting
+### Limits
 
-Per-token and per-`(user, hostname)` limits: **60 updates/hour per record**,
-**600 updates/hour per token**. Exceeding either returns `429 abuse`. Because
-regular updates are not expected, update *volume* is itself the abuse signal (§8).
+**Successful updates are not rate-limited.** The caller is authenticated and
+authorized for the exact record it is touching, which is the same reason the native
+API and the CF facade carry no budget either: this server is run for a known fleet,
+not as a public service. The expensive resource is protected structurally instead —
+the push journal coalesces to one pending task per zone and the worker does at most
+one render+reload per zone per `backend_sync_delay` (§7.1), however many updates
+arrive, and an unchanged address is a `nochg` that writes nothing.
 
-Credential *failures* are limited separately (§3.6): once an account or a source
-address is locked out, the request is `429 abuse` and the submitted secret is never
-checked — so guessing a DDNS password costs the attacker the lockout window rather
-than an argon2 verification per try, and the account's budget is the same one the
-console login spends.
+Credential *failures* are limited (§3.6), and that is the only thing that returns
+`429 abuse`: once an account or a source address is locked out the submitted secret
+is never checked, so guessing a DDNS password costs the attacker the lockout window
+rather than an argon2 verification per try, and the account's budget is the same one
+the console login spends.
 
 ---
 
@@ -601,7 +605,6 @@ Prometheus exposition:
 | `teleddns_records_by_type` | gauge | `type` |
 | `teleddns_ddns_updates_total` | counter | `result` (`good`/`nochg`/`nohost`/`notyours`/`badauth`/`notfqdn`/`numhost`/`abuse`/`badagent`/`error`) — one count per response line, i.e. per hostname |
 | `teleddns_auth_failures_total` | counter | `surface`,`reason` (`bad_token`/`bad_password`/`no_such_user`/`inactive`/`locked`/`error`; `locked` = refused by the §3.6 lockout) |
-| `teleddns_ratelimited_total` | counter | `surface` |
 | `teleddns_backend_push_seconds` | histogram | `kind` |
 | `teleddns_backend_push_total` | counter | `kind`,`result` |
 | `teleddns_pending_pushes` | gauge | `state` |
