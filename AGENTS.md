@@ -45,7 +45,7 @@ password + 2FA), then exercise `/api/...`.
 | `migration/` | versioned `sea-orm-migration` steps (auth tables via the library + app tables + audit) |
 | `authz.rs` | `Level` algebra, the `min()` cap, `effective_level`, `user_groups` |
 | `principal.rs` | resolve session / HTTP Basic / bearer → `Principal` (with a token level); the one place credential failures are counted + metered |
-| `keys.rs` | self-service API-key component (`section()` composed onto `/profile` via `Auth::profile_extra`; level-capped mint/revoke) |
+| `keys.rs` | self-service API-key component (`section()` composed onto `/profile` via `Auth::profile_extra`; CSRF-checked mint/revoke of the caller's own keys) |
 | `sync.rs` | serial bump + push enqueue (called from RR/zone `after_save` hooks and write paths) |
 | `audit.rs` | audit sink: `WriteObserver` for admin/auth writes + `record()` for DDNS/API/CF; writes the `audit` table |
 | `ddns.rs` | dyndns2 endpoint |
@@ -53,7 +53,7 @@ password + 2FA), then exercise `/api/...`.
 | `cfapi/` | Cloudflare facade (`/client/v4`) |
 | `backend/` | `Backend` trait, `log` + `knot` impls, `worker` (journal drain), `zonefile` (BIND render) |
 | `ops.rs` | `/healthcheck` + `/metrics` |
-| `net.rs` | just two middlewares (source admission via `ip_src_allowed`/`ops_ip_src_allowed`, access log). Addresses are `relativelylight::net`'s: `client_ip` (peer vs `X-Forwarded-For`, per `trust_proxy`), `parse_nets`/`in_nets` (CIDRs across both families and the `::ffff:` form) |
+| `net.rs` | just two middlewares (source admission via `ip_src_allowed`/`ops_ip_src_allowed`, access log — the library ships no logging, so the request log is ours). Neither resolves an address — both read the `RealIp` extension `relativelylight::middleware::resolve_real_ip` fills at the outermost layer. CIDR rules are `relativelylight::net`'s `parse_nets`/`in_nets` (both families and the `::ffff:` form) |
 | `metrics.rs` | Prometheus registry + instruments |
 | `sso.rs` | build relativelylight `Sso` (OIDC) from config; login-page buttons |
 | `web.rs` | admin console (crud::ui::Admin), page shell (header username→`/profile`, footer docs/GitHub/copyright), login/profile styling |
@@ -102,9 +102,29 @@ password + 2FA), then exercise `/api/...`.
   Bearer-authenticated surfaces are exempt by design, so `/api` and `/client/v4` stay
   header-only.
 - **The library schedules nothing; the worker does.** `relativelylight` spawns no tasks, so
-  `auth::prune` (expired sessions + expired lockout rows) is called hourly from
-  `backend::worker`, next to the reconcile and full-resync passes. Missing a prune is harmless
+  `Auth::prune` (expired sessions on *both* clocks + expired lockout rows) is called hourly from
+  `backend::worker`, next to the reconcile and full-resync passes. It is the **method**, not the free
+  `auth::prune` — only the handle knows our `session_idle_secs`. Missing a prune is harmless
   — expired rows read as absent — so it stays best-effort.
+- **One address, resolved once, at the edge.** `relativelylight::middleware::resolve_real_ip` is the
+  **outermost** layer in `app.rs` (`Router::layer` wraps, so it is the last one added) and is
+  *mandatory*: it puts the caller's canonical address in the request as `RealIp`, and the login
+  lockout, `net.rs`'s two middlewares, every handler and every audit row read that one value. Never
+  re-derive an address from headers — that is how a log line and the event it described came to name
+  different clients. `config.trust_proxy` reaches exactly one place, the `TrustProxy` state on that
+  layer; the server must serve with `into_make_service_with_connect_info::<SocketAddr>()`. A handler
+  takes `RealIp(ip): RealIp` and gets an `IpAddr`, never an `Option` — a request whose source cannot be
+  established is a `500` at the edge, not a guess downstream. A stranger topology (a CDN header) means
+  writing a middleware that inserts `RealIp` itself, not a config knob.
+- **Logging is ours, all of it.** relativelylight writes nothing to stdout or stderr and ships no access
+  log — deliberately, so the app picks the shape. `net.rs` owns the request line: a `tracing` event, so it
+  carries the query string (for `/nic/update` the query *is* the request), the User-Agent, and a level
+  `config.debug` can move. Upstream's `examples/access_log` is the same fifteen lines if you need a
+  reference. Don't reach for a library layer that isn't there.
+- **Both password surfaces or neither.** `config.password_level` feeds `Auth::password_policy` (the
+  profile + manager pages) **and** the `password_hash` field validator on the admin user form
+  (`web.rs`). Wire a new one and you have created the documented way around the other. It governs typed
+  input only — `admin reset-password` and the first-start seed must always be able to set a password.
 - **Every mutation bumps the serial + enqueues a push.** RR/zone create+update go
   through SeaORM `ActiveModel::insert/update`, whose `after_save` hooks call
   `sync::*`. Bulk deletes bypass per-row hooks, so delete paths (native API, CF,
@@ -132,11 +152,13 @@ password + 2FA), then exercise `/api/...`.
   (create/edit do). Delete via the API/DDNS, or re-save the zone, to force a push.
 - **Native list pagination** reads the zone's rows then paginates in memory
   (correct; a DB-level cross-table optimization is deferred).
-- **CORS + a trusted-proxy real-ip layer** are still not added; client-IP resolution
-  is ours (`net.rs`, gated on `trust_proxy`) and the only network filter is the CIDR
-  source-admission list (`ip_src_allowed`). CSRF *is* in place for every cookie-authenticated write (see the
-  invariant above). Not yet (library-side): re-auth before a password/2FA change,
-  session invalidation after a password change, TOTP recovery codes.
+- **CORS** is still not added; the only network filter is the CIDR source-admission list
+  (`ip_src_allowed`). Everything else on the old list of gaps has landed: real-ip resolution is the
+  library's `resolve_real_ip` layer (see the invariant above), CSRF covers every cookie-authenticated
+  write, and 0.2.0 brings re-auth before a password/2FA change, session invalidation after a password
+  change, and TOTP recovery codes. Still missing, library-side: passkeys/WebAuthn, and re-auth through
+  the IdP for SSO accounts (an SSO account has no local factor, so it passes the re-auth gate
+  unchallenged — relativelylight `docs/AUTH.md` §5h states the limit).
 - **Admin timezone display (TODO, low priority).** The DB/API are UTC and the admin
   renders timestamps in UTC (relativelylight's `crud::ui::TIME_JS` + `TZ_PICKER_HTML`
   support UTC/browser-local/named zones — see relativelylight `docs/TIME.md`, not yet
@@ -144,12 +166,15 @@ password + 2FA), then exercise `/api/...`.
   host's zone, matching the Knot logs / syslog. Would mean: expose the server TZ (config
   or the host's `/etc/localtime`) via a tiny endpoint and set `$store.tz` from it on load.
 - `relativelylight` is a **git dependency pinned to an exact commit** (`Cargo.toml`) —
-  currently the **0.2.0 pre-release**, which turns the security defaults on: CSRF on
-  the auth forms, the DB-backed login lockout (`Auth::new(db, Lockout {..})`),
-  `set_password` as a reset (not an upsert) plus `reset_admin_access` for break-glass,
-  and an empty input on a *nullable* column stored as `NULL`. Move the pin to
-  `tag = "v0.2.0"` when it's cut, and to a crates.io `version` once published. See the
-  library's `CHANGELOG.md` (§Upgrading) and `docs/AUTH.md` §5e/§7.
+  currently the **0.2.0 pre-release**, which turns the security defaults on: CSRF on the auth forms,
+  the DB-backed login lockout (`Auth::new(db, lockout)`), the mandatory `resolve_real_ip` layer,
+  `set_password` as a reset (not an upsert) plus `reset_admin_access` for break-glass, an empty input on
+  a *nullable* column stored as `NULL`, `NOT NULL` columns enforced as `required` by the crud engine
+  (a hook-stamped column must be `read_only` or creates start failing with `422`), the public data types
+  `#[non_exhaustive]` (build them from `Default` + setters, never a struct literal), and
+  `crud::ColumnMeta` renamed `crud::Column`. Move the pin to `tag = "v0.2.0"` when it's cut, and to a
+  crates.io `version` once published. See the library's `CHANGELOG.md` (§Upgrading) and `docs/AUTH.md`
+  §5e–§5i / §7.
 - **Audit** is written by `audit.rs`: it's the `WriteObserver` relativelylight
   fires for the admin auto-CRUD + auth handlers, and the DDNS/API/CF handlers call
   `Audit::record` directly. Rows land in the read-only `audit` table; retention is

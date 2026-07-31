@@ -109,7 +109,7 @@ pub async fn from_session(
 /// address.
 pub async fn from_bearer(
     app: &AppState,
-    ip: Option<IpAddr>,
+    ip: IpAddr,
     headers: &HeaderMap,
     source: Source,
 ) -> Result<Principal, AuthError> {
@@ -124,12 +124,12 @@ pub async fn from_bearer(
 /// can be counted against.
 pub async fn from_token(
     app: &AppState,
-    ip: Option<IpAddr>,
+    ip: IpAddr,
     token: &str,
     source: Source,
 ) -> Result<Principal, AuthError> {
     // A token names no account, so the source address is the only thing to key on.
-    if let Some(retry) = app.ips.locked(ip).await {
+    if let Some(retry) = app.ips.locked(Some(ip)).await {
         return Err(locked(app, source, retry));
     }
     match principal_for_token(&app.db, token, source).await {
@@ -193,7 +193,7 @@ async fn principal_for_token(
 /// per source address: while either is locked the argon2 verification is never run.
 pub async fn from_basic(
     app: &AppState,
-    ip: Option<IpAddr>,
+    ip: IpAddr,
     username: &str,
     password: &str,
 ) -> Result<Principal, AuthError> {
@@ -246,8 +246,8 @@ pub async fn from_basic(
 }
 
 /// The longer of the account's and the address's remaining lockout, if either is locked.
-async fn locked_for(app: &AppState, username: &str, ip: Option<IpAddr>) -> Option<i64> {
-    match (app.usernames.locked(username).await, app.ips.locked(ip).await) {
+async fn locked_for(app: &AppState, username: &str, ip: IpAddr) -> Option<i64> {
+    match (app.usernames.locked(username).await, app.ips.locked(Some(ip)).await) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
     }
@@ -258,7 +258,7 @@ async fn locked_for(app: &AppState, username: &str, ip: Option<IpAddr>) -> Optio
 async fn rejected(
     app: &AppState,
     source: Source,
-    ip: Option<IpAddr>,
+    ip: IpAddr,
     username: Option<&str>,
     reason: &str,
 ) -> AuthError {
@@ -266,11 +266,11 @@ async fn rejected(
         Some(u) => app.usernames.record_failure(u).await,
         None => false,
     };
-    if app.ips.record_failure(ip).await || by_user {
+    if app.ips.record_failure(Some(ip)).await || by_user {
         tracing::warn!(
             surface = source.as_str(),
             user = username.unwrap_or("-"),
-            src = %ip.map(|i| i.to_string()).unwrap_or_else(|| "-".into()),
+            src = %ip,
             "too many failed credential checks — locked out for now"
         );
     }

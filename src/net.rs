@@ -1,31 +1,38 @@
-//! The two network middlewares: source admission and the access log. `ip_src_allowed` says which
-//! source networks may reach the server at all; `ops_ip_src_allowed` narrows `/healthcheck` and
+//! The two app-owned network middlewares: source admission and the access log. `ip_src_allowed` says
+//! which source networks may reach the server at all; `ops_ip_src_allowed` narrows `/healthcheck` and
 //! `/metrics` further (both must pass). Either empty means "no restriction" — this is an admission
 //! policy, not a set of exceptions, which is why neither is called a whitelist (the lockout's
 //! `ip_lockout_whitelist` is: it exempts addresses from automatic blocking).
 //!
-//! Both lists are matched against the *resolved* client address with the same canonicalization the
-//! lockout and the audit log use, so a rule cannot mean one thing here and another there.
+//! **Neither resolves an address.** Both read [`RealIp`], the request extension
+//! `relativelylight::middleware::resolve_real_ip` fills in at the outermost layer (`app.rs`) — the same
+//! value the lockout counts, the audit row records and every handler sees, already canonicalized
+//! (IPv4-mapped IPv6 folded to IPv4). One resolution, one policy decision about proxy trust
+//! (`config.trust_proxy`, passed to that layer as `TrustProxy`), so a CIDR rule cannot mean one thing
+//! here and another there. Extraction is strict: without the layer these answer `500` naming it, rather
+//! than admitting a request whose source they could not establish.
 //!
-//! Nothing about addresses is implemented here — `relativelylight::net` owns it: `client_ip`
-//! (socket peer, or the right-most `X-Forwarded-For` hop — the one the proxy appended — when
-//! `trust_proxy`, else `X-Real-IP`; IPv4-mapped
-//! collapsed to IPv4), `parse_nets` and `in_nets` (CIDR rules, matching across families and the mapped
-//! form). Everything that needs an address calls those directly — `ddns`, `api::req_ip`, `audit`, the
-//! two middlewares below, the lockout's whitelist, and relativelylight's own login route — so there is
-//! one implementation and one place where proxy trust is decided: our config.
+//! `relativelylight::net` still owns the address *vocabulary* — `parse_nets` / `in_nets` (CIDR rules
+//! matching across both families and the mapped form) — which is what the two lists below are built
+//! from.
+//!
+//! The access log is ours because **relativelylight ships none** — the crate writes nothing to stdout
+//! or stderr, deliberately, and leaves the request log to the app (its `examples/access_log` is the
+//! worked version of what this file does). Which suits us: this emits a `tracing` event carrying the
+//! query string — for `/nic/update` the query *is* the request — plus the User-Agent, so a
+//! misbehaving DDNS client can be identified. It honours `config.debug` and lands in journald with the
+//! rest of our structured logs, none of which a fixed `eprintln!` line could do.
 
 use crate::app::AppState;
-use axum::extract::{ConnectInfo, State};
+use axum::extract::State;
 use axum::http::{header, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use relativelylight::net::{canonical, client_ip, in_nets};
-use std::net::SocketAddr;
+use relativelylight::middleware::RealIp;
+use relativelylight::net::in_nets;
 
 pub async fn access_log(
-    State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
@@ -35,8 +42,6 @@ pub async fn access_log(
         .path_and_query()
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| req.uri().path().to_string());
-    let ip = client_ip(app.cfg.trust_proxy, req.headers(), Some(peer.ip()))
-        .unwrap_or_else(|| canonical(peer.ip())); // `None` needs no peer, and we have one
     let ua = req
         .headers()
         .get(header::USER_AGENT)
@@ -61,13 +66,10 @@ pub async fn access_log(
 /// endpoints.
 pub async fn allow_from(
     State(app): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let ip = client_ip(app.cfg.trust_proxy, req.headers(), Some(peer.ip()))
-        .unwrap_or_else(|| canonical(peer.ip())); // `None` needs no peer, and we have one
-
     if !app.ip_src_allowed.is_empty() && !in_nets(&app.ip_src_allowed, ip) {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }

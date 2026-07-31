@@ -70,8 +70,9 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let secure = cfg.public_url.starts_with("https://");
     // The audit sink persists a row per write; shared as the WriteObserver for the admin auto-CRUD
     // and the auth handlers, and used directly by the DDNS/API/CF handlers.
-    let audit: Arc<crate::audit::Audit> =
-        Arc::new(crate::audit::Audit::new(db.clone(), SESSION_COOKIE, cfg.trust_proxy));
+    // The address arrives on the event, already resolved by the `resolve_real_ip` layer, so the sink
+    // needs nothing but the DB and the session-cookie name to resolve the actor.
+    let audit: Arc<crate::audit::Audit> = Arc::new(crate::audit::Audit::new(db.clone(), SESSION_COOKIE));
     // SSO login buttons for the login page (empty when no providers are configured).
     let sso_buttons = crate::sso::buttons_html(&cfg);
     // The profile page (password + 2FA) is owned by relativelylight; teleddns composes its
@@ -79,25 +80,33 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let extra_db = db.clone();
     // The brute-force brake (PRD §3.6) — mandatory, so it is a constructor argument. Counters live in
     // `auth_username_lockout` / `auth_ip_lockout`; a locked key is refused before its secret is read.
-    let lockout = Lockout {
-        username_after: cfg.username_lockout_after,
-        username_duration_secs: cfg.username_lockout_duration.as_secs() as i64,
-        ip_after: cfg.ip_lockout_after,
-        ip_duration_secs: cfg.ip_lockout_duration.as_secs() as i64,
-        // The login route resolves the client with `relativelylight::net::client_ip`, which is what our
-        // own surfaces call too — one client's failures land on one row whichever surface they came
-        // from, and proxy trust is decided in exactly one place: this config flag.
-        trust_proxy: cfg.trust_proxy,
+    // Built from `Lockout::default()` and the two setters, not a struct literal — the type is
+    // `#[non_exhaustive]` precisely so a knob added upstream is not a compile break here (one has
+    // already *left* it: proxy trust moved to the `resolve_real_ip` layer below, where a request-level
+    // concern belongs). The login route counts the very address that layer resolved, which is what our
+    // own surfaces pass too — so one client's failures land on one row whichever surface they came from.
+    let lockout = Lockout::default()
+        .accounts(cfg.username_lockout_after, cfg.username_lockout_duration.as_secs() as i64)
+        .addresses(cfg.ip_lockout_after, cfg.ip_lockout_duration.as_secs() as i64)
         // Never locked out (empty by default): the office range, a monitoring probe, the NAT a fleet
         // shares — a locked address turns away the valid callers behind it too.
-        ip_whitelist: relativelylight::net::parse_nets(&cfg.ip_lockout_whitelist),
-    };
+        .whitelist(relativelylight::net::parse_nets(&cfg.ip_lockout_whitelist));
     let auth = Auth::new(db.clone(), lockout.clone())
         .secure_cookies(secure)
         .admin_group(ADMIN_GROUP)
         .cookie_name(SESSION_COOKIE)
         .csrf_cookie_name(CSRF_COOKIE)
         .totp_issuer("teleddns")
+        // Idle sessions expire inside the (unchanged) 7-day absolute lifetime: a console left open on
+        // an unattended desk stops being a live credential. `0` in the config turns the clock off.
+        .session_idle_secs(cfg.session_idle_timeout.as_secs() as i64)
+        // Screen a *typed* password on the profile + manager pages. The admin user form is a separate
+        // wiring off the same config value (`web::build_engine`) — skip either and it becomes the way
+        // around the other. `admin reset-password` is deliberately unaffected.
+        .password_policy(cfg.password_policy())
+        // Render the CSRF refusal in our own page shell rather than the library's bare page — an
+        // operator who left a login form open overnight should land somewhere that looks like teleddns.
+        .csrf_rejection(crate::web::csrf_rejected)
         .on_write(audit.clone()) // audit auth-table changes (password change, manager reset)
         .login_shell(move |form| crate::web::login_shell(form, &sso_buttons))
         .profile_shell(crate::web::profile_shell)
@@ -114,8 +123,13 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(providers = s.buttons().len(), "OIDC SSO enabled");
     }
 
-    let engine =
-        Arc::new(crate::web::build_engine(db.clone(), &auth, audit.clone(), cfg.default_ttl));
+    let engine = Arc::new(crate::web::build_engine(
+        db.clone(),
+        &auth,
+        audit.clone(),
+        cfg.default_ttl,
+        cfg.password_policy(),
+    ));
 
     // The app owns the OpenAPI root; the admin CRUD entity endpoints + schemas are merged in.
     let app_doc = utoipa::openapi::OpenApiBuilder::new()
@@ -147,7 +161,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         username_duration = lockout.username_duration_secs,
         ip_after = lockout.ip_after,
         ip_duration = lockout.ip_duration_secs,
-        trust_proxy = lockout.trust_proxy,
+        trust_proxy = cfg.trust_proxy,
         "credential lockout"
     );
 
@@ -159,7 +173,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         cfg.clone(),
         backend.clone(),
         metrics.clone(),
-        lockout, // the worker also runs the auth housekeeping (sessions + lockout rows)
+        auth.clone(), // the worker also runs the auth housekeeping (sessions + lockout rows)
     );
     tracing::info!(backend = backend.name(), "backend sync worker started");
 
@@ -210,9 +224,18 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     };
     let app =
         app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::allow_from));
-    // Outermost: one access-log line per request (logs allow-list denials too).
-    let app =
-        app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::access_log));
+    // One access-log line per request (denials from the admission list included), so it wraps it.
+    let app = app.layer(axum::middleware::from_fn(crate::net::access_log));
+    // **Outermost, and mandatory**: resolve who is calling, once, into a `RealIp` extension. Everything
+    // downstream reads that one value — the admission list, the access log, relativelylight's login
+    // lockout, our own credential checks, the audit rows — so a log line and the event it describes can
+    // never name different clients. This is also the single place proxy trust is decided; a request
+    // whose address cannot be established at all gets a `500` here, never a guess. `Router::layer`
+    // wraps, so the layer added last runs first.
+    let app = app.layer(axum::middleware::from_fn_with_state(
+        relativelylight::middleware::TrustProxy(state.cfg.trust_proxy),
+        relativelylight::middleware::resolve_real_ip,
+    ));
 
     let addr = state.cfg.bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;

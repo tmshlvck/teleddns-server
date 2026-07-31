@@ -62,6 +62,7 @@ pub fn build_engine(
     auth: &Auth,
     audit: Arc<crate::audit::Audit>,
     default_ttl: u32,
+    password_policy: Option<relativelylight::validate::PasswordPolicy>,
 ) -> Engine {
     let gate = Arc::new(GroupReadWrite::new(auth, [crate::app::ADMIN_GROUP]));
     let mut crud = Crud::new(db, "/admin/api");
@@ -117,6 +118,17 @@ pub fn build_engine(
     z.field("updated_at").label = Some("Last changed".into());
     z.field("updated_at").read_only = true;
     z.field("updated_at").datetime();
+    // Pre-fill the create form with the same SOA the API's auto-generated zone gets
+    // (`zone::Model::new_defaults`): every one of these is `NOT NULL` with no database default, so the
+    // engine now refuses a create that omits it — better a form that arrives filled in with sane
+    // numbers than eight red `*`s an operator has to look up. A `default` is a *form* value, never
+    // applied server-side, so an API caller still has to say what it means.
+    z.field("serial").default = Some(serde_json::json!(1));
+    z.field("refresh").default = Some(serde_json::json!(10800));
+    z.field("retry").default = Some(serde_json::json!(3600));
+    z.field("expire").default = Some(serde_json::json!(604800));
+    z.field("minimum").default = Some(serde_json::json!(3600));
+    z.field("ttl").default = Some(serde_json::json!(default_ttl));
     z.field("origin").validate_str(crate::dns::check::zone_origin);
     z.field("origin").on_write = Some(lowercase());
     z.field("mname").validate_str(crate::dns::check::target_name);
@@ -242,8 +254,24 @@ pub fn build_engine(
     let mut user = MetaModel::new(relativelylight::auth::user::Entity);
     user.field("username").validate_str(relativelylight::auth::valid_username);
     user.field("password_hash").password();
+    // The *other half* of `config.password_level`: relativelylight screens a password typed on
+    // `/profile`, this screens one typed here. Skip either and it becomes the documented way around the
+    // other — an admin could set `hunter2` on an account the profile page would have refused. The crud
+    // pipeline is coerce → validate → transform, so the validator sees the plaintext before
+    // `password()`'s argon2 hook hashes it. `optional` because blank has a meaning on this column
+    // (blank on create = no password / login disabled, blank on edit = keep the current one), and
+    // without it "leave blank" would become a validation error.
+    if let Some(policy) = password_policy {
+        user.field("password_hash").validate_str(relativelylight::validate::optional(Box::new(
+            relativelylight::validate::password(policy),
+        )));
+    }
     user.field("totp_secret").hidden = true;
     user.field("totp_pending").hidden = true;
+    // The TOTP replay guard's bookkeeping (the last step number a code was spent at). Not a secret,
+    // but not an operator's business either, and editing it would either replay-enable a code or lock
+    // the account out of its own authenticator until the clock caught up.
+    user.field("totp_last_step").hidden = true;
     user.field("is_active").default = Some(serde_json::json!(true));
     user.field("sso_provider").label = Some("SSO provider".into());
     user.field("sso_provider").description = Some(
@@ -519,6 +547,25 @@ pub fn login_shell(form: &str, sso_buttons: &str) -> String {
 <h1 class="h5 mb-3">Log in</h1>{form}{sso_buttons}</div></div>"#
     );
     shell("Log in — teleddns", "", &body)
+}
+
+/// The CSRF refusal, in our page shell instead of relativelylight's bare one (`Auth::csrf_rejection`,
+/// which also covers `csrf::enforce` on our own routes). Same discipline as the default: the request
+/// never proved it came from this site, so it names no user and sets no cookie, and it stays a `403`.
+pub fn csrf_rejected() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Html(shell(
+            "Request rejected — teleddns",
+            "",
+            r#"<div class="card shadow-sm mx-auto mt-5" style="max-width:32rem"><div class="card-body">
+<h1 class="h5 mb-3">Request rejected</h1>
+<p class="mb-1">This form's security token was missing or stale — usually a page left open too long, or
+one reloaded after signing out.</p>
+<p class="mb-0"><a href="/">Reload the console</a> and try again.</p></div></div>"#,
+        )),
+    )
+        .into_response()
 }
 
 /// App chrome around the library's profile/password/2FA page.

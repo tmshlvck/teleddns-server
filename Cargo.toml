@@ -12,10 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 # relativelylight is consumed from GitHub, pinned to an exact commit for reproducibility. This is the
-# 0.2.0 pre-release (CSRF, the DB-backed login lockout + `net::client_ip`, nullable-column handling);
-# move to `tag = "v0.2.0"` once it is cut, and to `version = "0.2"` once it is published to crates.io.
+# 0.2.0 pre-release (CSRF, the DB-backed login lockout, the mandatory `resolve_real_ip` layer, and
+# nullable-column handling). Move to `tag = "v0.2.0"` once it is cut, and to `version = "0.2"` once it is
+# published to crates.io.
 # `validate-base64` enables validate::base64 (used for the DNSKEY public-key field check).
-relativelylight = { git = "https://github.com/tmshlvck/relativelylight", rev = "ea24d3b3cfb03129c5636dacb72cd0e7c1c7b811", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso", "validate-base64"] }
+relativelylight = { git = "https://github.com/tmshlvck/relativelylight", rev = "a56ba968c8d44b071dcd29aa3735c52dd47df198", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso", "validate-base64"] }
 
 sea-orm = { version = "1.1", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }

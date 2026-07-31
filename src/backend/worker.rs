@@ -31,8 +31,8 @@ pub struct WorkerHandle {
     pub out_of_sync: Arc<AtomicI64>,
 }
 
-/// How often the worker runs the auth housekeeping (expired sessions + expired lockout rows).
-/// relativelylight schedules nothing itself — this loop is the app's answer to that.
+/// How often the worker runs the auth housekeeping (expired sessions on **both** clocks + expired
+/// lockout rows). relativelylight schedules nothing itself — this loop is the app's answer to that.
 const AUTH_PRUNE_PERIOD_SECS: i64 = 3600;
 
 /// Spawn the worker; returns handles the healthcheck reads.
@@ -41,7 +41,7 @@ pub fn spawn(
     cfg: Arc<Config>,
     backend: Arc<dyn Backend>,
     metrics: Arc<crate::metrics::Metrics>,
-    lockout: relativelylight::auth::lockout::Lockout,
+    auth: relativelylight::auth::Auth,
 ) -> WorkerHandle {
     let last_tick = Arc::new(AtomicI64::new(0));
     let last_push = Arc::new(AtomicI64::new(0));
@@ -85,9 +85,12 @@ pub fn spawn(
             }
             // Auth housekeeping: drop expired sessions and expired lockout rows. Purely cosmetic for
             // correctness (an expired row reads as unlocked, an expired session never authenticates),
-            // so failures are logged and forgotten. Runs once on the first tick, then hourly.
+            // so failures are logged and forgotten. Runs once on the first tick, then hourly. This is
+            // `Auth`'s own prune rather than the free `auth::prune`, because only the handle knows our
+            // `session_idle_secs` — the free function would leave idle-dead rows until their absolute
+            // deadline.
             if now() - last_auth_prune >= AUTH_PRUNE_PERIOD_SECS {
-                match relativelylight::auth::prune(&db, &lockout).await {
+                match auth.prune().await {
                     Ok(0) => {}
                     Ok(n) => tracing::debug!(rows = n, "pruned expired sessions/lockout rows"),
                     Err(e) => tracing::warn!(error = %e, "auth prune failed"),

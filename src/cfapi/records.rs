@@ -5,16 +5,15 @@
 use super::{authenticate, cf_err, ok, ok_list};
 use crate::app::AppState;
 use crate::api::record_view;
-use crate::api::req_ip;
 use crate::api::zones::zone_allowed;
 use crate::authz;
 use crate::dns;
 use crate::model::zone;
 use crate::principal::Principal;
-use axum::extract::{ConnectInfo, Path, Query, State};
-use std::net::SocketAddr;
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use relativelylight::middleware::RealIp;
 use sea_orm::EntityTrait;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -34,11 +33,11 @@ async fn zone_or_err(app: &AppState, id: i32) -> Result<zone::Model, Response> {
 pub async fn list(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Path(zid): Path<i32>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let who = match authenticate(&app, &headers, peer).await {
+    let who = match authenticate(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -83,10 +82,10 @@ pub async fn list(
 pub async fn get_one(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Path((zid, rid)): Path<(i32, String)>,
 ) -> Response {
-    let who = match authenticate(&app, &headers, peer).await {
+    let who = match authenticate(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -110,11 +109,11 @@ pub async fn get_one(
 pub async fn create(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Path(zid): Path<i32>,
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
-    let who = match authenticate(&app, &headers, peer).await {
+    let who = match authenticate(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -135,7 +134,7 @@ pub async fn create(
             let target = format!("rr/{}", v.get("id").and_then(|x| x.as_str()).unwrap_or(""));
             app.audit
                 .record("cfapi", "create", target, &who, cf_auth_type(&headers),
-                        req_ip(&app, &headers, peer), None, Some(v.clone()))
+                        ip, None, Some(v.clone()))
                 .await;
             ok(cf_record(&v, &zone))
         }
@@ -156,11 +155,11 @@ fn cf_auth_type(headers: &HeaderMap) -> &'static str {
 pub async fn update(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Path((zid, rid)): Path<(i32, String)>,
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
-    let who = match authenticate(&app, &headers, peer).await {
+    let who = match authenticate(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -186,7 +185,7 @@ pub async fn update(
         Ok(v) => {
             app.audit
                 .record("cfapi", "update", format!("rr/{rid}"), &who, cf_auth_type(&headers),
-                        req_ip(&app, &headers, peer), Some(existing), Some(v.clone()))
+                        ip, Some(existing), Some(v.clone()))
                 .await;
             ok(cf_record(&v, &zone))
         }
@@ -198,10 +197,10 @@ pub async fn update(
 pub async fn delete(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Path((zid, rid)): Path<(i32, String)>,
 ) -> Response {
-    let who = match authenticate(&app, &headers, peer).await {
+    let who = match authenticate(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -216,7 +215,7 @@ pub async fn delete(
         Ok(v) => {
             app.audit
                 .record("cfapi", "delete", format!("rr/{rid}"), &who, cf_auth_type(&headers),
-                        req_ip(&app, &headers, peer), Some(v), None)
+                        ip, Some(v), None)
                 .await;
             ok(json!({ "id": rid }))
         }

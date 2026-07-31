@@ -38,9 +38,8 @@ pub fn router() -> axum::Router<AppState> {
 pub async fn authenticate(
     app: &AppState,
     headers: &HeaderMap,
-    peer: std::net::SocketAddr,
+    ip: std::net::IpAddr,
 ) -> Result<Principal, Response> {
-    let ip = crate::api::req_ip(app, headers, peer);
     // `X-Auth-Key` is CF's own carrier for the same token; `Authorization: Bearer` wins when both are
     // present (as on DDNS and the native API), so one request is never two credential checks.
     let token = principal::bearer_token(headers)
@@ -114,9 +113,9 @@ pub fn cf_err(status: StatusCode, code: i64, message: &str) -> Response {
 async fn verify_token(
     axum::extract::State(app): axum::extract::State<AppState>,
     headers: HeaderMap,
-    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    relativelylight::middleware::RealIp(ip): relativelylight::middleware::RealIp,
 ) -> Response {
-    match authenticate(&app, &headers, peer).await {
+    match authenticate(&app, &headers, ip).await {
         Ok(p) => ok(json!({
             "id": p.key_id.map(|k| k.to_string()).unwrap_or_default(),
             "status": "active",

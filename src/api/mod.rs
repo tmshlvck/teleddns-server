@@ -33,17 +33,16 @@ pub fn router() -> axum::Router<AppState> {
 
 /// Require a valid Bearer token; on failure returns the JSON error response to short-circuit. Token
 /// checks are rate-limited per client IP (`principal`), so a caller that keeps guessing gets `429` +
-/// `Retry-After` instead of another `401` — `peer` is needed to resolve that address.
+/// `Retry-After` instead of another `401` — hence `ip`, the handler's `RealIp`.
 pub async fn require_bearer(
     app: &AppState,
     headers: &HeaderMap,
-    peer: std::net::SocketAddr,
+    ip: std::net::IpAddr,
 ) -> Result<Principal, Response> {
     // Basic is rejected on the API (bearer-only).
     if principal::basic_creds(headers).is_some() && principal::bearer_token(headers).is_none() {
         return Err(err(StatusCode::UNAUTHORIZED, "bearer token required (HTTP Basic not accepted)"));
     }
-    let ip = req_ip(app, headers, peer);
     match principal::from_bearer(app, ip, headers, Source::Api).await {
         Ok(p) => Ok(p),
         Err(principal::AuthError::Locked(retry)) => Err(too_many(retry)),
@@ -67,15 +66,6 @@ fn too_many(retry: i64) -> Response {
 /// A JSON error response `{ "error": msg }`.
 pub fn err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({ "error": msg }))).into_response()
-}
-
-/// Resolve the client IP for an API/CF request (peer + trust_proxy/XFF), for the audit log.
-pub fn req_ip(
-    app: &AppState,
-    headers: &HeaderMap,
-    peer: std::net::SocketAddr,
-) -> Option<std::net::IpAddr> {
-    relativelylight::net::client_ip(app.cfg.trust_proxy, headers, Some(peer.ip()))
 }
 
 /// Map a record_view::ApiError to an HTTP response.

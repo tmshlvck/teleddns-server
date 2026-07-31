@@ -242,8 +242,8 @@ gives it your authority — no key setting can take that back.
 A key is the **only** credential that works on the management APIs (they are
 bearer-only), and the only one that works on DDNS for an account with **2FA or SSO**
 — see the DDNS section above. A password-only account can use HTTP Basic on DDNS, but
-a token is still preferable: it can be scoped below the owner's level and revoked on
-its own without changing anyone's password.
+a token is still preferable: it can be revoked on its own, without changing anyone's
+password or disturbing that account's other devices.
 
 ### Brute-force protection
 
@@ -280,6 +280,42 @@ the socket peer otherwise — so the login form, the DDNS endpoint, the APIs and
 on who a caller is. One operational note: while an address is locked, *valid* callers from it are
 refused too, so keep `ip_lockout_after` well above what a broken client produces if your users share an
 address (CGNAT, an office NAT). Watch `teleddns_auth_failures_total{reason="locked"}`.
+
+### Passwords, 2FA and sessions
+
+These apply to the **console** (the login form and `/profile`); the DDNS/API surfaces
+authenticate per request and hold no session.
+
+**Password strength.** A password *typed* into the profile page, a manager's reset form, or
+the admin console's user form is screened against `password_level` (`0` off, `1` ≥ 8
+characters, `2` ≥ 12 — the default, `3` ≥ 12 plus the classic character mix). Above `0` it
+also rejects common values and keyboard walks, one repeated character, a run of six
+consecutive characters, and a password containing the account's own username. Length first,
+per NIST SP 800-63B. All three surfaces are covered by the one setting, because whichever is
+left unscreened becomes the way around the others — and `admin reset-password` is covered by
+none of them, so a recovery path can always set a password.
+
+**Sessions expire on two clocks.** A session dies 7 days after it was created, and after
+`session_idle_timeout` (default `8h`, `0` to disable) with no requests — so a console left
+open on an unattended desk stops being a live credential well before the week is out. The
+session id is reissued when the second factor completes, so a session planted in someone's
+browser before they log in cannot be inherited afterwards.
+
+**Changing a password signs the other sessions out** — the account's own, everywhere else,
+and *all* of a target's when a manager resets it. `/profile` also has a **Sign out other
+sessions** button for evicting an intruder without a password change.
+
+**Sensitive profile changes ask for a factor again**, in the same request: enrolling 2FA or
+turning it off, and a manager's reset or 2FA-disable (which take the *manager's* own factor,
+not the target's). A current password or a fresh TOTP code satisfies it; a code spent this
+way cannot then be used to log in. An SSO account has no local factor to ask for and passes
+unchallenged.
+
+**TOTP recovery codes.** Enrolling 2FA now issues ten single-use codes, shown once. Submit
+one in place of the authenticator code at login when the phone isn't available; `/profile`
+reports how many are left and regenerates the set (which invalidates the old one). An account
+that enrolled **before this version has none** — nothing backfills them — until it generates
+a set from `/profile`, which says so on the page.
 
 ### Single sign-on (SSO)
 
@@ -640,6 +676,10 @@ kdig @<secondary> www.example.com. A +short         # → 1.2.3.4 (auto-provisio
   truth; zone files under `knot_zone_dir` are regenerated from it.
 - **Upgrade:** replace the binary and `systemctl restart teleddns-server`. The
   startup migrator applies pending schema changes; the worker re-pushes as needed.
+  Live console sessions survive an upgrade; DDNS clients and API tokens are untouched.
+  One thing an upgrade does **not** do is issue TOTP recovery codes to accounts that
+  enrolled 2FA before this version — they have none until they generate a set from
+  `/profile` (see [Passwords, 2FA and sessions](#passwords-2fa-and-sessions)).
 
 | Symptom | Check |
 |---|---|
@@ -647,7 +687,9 @@ kdig @<secondary> www.example.com. A +short         # → 1.2.3.4 (auto-provisio
 | Pushes fail / dead-letter | `journalctl -u teleddns-server` (the error includes the knotc command, exit code, stderr/stdout); `knot_zone_dir` writable. |
 | `conf-set zone[...]` fails | Knot must run from the **confdb** (step 2) — `conf-set` on a file-configured `knotd` fails. |
 | Zone served but secondary empty | catalog wiring: `knotc zone-status catalog.example.`; TSIG secret matches; ACL/notify. |
-| DDNS `!yours` for a valid user | the token's level + the group's zone/rr grant (see [Authorization model](#authorization-model)). |
+| DDNS `!yours` for a valid user | the zone/record grant on one of the account's groups — a key carries no rights of its own (see [Authorization model](#authorization-model)). |
+| Signed out sooner than expected | `session_idle_timeout` (default `8h`); a password change also evicts that account's other sessions. |
+| A form posts back "Request rejected" | a stale CSRF token — the page sat open past its session. Reload and retry. |
 | Real client IP wrong | `trust_proxy: true`, and the proxy sets `X-Forwarded-For` (we read its right-most entry). Two proxies in front? The inner one's view wins — not supported yet. |
 
 ---

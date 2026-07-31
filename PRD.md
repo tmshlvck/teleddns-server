@@ -77,10 +77,10 @@ form-encode them in the body (query wins on a clash):
 
 With **no** address parameter the request's own source address is published — the
 family it connected over, and only that family (an explicit `myip` is never extended
-with a detected address of the other family). The address is the one
-`relativelylight::net::client_ip` yields, so behind a proxy it is the
-right-most forwarded hop **only when `trust_proxy` is set**; without a resolvable address the
-request is `notfqdn`.
+with a detected address of the other family). The address is the request's resolved
+`RealIp` (§3.6), so behind a proxy it is the right-most forwarded hop **only when
+`trust_proxy` is set**. There is no "no address" case to handle: a request whose source
+cannot be established never reaches the handler.
 
 At most **one address per family** per request: the same address repeated is fine,
 two different addresses of one family contradict each other → `notfqdn`. The address
@@ -133,7 +133,7 @@ lines and always agrees with the body.
 |------|-------------|-----------|
 | 200  | `good <addrs>` | created or updated; addresses comma-separated, IPv4 first. |
 | 200  | `nochg <addrs>`| already at the requested value(s). |
-| 400  | `notfqdn`   | missing/syntactically invalid `hostname`, or an unparseable/contradictory address, or no address and none detectable (dyndns2 has no keyword for a malformed address; `notfqdn` classifies as a permanent client-side error, which is the right signal). |
+| 400  | `notfqdn`   | missing/syntactically invalid `hostname`, or an unparseable/contradictory address (dyndns2 has no keyword for a malformed address; `notfqdn` classifies as a permanent client-side error, which is the right signal). |
 | 400  | `numhost`   | more than 20 hostnames in one request. |
 | 401  | `badauth`   | missing/wrong credentials, or Basic auth by a 2FA/SSO user. |
 | 403  | `!yours`    | authenticated but not authorized for the resolved record. |
@@ -300,19 +300,22 @@ deleting a row in the admin console**: Superadmin-gated, CSRF-checked and writte
 other change, with no bespoke endpoint and no shell access. The console shows both tables ("Locked
 accounts", "Locked addresses"), which is also the only place the fact of an attack is visible.
 
-Expired rows are cleared by `relativelylight::auth::prune` (which also drops expired sessions), called
-hourly from the sync worker — the library schedules nothing itself. Skipping a prune is harmless: an
-expired row reads as unlocked and resets itself on the next failure.
+Expired rows are cleared by `Auth::prune` (which also drops sessions expired on either clock, §4.1),
+called hourly from the sync worker — the library schedules nothing itself. Skipping a prune is
+harmless: an expired row reads as unlocked and resets itself on the next failure.
 
-**One answer to "who is the client".** `trust_proxy` selects it — the **right-most** forwarded hop when
-set (the one the proxy appended; everything left of it is caller-supplied, so reading the left-most
-entry would let a caller choose its own identity), the socket peer otherwise, IPv4-mapped addresses
-collapsed either way — and there is a single
-implementation: `relativelylight::net::client_ip`, called directly by the library's login route and by
-every surface of ours (DDNS, the APIs, the access log, the audit sink). So proxy trust is decided in
-exactly one place, our config, and one client's failures always land on one row.
-Without a proxy the forwarded headers are ignored, so a caller cannot choose whose address gets locked
-out; behind one, `trust_proxy` must be set or every user is bucketed under the proxy's address.
+**One answer to "who is the client", resolved once.** The outermost middleware
+(`relativelylight::middleware::resolve_real_ip`) decides it for the whole request and publishes it as
+`RealIp`: the **right-most** forwarded hop when `trust_proxy` is set (the one the proxy appended;
+everything left of it is caller-supplied, so reading the left-most entry would let a caller choose its
+own identity), the socket peer otherwise, IPv4-mapped addresses collapsed either way. Every consumer —
+the library's login route, the lockout, source admission, DDNS, the APIs, the access log, the audit
+sink — reads that one value rather than re-deriving one, so a log line and the event it describes can
+never name different clients, and proxy trust is decided in exactly one place: our config. Without a
+proxy the forwarded headers are ignored, so a caller cannot choose whose address gets locked out;
+behind one, `trust_proxy` must be set or every user is bucketed under the proxy's address. A request
+whose address cannot be established at all is refused at the edge — the server is not permitted to
+lockout-count, admit or audit an anonymous address.
 
 ---
 
@@ -327,7 +330,40 @@ access grants (zone-role / record-role) are managed — none of that is on the A
   session (opaque, revocable cookie).
 - **TOTP 2FA** and **passkeys** as optional second factors; a user who enables any
   strong factor can no longer use HTTP Basic on the DDNS endpoint (must use a
-  token).
+  token). Completing the second factor **reissues the session id**, so a session
+  planted in a victim's browser before they log in cannot be inherited afterwards, and
+  a TOTP code is **spent once** — a replay inside its ±1-step window is refused, and
+  reported exactly like a wrong code so a captured one isn't confirmed as genuine.
+- **TOTP recovery codes:** ten single-use codes issued *with* an enrolment and shown
+  once, submitted in place of the authenticator code at login. `/profile` reports how
+  many remain and regenerates the set (invalidating the previous one); turning 2FA off
+  deletes them. A recovery code gets you *in*; it deliberately does not satisfy
+  re-authentication, since it must not license removing the factor it bypassed.
+  Nothing backfills codes for an enrolment made before they existed — a set appearing
+  mid-login would be a worse surprise than an honest "none left".
+- **Sessions expire on two clocks:** an absolute 7-day lifetime and an idle timeout
+  (`session_idle_timeout`, default 8 h, `0` to disable), because the common exposure is
+  a console left open rather than a week-old cookie. Changing a password signs that
+  account's **other** sessions out — and a manager's reset signs out *all* of the
+  target's — so the change actually evicts whoever it was meant to evict. `/profile`
+  also offers "sign out other sessions" on its own, which is deliberately **not**
+  re-authenticated: it only ever removes access, and someone racing to evict an intruder
+  shouldn't be slowed down.
+- **Sensitive changes re-authenticate**, per request, with a current password *or* a
+  fresh TOTP code: enrolling or disabling 2FA, and a manager's password reset or
+  2FA-disable (which take the **manager's own** factor, not the target's). A live session
+  proves someone logged in once; it does not prove the owner is the one asking now. An
+  SSO account has no local factor to ask for and passes unchallenged — the documented
+  limit, since refusing would lock SSO administrators out of the manager pages
+  permanently.
+- **Password strength:** a *typed* password is screened at `password_level` (`0` off,
+  `1` ≥ 8, `2` ≥ 12 — default, `3` ≥ 12 plus the classic character mix), which also
+  screens common values, keyboard walks, repeats, six-character runs and the account's
+  own username. Length first, per NIST SP 800-63B. The setting covers **all three**
+  typed-password surfaces at once — profile, manager reset, and the admin console's user
+  form — because whichever is left unscreened becomes the way around the others. It never
+  governs `admin reset-password` or the first-start seed: a recovery path must always be
+  able to set a password.
 - **Self-service profile:** change own password, manage own TOTP/passkeys, and
   **mint/revoke API keys** (§3.4). Admins can reset another user's password — a reset
   changes *only* the password: a disabled account stays disabled and 2FA stays
@@ -449,11 +485,14 @@ are out of scope.
 
 ### 5.3 Supporting data
 
-- **API keys** — belong to a user; hash, prefix, name, level ∈ {1,2,3}, expiry,
-  last-used, disabled (§3.4).
+- **API keys** — belong to a user; hash, prefix, name, expiry, last-used, disabled
+  (§3.4). No level: a key authenticates as its owner and carries no rights of its own.
 - **Zone grant** — Zone Manager; unique on `(group, zone)`.
 - **Record grant** — RR Manager; unique on `(group, zone, label)`.
-- **Users / groups / group membership / sessions** — the auth model (§3.5, §4).
+- **Users / groups / group membership / sessions** — the auth model (§3.5, §4). Plus
+  the two lockout tables (§3.6) and the hashed TOTP recovery codes (§4.1), all owned by
+  relativelylight; the recovery table is deliberately **not** in the admin console, since
+  every row is a credential hash.
 - **Push journal** — the backend-push work queue (§7).
 - **Idempotency store** — saved responses for `Idempotency-Key` replay (§6).
 
@@ -691,8 +730,11 @@ Key groups:
   `username_lockout_duration` (15 m), `ip_lockout_after` (100) + `ip_lockout_duration`
   (15 m), `ip_lockout_whitelist` (never-locked CIDRs); `0` disables either counter, and the
   two windows are independent.
-  `trust_proxy` decides whether the library's login route may count the socket peer, so
-  there is no separate setting for that.
+  `trust_proxy` decides which address every one of them is keyed on (§3.6), so there is no
+  separate setting for that.
+- **Console credentials** (§4.1) — `password_level` (default 2; `0` off) screens every
+  *typed* password on all three surfaces at once, and `session_idle_timeout` (default 8 h;
+  `0` off) bounds an idle console session inside the 7-day absolute lifetime.
 - **SSO** — `public_url` and `sso_providers[]` (§4.2).
 
 On first start the server **seeds an `admin` user** and logs the generated
@@ -736,17 +778,21 @@ Rust 2021 / `tokio`; `axum` 0.8; `SeaORM` 1.1 (`sqlx-sqlite` + `sqlx-postgres`,
 `tracing` for structured logs. Passwords are argon2id (via the library); API keys
 are SHA-256-hashed. Built on
 [`relativelylight`](https://github.com/tmshlvck/relativelylight) — a git dependency
-pinned to a release tag (currently `v0.1.2`; move to a crates.io `version` once
-published), features `crud, axum, ui, openapi, csv, auth, sso, validate-base64`.
+pinned to an exact commit (currently the **0.2.0 pre-release**; move to `tag = "v0.2.0"`
+once cut, then to a crates.io `version` once published), features
+`crud, axum, ui, openapi, csv, auth, sso, validate-base64`.
 
 ### 11.2 Library boundary — reuse vs. build
 
 **From `relativelylight` (no per-model code):** the `auth` stack (`auth_user` /
 `auth_group` / `auth_user_group` / `auth_session`, argon2id, `Auth::identify`,
-login/logout/profile incl. TOTP, the OIDC `sso` module, the `Authz` gate + presets);
-the `crud` engine + `MetaModel` introspection driving the **operator admin console**
-over our entities; `crud::ui::Admin`/`Table` fragments; OpenAPI + CSV; and
-`validate` (the shared field-validator predicates — §5.2).
+login/logout/profile incl. TOTP + recovery codes, session lifetimes and revocation,
+the re-authentication gate, the DB-backed credential lockout, the OIDC `sso` module,
+the `Authz` gate + presets); the `csrf` double-submit token; the `middleware` layers
+(`resolve_real_ip`, which every consumer of a client address depends on); the `crud`
+engine + `MetaModel` introspection driving the **operator admin console** over our
+entities; `crud::ui::Admin`/`Table` fragments; OpenAPI + CSV; and `validate` (the
+shared field-validator predicates and the password policy — §5.2, §4.1).
 
 **We build (app code):** the DNS domain model (`zone` + one entity per RR type); the
 bearer **API-key** entity + a principal resolver (the library authenticates browsers,
@@ -816,12 +862,14 @@ Knot backend + worker, §8 operability, §9 config + CLI.
 - **No *username* whitelist on the lockout** (§3.6) — addresses can be exempted,
   accounts cannot, deliberately: an account that can never lock is an account whose
   password can be guessed at forever.
-- **Re-authentication is not required** before changing a password or disabling 2FA,
-  a password change does not invalidate the user's other sessions, and there are no
-  TOTP recovery codes — all in relativelylight's auth module, tracked there.
-- **CORS and trusted-proxy real-IP parsing** are not middleware yet: client-IP
-  resolution is ours (`net.rs`, gated on `trust_proxy`), and the only network filter
-  is source admission (`ip_src_allowed`). CSRF *is* in place for cookie-authenticated
-  writes (§4.1).
+- **Re-authentication for SSO accounts is unreachable.** The sensitive-change gate
+  (§4.1) asks for a password or a TOTP code, and an SSO account has neither, so it
+  passes unchallenged. The real fix is re-auth through the IdP (`prompt=login`),
+  which is relativelylight's to build; refusing instead would lock SSO administrators
+  out of the manager pages permanently.
+- **CORS** is not middleware yet; the only network filter is source admission
+  (`ip_src_allowed`). Real-IP resolution now *is* a middleware — the library's
+  `resolve_real_ip`, outermost and mandatory (§3.6) — and CSRF is in place for every
+  cookie-authenticated write (§4.1).
 - **Admin timezone display** — the DB/API are UTC and the admin renders UTC; a
   server-timezone option (to match Knot/syslog) is deferred (see `AGENTS.md`).

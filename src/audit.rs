@@ -2,9 +2,13 @@
 //! the app-side [`WriteObserver`] relativelylight fires for the admin auto-CRUD and the auth handlers,
 //! and it also exposes [`Audit::record`] for teleddns's own surfaces (DDNS, native API, CF facade).
 //!
-//! It deliberately holds only `db` + a little config (cookie name, `trust_proxy`) — **not** `AppState`
-//! or `Auth` — so there's no reference cycle (AppState/Auth own the sink `Arc`). For observer events it
-//! resolves the acting session user straight from the DB; direct callers pass the resolved principal.
+//! It deliberately holds only `db` + the session-cookie name — **not** `AppState` or `Auth` — so
+//! there's no reference cycle (AppState/Auth own the sink `Arc`). For observer events it resolves the
+//! acting session user straight from the DB; direct callers pass the resolved principal.
+//!
+//! The client address is never derived here: an observer event carries the one
+//! `middleware::resolve_real_ip` resolved at the edge, and our own handlers pass the `RealIp` they were
+//! given — so an audit row names exactly the client the lockout counted and the access log printed.
 
 use crate::model::{audit, now};
 use crate::principal::Principal;
@@ -19,12 +23,11 @@ use std::net::IpAddr;
 pub struct Audit {
     db: DatabaseConnection,
     cookie_name: String,
-    trust_proxy: bool,
 }
 
 impl Audit {
-    pub fn new(db: DatabaseConnection, cookie_name: impl Into<String>, trust_proxy: bool) -> Self {
-        Audit { db, cookie_name: cookie_name.into(), trust_proxy }
+    pub fn new(db: DatabaseConnection, cookie_name: impl Into<String>) -> Self {
+        Audit { db, cookie_name: cookie_name.into() }
     }
 
     /// Insert one audit row (best-effort — a failed audit write must never break the request).
@@ -69,7 +72,7 @@ impl Audit {
         target: String,
         principal: &Principal,
         auth_type: &str,
-        ip: Option<IpAddr>,
+        ip: IpAddr,
         before: Option<Value>,
         after: Option<Value>,
     ) {
@@ -80,7 +83,7 @@ impl Audit {
             Some(principal.user_id),
             principal.username.clone(),
             auth_type,
-            ip.map(|i| i.to_string()).unwrap_or_else(|| "-".into()),
+            ip.to_string(),
             before,
             after,
         )
@@ -121,9 +124,7 @@ fn op_str(op: Operation) -> &'static str {
 impl WriteObserver for Audit {
     async fn on_write(&self, ev: &WriteEvent<'_>) {
         let (uid, uname, auth_type) = self.session_actor(ev.headers).await;
-        let ip = relativelylight::net::client_ip(self.trust_proxy, ev.headers, ev.peer.map(|p| p.ip()))
-            .map(|i| i.to_string())
-            .unwrap_or_else(|| "-".into());
+        let ip = ev.client_ip.to_string(); // already resolved at the edge — see the module docs
         let target = match &ev.key {
             Some(k) => format!("{}/{}", ev.entity, k),
             None => ev.entity.to_string(),

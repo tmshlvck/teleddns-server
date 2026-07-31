@@ -22,6 +22,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0002_lockout::Migration),
             Box::new(m0003_drop_api_key_level::Migration),
             Box::new(m0004_lowercase_names::Migration),
+            Box::new(m0005_session_clocks_and_recovery::Migration),
         ]
     }
 }
@@ -101,6 +102,7 @@ mod m0001_init {
         async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
             // Drop dependents before their targets (reverse of `up`).
             for table in [
+                "auth_totp_recovery",
                 "audit",
                 "api_idempotency",
                 "sync_task",
@@ -289,6 +291,100 @@ mod m0004_lowercase_names {
 
         /// Case cannot be restored, and restoring it would only bring the bug back.
         async fn down(&self, _m: &SchemaManager) -> Result<(), DbErr> {
+            Ok(())
+        }
+    }
+}
+
+/// The three schema additions relativelylight 0.2.0 makes to the auth tables: the `auth_totp_recovery`
+/// table (single-use 2FA recovery codes), `auth_session.last_seen_at` (the idle-session clock) and
+/// `auth_user.totp_last_step` (the TOTP replay guard). A *fresh* database already has all three —
+/// `m0001` creates every table `auth::table_create_statements` reports, and the columns come from the
+/// current entities — so each step here is conditional and does work only on a database created before
+/// the upgrade.
+///
+/// `last_seen_at` is backfilled to **now**, not left at `0`: a zero reads as idle-expired, which would
+/// sign every operator out the moment the new binary starts. The safe direction is arguably the other
+/// one, but this is a fleet's own console and an upgrade is not a breach — losing every session on a
+/// deploy is a worse surprise than carrying a session through it. `totp_last_step` is nullable and
+/// means "no code spent yet", which is correct for every existing enrolment.
+///
+/// **Recovery codes are not backfilled** (deliberately, and there is nothing to backfill them from):
+/// an account that enrolled 2FA under an earlier version has none until it generates a set from
+/// `/profile`, where the page says so.
+mod m0005_session_clocks_and_recovery {
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0005_session_clocks_and_recovery"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            let backend = m.get_database_backend();
+            let schema = sea_orm::Schema::new(backend);
+            let mut stmt = schema
+                .create_table_from_entity(relativelylight::auth::recovery::entity::Entity);
+            m.create_table(stmt.if_not_exists().to_owned()).await?;
+
+            if !m.has_column("auth_session", "last_seen_at").await? {
+                m.alter_table(
+                    Table::alter()
+                        .table(Alias::new("auth_session"))
+                        .add_column(
+                            ColumnDef::new(Alias::new("last_seen_at"))
+                                .big_integer()
+                                .not_null()
+                                .default(0),
+                        )
+                        .to_owned(),
+                )
+                .await?;
+                // Existing sessions are live, not idle — see the module note above.
+                sea_orm::ConnectionTrait::execute_unprepared(
+                    m.get_connection(),
+                    &format!(
+                        "UPDATE auth_session SET last_seen_at = {} WHERE last_seen_at = 0",
+                        crate::model::now()
+                    ),
+                )
+                .await?;
+            }
+            if !m.has_column("auth_user", "totp_last_step").await? {
+                m.alter_table(
+                    Table::alter()
+                        .table(Alias::new("auth_user"))
+                        .add_column(ColumnDef::new(Alias::new("totp_last_step")).big_integer().null())
+                        .to_owned(),
+                )
+                .await?;
+            }
+            Ok(())
+        }
+
+        async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            m.drop_table(
+                Table::drop().table(Alias::new("auth_totp_recovery")).if_exists().to_owned(),
+            )
+            .await?;
+            for (table, column) in
+                [("auth_session", "last_seen_at"), ("auth_user", "totp_last_step")]
+            {
+                if m.has_column(table, column).await? {
+                    m.alter_table(
+                        Table::alter()
+                            .table(Alias::new(table))
+                            .drop_column(Alias::new(column))
+                            .to_owned(),
+                    )
+                    .await?;
+                }
+            }
             Ok(())
         }
     }

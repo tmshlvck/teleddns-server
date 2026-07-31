@@ -113,16 +113,16 @@ impl Outcome {
 pub async fn update(
     State(app): State<AppState>,
     headers: HeaderMap,
-    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    relativelylight::middleware::RealIp(ip): relativelylight::middleware::RealIp,
     Query(query): Query<HashMap<String, String>>,
     // Body last (it is consumed): empty for GET, the form payload for a POST that sends one.
     body: String,
 ) -> Response {
     let params = request_params(query, &headers, &body);
-    // Real client IP (post proxy rewrite) for the audit log, the request log line, and — when the
-    // request carries no address at all — the address to publish.
-    let ip = relativelylight::net::client_ip(app.cfg.trust_proxy, &headers, Some(peer.ip()));
-    let ip_s = ip.map(|i| i.to_string()).unwrap_or_else(|| "-".into());
+    // The client address `resolve_real_ip` established for this request (the proxy's appended hop when
+    // `trust_proxy`, else the socket peer): the audit log's, the request log line's, and — when the
+    // request names no address at all — the one to publish.
+    let ip_s = ip.to_string();
     let ua = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -156,13 +156,10 @@ pub async fn update(
         // does ("the best IP address the server can determine"). Only that one family is touched —
         // publishing a second address the client never mentioned would be a surprise. With
         // `trust_proxy` the resolved IP is the hop the proxy appended, so this works behind a proxy.
-        Ok(_) => match ip {
-            Some(detected) => {
-                tracing::debug!(actor = %principal.username, src = %ip_s, "ddns: no address given, using the client address");
-                Addrs::from_client_ip(detected)
-            }
-            None => return finish(&app, &[Outcome::NotFqdn], &principal.username, &ua),
-        },
+        Ok(_) => {
+            tracing::debug!(actor = %principal.username, src = %ip_s, "ddns: no address given, using the client address");
+            Addrs::from_client_ip(ip)
+        }
         Err(o) => return finish(&app, &[o], &principal.username, &ua),
     };
 
@@ -246,8 +243,8 @@ impl Addrs {
     }
 
     /// The set implied by the address a request arrived from (used when it names none): that one
-    /// family only. `IpAddr`'s display form is the canonical literal, and `net::client_ip` has
-    /// already unwrapped an IPv4-mapped IPv6 peer, so a dual-stack listener yields plain IPv4 here.
+    /// family only. `IpAddr`'s display form is the canonical literal, and a `RealIp` has already had
+    /// an IPv4-mapped IPv6 peer folded away, so a dual-stack listener yields plain IPv4 here.
     fn from_client_ip(ip: std::net::IpAddr) -> Self {
         match ip {
             std::net::IpAddr::V4(v4) => Self { v4: Some(v4.to_string()), v6: None },
@@ -292,7 +289,7 @@ async fn update_host(
     principal: &Principal,
     hostname: &str,
     addrs: &Addrs,
-    ip: Option<std::net::IpAddr>,
+    ip: std::net::IpAddr,
     ip_s: &str,
     ua: &str,
     auth_type: &str,
@@ -341,7 +338,7 @@ async fn update_host(
 async fn authenticate(
     app: &AppState,
     headers: &HeaderMap,
-    ip: Option<std::net::IpAddr>,
+    ip: std::net::IpAddr,
 ) -> Result<Principal, Outcome> {
     if principal::bearer_token(headers).is_some() {
         return principal::from_bearer(app, ip, headers, Source::Ddns).await.map_err(auth_outcome);
@@ -371,7 +368,7 @@ async fn update_one(
     label: &str,
     family: Family,
     addr: &str,
-    ip: Option<std::net::IpAddr>,
+    ip: std::net::IpAddr,
     auth_type: &str,
 ) -> Outcome {
     // Authorize: RR Manager on this exact (zone, label) — or anyone who manages the zone.

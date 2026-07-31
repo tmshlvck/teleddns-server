@@ -145,16 +145,14 @@ async fn signed_in(app: &AppState, headers: &HeaderMap) -> Option<crate::princip
 }
 
 /// Verify the double-submit CSRF token on a cookie-authenticated post; `Some(response)` is the 403 to
-/// return when it doesn't check out.
+/// return when it doesn't check out — the *same* page relativelylight renders for its own forms
+/// (`Auth::csrf_rejection`), so a stale token looks the same wherever the operator met it.
 fn csrf_rejected(app: &AppState, headers: &HeaderMap, token: Option<&str>) -> Option<Response> {
     if app.auth.csrf().verify(headers, token) {
         return None;
     }
     tracing::warn!("rejected an API-key form post with a missing or invalid CSRF token");
-    Some(
-        (axum::http::StatusCode::FORBIDDEN, "CSRF token missing or invalid — reload /profile")
-            .into_response(),
-    )
+    Some(crate::web::csrf_rejected())
 }
 
 /// Copies the CSRF token cookie into the hidden `_csrf` field of every `form[data-csrf]` in the

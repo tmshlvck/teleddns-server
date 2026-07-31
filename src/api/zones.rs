@@ -2,17 +2,17 @@
 //! one needs Superadmin. Create
 //! auto-generates the SOA + apex NS; delete removes the zone, its records, and enqueues a Knot removal.
 
-use super::{err, req_ip, require_bearer, Page};
+use super::{err, require_bearer, Page};
 use crate::app::AppState;
 use crate::authz;
 use crate::dns;
 use crate::model::{now, rr, zone};
 use crate::principal::Principal;
-use axum::extract::{ConnectInfo, Path, Query, State};
-use std::net::SocketAddr;
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use relativelylight::middleware::RealIp;
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
@@ -24,10 +24,10 @@ use std::collections::HashMap;
 pub async fn list(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers, peer).await {
+    let who = match require_bearer(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -66,10 +66,10 @@ pub async fn list(
 pub async fn get_one(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Path(id): Path<i32>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers, peer).await {
+    let who = match require_bearer(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -86,10 +86,10 @@ pub async fn get_one(
 pub async fn create(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Json(body): Json<Value>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers, peer).await {
+    let who = match require_bearer(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -138,7 +138,7 @@ pub async fn create(
     let view = zone_view(&z);
     app.audit
         .record("api", "create", format!("zone/{}", z.id), &who, "bearer",
-                req_ip(&app, &headers, peer), None, Some(view.clone()))
+                ip, None, Some(view.clone()))
         .await;
     let resp = super::idempotency::Stored { status: 201, body: view.clone() };
     super::idempotency::finish(&app, &who, &headers, &body, &resp).await;
@@ -149,11 +149,11 @@ pub async fn create(
 pub async fn update(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Path(id): Path<i32>,
     Json(body): Json<Value>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers, peer).await {
+    let who = match require_bearer(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -205,7 +205,7 @@ pub async fn update(
     let view = zone_view(&updated);
     app.audit
         .record("api", "update", format!("zone/{id}"), &who, "bearer",
-                req_ip(&app, &headers, peer), Some(before), Some(view.clone()))
+                ip, Some(before), Some(view.clone()))
         .await;
     Json(view).into_response()
 }
@@ -214,10 +214,10 @@ pub async fn update(
 pub async fn delete(
     State(app): State<AppState>,
     headers: HeaderMap,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    RealIp(ip): RealIp,
     Path(id): Path<i32>,
 ) -> Response {
-    let who = match require_bearer(&app, &headers, peer).await {
+    let who = match require_bearer(&app, &headers, ip).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -238,7 +238,7 @@ pub async fn delete(
     let view = zone_view(&z);
     app.audit
         .record("api", "delete", format!("zone/{id}"), &who, "bearer",
-                req_ip(&app, &headers, peer), Some(view.clone()), None)
+                ip, Some(view.clone()), None)
         .await;
     Json(view).into_response()
 }

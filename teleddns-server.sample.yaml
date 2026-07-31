@@ -102,6 +102,29 @@ ip_lockout_duration: "15m"
 # password can be guessed at forever.
 # ip_lockout_whitelist: ["203.0.113.0/24", "2001:db8::/32", "198.51.100.7"]
 
+# How strictly a TYPED password is screened — on the profile page, on a manager's reset,
+# and on the admin console's user form. All three, deliberately: whichever surface is
+# left unscreened becomes the way around the others.
+#
+#   0  off
+#   1  at least 8 characters
+#   2  at least 12 characters                                          [default]
+#   3  at least 12 plus upper + lower + digit + symbol, for audits that insist on it
+#
+# Every level above 0 also rejects common values and keyboard walks, one repeated
+# character, any run of six consecutive characters, and a password containing the
+# account's own username. Length first, per NIST SP 800-63B: demanding a character mix
+# gets you "Password1!" and costs usability without buying anything a cracking ruleset
+# doesn't already cover. Spaces, punctuation and emoji are all allowed, and nothing is
+# truncated. This never governs `teleddns-server admin reset-password` or the first-start
+# seed — a recovery path must always be able to set a password.
+password_level: 2
+
+# How long an idle console session survives before it must log in again, inside the
+# unchanged 7-day absolute lifetime. "0" turns the idle clock off (absolute expiry only).
+# A console left open on an unattended desk stops being a live credential.   ["8h"]
+session_idle_timeout: "8h"
+
 # Backend. "log" (default) just logs what it would push — safe for first boot
 # and dev. "knot" writes <knot_zone_dir>/<origin>.zone, declares the zone in
 # Knot's config DB as a member of <knot_template>, and runs `knotc zone-reload`.

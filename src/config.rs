@@ -92,6 +92,19 @@ pub struct Config {
     /// account that can never lock is an account whose password can be guessed at forever.
     pub ip_lockout_whitelist: Vec<String>,
 
+    /// How strictly a **typed** password is screened, on the profile page *and* the admin user form
+    /// (both, or the weaker one becomes the way around the other): `0` off, `1` ≥ 8 characters,
+    /// `2` ≥ 12 (default), `3` ≥ 12 plus the classic upper/lower/digit/symbol mix for audits that
+    /// insist. Every level above `0` also screens common values, keyboard walks, repeated or
+    /// consecutive runs and the account's own username — length first, per NIST SP 800-63B. It never
+    /// governs `admin reset-password` or the first-start seed: a recovery path must always be able to
+    /// set a password.
+    pub password_level: u8,
+    /// How long a console session may sit **idle** before it must log in again, inside the unchanged
+    /// 7-day absolute lifetime. `0` disables the idle clock (absolute expiry only).
+    #[serde(with = "humantime_serde_opt")]
+    pub session_idle_timeout: Duration,
+
     /// Externally reachable base URL (scheme + host), used to derive SSO redirect URLs.
     pub public_url: String,
     /// OIDC single sign-on providers.
@@ -166,6 +179,8 @@ impl Default for Config {
             ip_lockout_after: 100,
             ip_lockout_duration: Duration::from_secs(900),
             ip_lockout_whitelist: vec![],
+            password_level: 2,
+            session_idle_timeout: Duration::from_secs(8 * 3600),
             public_url: String::new(),
             sso_providers: vec![],
         }
@@ -244,6 +259,17 @@ impl Config {
         }
     }
 
+    /// The password policy `password_level` names, or `None` when screening is off. Used **twice** —
+    /// on relativelylight's own profile/manager pages (`Auth::password_policy`) and as the admin user
+    /// form's field validator (`web::build_engine`) — because whichever surface is left unscreened
+    /// becomes the way around the other.
+    pub fn password_policy(&self) -> Option<relativelylight::validate::PasswordPolicy> {
+        match self.password_level {
+            0 => None,
+            l => Some(relativelylight::validate::PasswordPolicy::from_level(l)),
+        }
+    }
+
     /// Normalize `listen_addr` — a leading ":" means all interfaces.
     pub fn bind_addr(&self) -> String {
         if let Some(rest) = self.listen_addr.strip_prefix(':') {
@@ -306,11 +332,32 @@ mod tests {
         assert!(humantime_serde_opt::parse("nope").is_err());
     }
 
+    /// `password_level` must reach a policy, and `0` must mean *off* — the one value that switches
+    /// screening off on both surfaces at once (the profile page and the admin user form). Getting this
+    /// wrong in either direction is silent: a policy where none was wanted locks operators out of
+    /// setting a password, and `None` where one was wanted leaves the console as the way around it.
+    #[test]
+    fn password_level_maps_to_a_policy() {
+        let policy_for = |level: u8| Config { password_level: level, ..Config::default() }.password_policy();
+        assert!(policy_for(0).is_none(), "0 is off");
+        for level in [1, 2, 3] {
+            assert!(policy_for(level).is_some(), "level {level} must screen");
+        }
+        // The default is level 2 (>= 12 characters), so the shipped config screens.
+        let default = Config::default().password_policy().expect("on by default");
+        assert!(default.check("hunter2", &[]).is_err(), "a short password must be refused");
+        assert!(default.check("a well chosen passphrase", &[]).is_ok());
+    }
+
     #[test]
     fn yaml_partial_overrides_defaults() {
-        let cfg: Config = serde_yaml::from_str("default_ttl: 120\nbackend: knot\n").unwrap();
+        let cfg: Config =
+            serde_yaml::from_str("default_ttl: 120\nbackend: knot\nsession_idle_timeout: \"30m\"\n")
+                .unwrap();
         assert_eq!(cfg.default_ttl, 120);
         assert_eq!(cfg.backend, "knot");
+        assert_eq!(cfg.session_idle_timeout, Duration::from_secs(1800));
         assert_eq!(cfg.ddns_rr_ttl, 60); // untouched default
+        assert_eq!(cfg.password_level, 2); // untouched default
     }
 }
