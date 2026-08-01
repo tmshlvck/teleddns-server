@@ -777,9 +777,9 @@ Rust 2021 / `tokio`; `axum` 0.8; `SeaORM` 1.1 (`sqlx-sqlite` + `sqlx-postgres`,
 `serde`/`serde_yaml` + `clap` for layered config; `prometheus` for metrics;
 `tracing` for structured logs. Passwords are argon2id (via the library); API keys
 are SHA-256-hashed. Built on
-[`relativelylight`](https://github.com/tmshlvck/relativelylight) — a git dependency
-pinned to an exact commit (currently the **0.2.0 pre-release**; move to `tag = "v0.2.0"`
-once cut, then to a crates.io `version` once published), features
+[`relativelylight`](https://github.com/tmshlvck/relativelylight) — a crates.io
+dependency at `version = "0.2"` (one compatible range for a `0.x` crate; `Cargo.lock`
+pins the exact version), features
 `crud, axum, ui, openapi, csv, auth, sso, validate-base64`.
 
 ### 11.2 Library boundary — reuse vs. build

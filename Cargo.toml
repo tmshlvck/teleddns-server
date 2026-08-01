@@ -11,12 +11,12 @@ name = "teleddns-server"
 path = "src/main.rs"
 
 [dependencies]
-# relativelylight is consumed from GitHub, pinned to an exact commit for reproducibility. This is the
-# 0.2.0 pre-release (CSRF, the DB-backed login lockout, the mandatory `resolve_real_ip` layer, and
-# nullable-column handling). Move to `tag = "v0.2.0"` once it is cut, and to `version = "0.2"` once it is
-# published to crates.io.
+# relativelylight from crates.io. `0.2` is one compatible range for a `0.x` crate, so a patch release is
+# picked up and a behaviour break (which bumps the minor) is not — `Cargo.lock` pins the exact version
+# either way. Before the 0.2.0 release this was a git dependency on an exact commit; there is no reason
+# left to carry one. Upgrading to 0.3 will be a read of the library's CHANGELOG §Upgrading, not a bump.
 # `validate-base64` enables validate::base64 (used for the DNSKEY public-key field check).
-relativelylight = { git = "https://github.com/tmshlvck/relativelylight", rev = "a56ba968c8d44b071dcd29aa3735c52dd47df198", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso", "validate-base64"] }
+relativelylight = { version = "0.2", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso", "validate-base64"] }
 
 sea-orm = { version = "1.1", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }

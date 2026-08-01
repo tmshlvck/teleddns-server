@@ -11,8 +11,7 @@ deviates from the dyn API) is [`DYNDNS2.md`](DYNDNS2.md) — keep it in step wit
 
 A Rust rewrite of a co-located DNS + Dynamic-DNS control-plane for a Knot DNS
 master, built on the [`relativelylight`](https://github.com/tmshlvck/relativelylight)
-back-office library (a **git dependency pinned to a release tag** in `Cargo.toml`; move
-to a `version = "…"` crates.io pin once it's published). The library
+back-office library (a **crates.io dependency**, `version = "0.2"` in `Cargo.toml`). The library
 provides the SeaORM CRUD engine + metadata, the auto-generated admin UI
 (`crud::ui::Admin`), OpenAPI generation, and `auth` (users/groups/sessions/login/
 profile, argon2id, TOTP, the `Authz` gate). Everything DNS-specific is app code.
@@ -165,16 +164,16 @@ password + 2FA), then exercise `/api/...`.
   wired here). Consider a **server-timezone** option so the admin shows times in the
   host's zone, matching the Knot logs / syslog. Would mean: expose the server TZ (config
   or the host's `/etc/localtime`) via a tiny endpoint and set `$store.tz` from it on load.
-- `relativelylight` is a **git dependency pinned to an exact commit** (`Cargo.toml`) —
-  currently the **0.2.0 pre-release**, which turns the security defaults on: CSRF on the auth forms,
-  the DB-backed login lockout (`Auth::new(db, lockout)`), the mandatory `resolve_real_ip` layer,
-  `set_password` as a reset (not an upsert) plus `reset_admin_access` for break-glass, an empty input on
-  a *nullable* column stored as `NULL`, `NOT NULL` columns enforced as `required` by the crud engine
-  (a hook-stamped column must be `read_only` or creates start failing with `422`), the public data types
-  `#[non_exhaustive]` (build them from `Default` + setters, never a struct literal), and
-  `crud::ColumnMeta` renamed `crud::Column`. Move the pin to `tag = "v0.2.0"` when it's cut, and to a
-  crates.io `version` once published. See the library's `CHANGELOG.md` (§Upgrading) and `docs/AUTH.md`
-  §5e–§5i / §7.
+- `relativelylight` is a **crates.io dependency** (`version = "0.2"`), which for a `0.x` crate is one
+  compatible range: a patch release is picked up, a behaviour break bumps the minor and is not, and
+  `Cargo.lock` pins the exact version regardless. We are on **0.2.0**, which turned the security defaults
+  on: CSRF on the auth forms, the DB-backed login lockout (`Auth::new(db, lockout)`), the mandatory
+  `resolve_real_ip` layer, `set_password` as a reset (not an upsert) plus `reset_admin_access` for
+  break-glass, an empty input on a *nullable* column stored as `NULL`, `NOT NULL` columns enforced as
+  `required` by the crud engine (a hook-stamped column must be `read_only` or creates start failing with
+  `422`), the public data types `#[non_exhaustive]` (build them from `Default` + setters, never a struct
+  literal), and `crud::ColumnMeta` renamed `crud::Column`. Moving to `0.3` will be a read of the library's
+  `CHANGELOG.md` §Upgrading, not a version bump — see also `docs/AUTH.md` §5e–§5i / §7.
 - **Audit** is written by `audit.rs`: it's the `WriteObserver` relativelylight
   fires for the admin auto-CRUD + auth handlers, and the DDNS/API/CF handlers call
   `Audit::record` directly. Rows land in the read-only `audit` table; retention is

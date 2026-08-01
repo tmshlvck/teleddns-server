@@ -2298,7 +2298,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2482,8 +2482,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relativelylight"
-version = "0.1.2"
-source = "git+https://github.com/tmshlvck/relativelylight?rev=a56ba968c8d44b071dcd29aa3735c52dd47df198#a56ba968c8d44b071dcd29aa3735c52dd47df198"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d38eb6c2bae057a493cebcbfff474b929996786405d6c81f27eb11530c65f241"
 dependencies = [
  "argon2",
  "askama",
