@@ -467,10 +467,6 @@ remote:
   - { id: secondary1, address: 203.0.113.10, key: xfr.example.com. }
 
 template:
-  - id: catalog                        # Knot GENERATES the catalog from member zones
-    catalog-role: generate
-    catalog-zone: catalog.example.
-    storage: /var/lib/knot/catalog
   - id: master                         # teleddns assigns THIS to every zone it manages
     storage: /var/lib/knot/zones       # MUST equal teleddns knot_zone_dir
     file: "%s.zone"                     # Knot reads <storage>/<zonename>.zone
@@ -486,6 +482,11 @@ zone:
   - { domain: catalog.example., catalog-role: generate, acl: acl_secondary, notify: secondary1 }
 ```
 
+`catalog-role: generate` sits **on the catalog zone**, not on a template — Knot builds that
+zone's contents in memory from every zone whose template says `catalog-role: member`, so it
+has no zone file and needs no storage. Pick a catalog name that is not below any zone this
+server actually serves, or it shadows part of that subtree.
+
 `zonefile-load: difference` + `zonefile-sync: -1` is what turns full-file
 regeneration on the master into **incremental IXFR** to secondaries while keeping
 teleddns the sole writer.
@@ -496,7 +497,7 @@ config *database* (confdb), not the text file. So import the base config and sta
 `knotd` with `-C`:
 
 ```sh
-sudo install -d -o knot -g knot /var/lib/knot/zones /var/lib/knot/catalog
+sudo install -d -o knot -g knot /var/lib/knot/zones
 sudo systemctl stop knot
 sudo knotc conf-import /etc/knot/knot.conf          # load templates/keys/acl/catalog into the confdb
 # Point knotd at the confdb (env var name differs by distro: KNOTD_ARGS on Fedora/RHEL,
@@ -505,7 +506,7 @@ sudo mkdir -p /etc/systemd/system/knot.service.d
 printf '[Service]\nEnvironment=KNOTD_ARGS=-C /var/lib/knot/confdb\n' \
     | sudo tee /etc/systemd/system/knot.service.d/confdb.conf
 sudo systemctl daemon-reload && sudo systemctl start knot
-knotc conf-read 'zone[catalog.]'                    # sanity: reads the committed confdb
+knotc conf-read 'zone[catalog.example.]'            # sanity: reads the committed confdb
 ```
 
 Keep the base config's `zone:` block to just the catalog zone — teleddns adds and
@@ -630,14 +631,31 @@ via the catalog zone.
 key:
   - { id: xfr.example.com., algorithm: hmac-sha256, secret: "SAME_SECRET_AS_MASTER" }
 remote:
-  - { id: master, address: 198.51.100.5, key: xfr.example.com. }
+  - { id: primary, address: 198.51.100.5, key: xfr.example.com. }
+  # IPv6 and a non-default port: address: "2001:db8::5@5353"
 acl:
-  - { id: acl_master, key: xfr.example.com., action: notify }
+  - { id: acl_primary, key: xfr.example.com., action: notify }
+
+# Applied to every zone learned FROM the catalog — this is what makes a member zone
+# transfer. Plain secondary config: where to pull from, and whose NOTIFY to accept.
 template:
-  - { id: catalog, catalog-role: interpret, master: master, acl: acl_master }
+  - { id: catalog_member, master: primary, acl: acl_primary }
+
+# The catalog zone itself, which is also an ordinary secondary zone.
 zone:
-  - { domain: catalog.example., catalog-role: interpret, master: master, acl: acl_master }
+  - domain: catalog.example.
+    master: primary
+    acl: acl_primary
+    catalog-role: interpret
+    catalog-template: catalog_member    # ← REQUIRED: without it nothing is provisioned
 ```
+
+**`catalog-template` is the whole mechanism** and the easiest line to leave out. It names
+the template Knot applies to each zone it learns from the catalog; a member zone otherwise
+has no primary to transfer from and no ACL to accept a NOTIFY, so the catalog arrives and
+nothing happens. Note it belongs on the **catalog zone**, and `catalog-role` belongs
+*only* there too — putting `catalog-role: interpret` on `catalog_member` would hand it to
+every member zone, telling Knot to interpret each of them as a catalog as well.
 
 **BIND 9 secondary** — `named.conf`:
 
@@ -665,6 +683,10 @@ curl -X POST $URL/api/zones/1/rr -H "Authorization: Bearer $KEY" \
 
 knotc zone-status example.com.                      # declared + served on the master
 kdig @127.0.0.1 www.example.com. A +short           # → 1.2.3.4
+
+# On the secondary: the member zone should appear by itself, from the catalog.
+knotc zone-status example.com.                      # if only catalog.example. is listed,
+                                                    # catalog-template is missing (step 5)
 kdig @<secondary> www.example.com. A +short         # → 1.2.3.4 (auto-provisioned)
 ```
 
@@ -686,6 +708,7 @@ kdig @<secondary> www.example.com. A +short         # → 1.2.3.4 (auto-provisio
 | `knot=down` in `/healthcheck` | teleddns can run `knotc status` (`knotc_path`; it runs as `knot`, so the socket is reachable). |
 | Pushes fail / dead-letter | `journalctl -u teleddns-server` (the error includes the knotc command, exit code, stderr/stdout); `knot_zone_dir` writable. |
 | `conf-set zone[...]` fails | Knot must run from the **confdb** (step 2) — `conf-set` on a file-configured `knotd` fails. |
+| Secondary has the catalog but no member zones | the catalog zone on the secondary is missing `catalog-template` (step 5) — the catalog transfers, and Knot then has no configuration to apply to what it learned. `knotc zone-status` lists only the catalog. |
 | Zone served but secondary empty | catalog wiring: `knotc zone-status catalog.example.`; TSIG secret matches; ACL/notify. |
 | DDNS `!yours` for a valid user | the zone/record grant on one of the account's groups — a key carries no rights of its own (see [Authorization model](#authorization-model)). |
 | Signed out sooner than expected | `session_idle_timeout` (default `8h`); a password change also evicts that account's other sessions. |
