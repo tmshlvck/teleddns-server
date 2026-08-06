@@ -115,6 +115,13 @@ field is validated on input and carries inline help. The whole console is
 **Superadmin**-only (the `admin` group); everyone else works through the DDNS/API
 surfaces and the self-service profile page.
 
+**Working inside one zone.** Each record table carries a **zone picker** beside its
+search box, and the choice follows you from one RR type to the next — pick the zone
+once rather than on every editor you open. It is remembered between visits and travels
+in the URL (`#filter.zone=7`), so a link to one zone's records can be bookmarked or
+sent to a colleague. Every column header sorts, **Zone** included: that one orders by
+the zone name shown in the cell, not the row id behind it.
+
 Cookie-authenticated writes (the login/profile forms, the API-key card, the console's
 own JSON API under `/admin/api`) require a **double-submit CSRF token** and answer
 `403` without it. Browsers handle this by themselves; a *script* that posts to

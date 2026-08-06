@@ -166,7 +166,15 @@ password + 2FA), then exercise `/api/...`.
   or the host's `/etc/localtime`) via a tiny endpoint and set `$store.tz` from it on load.
 - `relativelylight` is a **crates.io dependency** (`version = "0.2"`), which for a `0.x` crate is one
   compatible range: a patch release is picked up, a behaviour break bumps the minor and is not, and
-  `Cargo.lock` pins the exact version regardless. We are on **0.2.0**, which turned the security defaults
+  `Cargo.lock` pins the exact version regardless. We are on **0.2.1**, which added relation-aware
+  sorting and filtering: `?sort=zone` orders an RR table by the zone *name* shown in the cell rather
+  than the FK behind it (a join onto `zone.origin`, which `z.label_column("origin")` in `web.rs` is what
+  enables), `?filter[zone]=7` is an exact FK match, and `Admin::filter("zone")` puts one zone picker in
+  every RR table's toolbar, shared across all of them. Two fixes came with it that this app was exposed
+  to: paginating a listing whose sort column ties could repeat rows across pages while skipping others
+  (the primary key now breaks every tie), and `?<col>=<value>` on a non-text column, which was a
+  substring match — `?zone_id=3` also matched 13 and 30 — and is now a 400 pointing at `filter[…]`.
+  0.2.0 before it turned the security defaults
   on: CSRF on the auth forms, the DB-backed login lockout (`Auth::new(db, lockout)`), the mandatory
   `resolve_real_ip` layer, `set_password` as a reset (not an upsert) plus `reset_admin_access` for
   break-glass, an empty input on a *nullable* column stored as `NULL`, `NOT NULL` columns enforced as

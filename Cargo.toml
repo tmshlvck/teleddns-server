@@ -51,9 +51,3 @@ regex = "1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 
-
-# TEMPORARY, until relativelylight 0.2.1 is published: build against the local checkout so the console
-# can use the new sorting/filtering API. Remove this once the crates.io release is out — the version
-# requirement above already accepts a patch release.
-[patch.crates-io]
-relativelylight = { path = "../relativelylight/relativelylight" }
