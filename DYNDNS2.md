@@ -72,7 +72,8 @@ is taken from the query string. Any other body content type is ignored — there
 JSON form of this protocol.
 
 Accepted name syntax: dot-separated labels of 1–63 characters (letters, digits,
-`-`, and `_` for service labels), optionally a leading `*` wildcard label.
+`-`, `_` for service labels, and `/` for RFC 2317 classless reverse delegations,
+e.g. `5.0/27.62.185.83.in-addr.arpa`), optionally a leading `*` wildcard label.
 Anything else — including whitespace or a comma inside a name — is `notfqdn`.
 
 **Ignored parameters:** the deprecated dyn flags `wildcard`, `mx`, `backmx`,

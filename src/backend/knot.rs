@@ -141,6 +141,19 @@ impl KnotBackend {
     fn zone_path(&self, origin: &str) -> PathBuf {
         self.zone_dir.join(format!("{origin}zone"))
     }
+
+    /// An RFC 2317 origin (`0/27.62.185.83.in-addr.arpa.`) carries a slash, and Knot's `%s` file
+    /// formatter writes it out literally (libknot escapes everything *except* alphanumerics, `-`,
+    /// `_`, `*` and `/`), so the path it expects has a directory component we have to create — or
+    /// every push of that zone fails with ENOENT. A no-op for every ordinary origin.
+    async fn ensure_zone_dir(&self, path: &std::path::Path) -> Result<(), String> {
+        let Some(dir) = path.parent().filter(|d| *d != self.zone_dir) else {
+            return Ok(());
+        };
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| format!("creating {}: {e}", dir.display()))
+    }
 }
 
 /// Extract the first parseable serial from `knotc zone-status … +serial` output (a line like
@@ -184,6 +197,7 @@ fn parse_serial_map(out: &str) -> HashMap<String, i64> {
 impl Backend for KnotBackend {
     async fn push_zone(&self, origin: &str, zonefile: &str, serial: i64) -> Result<(), String> {
         let path = self.zone_path(origin);
+        self.ensure_zone_dir(&path).await?;
         tokio::fs::write(&path, zonefile)
             .await
             .map_err(|e| format!("writing {}: {e}", path.display()))?;

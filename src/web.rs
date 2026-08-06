@@ -32,7 +32,8 @@ fn rr_common<E: sea_orm::EntityTrait + sea_orm::EntityName>(mm: &mut MetaModel<E
     mm.field("label").label = Some("Name".into());
     mm.field("label").description = Some(
         "Record name relative to the zone origin — use @ for the zone apex, or a subdomain like \
-         www (not the full FQDN)."
+         www (not the full FQDN). A classless reverse delegation (RFC 2317) is written as it \
+         appears in the zone file, e.g. 0/27."
             .into(),
     );
     mm.field("label").validate_str(crate::dns::check::record_label);

@@ -248,6 +248,26 @@ mod tests {
         assert_eq!(p.records[2]["priority"], 10);
     }
 
+    /// RFC 2317 classless reverse delegation: the `0/27` owner and the CNAMEs pointing into it are
+    /// ordinary names — the owner resolves to the `0/27` label, the target stays absolute.
+    #[test]
+    fn parses_rfc2317_delegation() {
+        let z = "$ORIGIN 83.62.185.in-addr.arpa.\n$TTL 86400\n\
+                 0/27.83.62.185.in-addr.arpa.\t86400\tIN\tNS\tns1.itprime.ch.\n\
+                 3\t86400\tIN CNAME\t3.0/27.83.62.185.in-addr.arpa.\n\
+                 138\t86400\tIN PTR\tserv1.sbhost.ch.\n";
+        let p = parse(z, None).unwrap();
+        assert_eq!(p.records.len(), 3);
+        assert_eq!(p.records[0]["type"], "NS");
+        assert_eq!(p.records[0]["name"], "0/27");
+        assert_eq!(p.records[1]["name"], "3");
+        assert_eq!(p.records[1]["value"], "3.0/27.83.62.185.in-addr.arpa.");
+        // Every one of them clears the validation the write path applies.
+        assert!(dns::check::record_label(p.records[0]["name"].as_str().unwrap()).is_ok());
+        assert!(dns::check::target_name(p.records[1]["value"].as_str().unwrap()).is_ok());
+        assert!(dns::check::target_name(p.records[2]["value"].as_str().unwrap()).is_ok());
+    }
+
     #[test]
     fn skips_multiline_soa() {
         let z = "$ORIGIN example.com.\n@ IN SOA ns hostmaster (\n 1 ; serial\n 2 3 4 5 )\nwww IN A 1.1.1.1\n";

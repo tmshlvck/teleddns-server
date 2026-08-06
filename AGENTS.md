@@ -194,8 +194,12 @@ password + 2FA), then exercise `/api/...`.
   `check::fqdn_hostname` (absolute name) — `record_label`, `ddns_hostname`, `target_name`,
   `hostname`, `zone_origin` are all thin wrappers, so all surfaces reject exactly the same junk. The
   bar is the **rendered zone file**: whitespace, newlines, commas, over-long labels or control
-  characters must never reach the DB, or Knot rejects the zone on reload. Quoted rdata
-  (CAA value, NAPTR flags/service/regexp) is capped at one 255-octet character-string by
+  characters must never reach the DB, or Knot rejects the zone on reload. The bar is *not* "must be
+  a hostname" — `dns_label` takes the LDH set plus `_` **and `/`**, which is exactly what libknot
+  renders unescaped, so **RFC 2317** classless reverse delegation (`0/27` as an owner, in a CNAME/NS
+  target, and as a child zone's origin) is an ordinary name here. Knot writes that slash literally
+  into the zone-file name too, so `backend::knot` creates the directory such an origin implies.
+  Quoted rdata (CAA value, NAPTR flags/service/regexp) is capped at one 255-octet character-string by
   `check::char_string`; TXT is the exception — long values are legal and `backend::zonefile`
   splits them into 255-octet strings. Add a new RR field or type? Add its `check::*` validator
   (built on the primitives) and wire it on every surface: the `reg_rr!` macro in `web.rs`, the

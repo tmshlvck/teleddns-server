@@ -57,7 +57,8 @@ fn op_doc(summary: &str, description: &str, security: &Value, tag: &str) -> Valu
 /// (kept in sync with `dns::check` and the admin help). Shown on the record create/update operations.
 fn record_body_doc() -> &'static str {
     "Unified, type-discriminated record body: `{ type, name, ttl?, …rdata }`.\n\
-     `name` is relative to the zone (`@` = apex; `*` wildcard and `_underscore` labels allowed). \
+     `name` is relative to the zone (`@` = apex; `*` wildcard, `_underscore` and RFC 2317 \
+     classless-reverse labels such as `0/27` are all allowed). \
      `ttl` is optional (defaults to the zone TTL) and must be 0..2147483647 (RFC 2181).\n\n\
      rdata by type — all validated on write:\n\
      - **A**: `value` = IPv4 (e.g. 192.0.2.1); **AAAA**: `value` = IPv6.\n\

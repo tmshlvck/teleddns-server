@@ -458,8 +458,9 @@ RFC-reasonable with a few corners cut for uncommon cases (numeric enums are
 range-checked to their width, not to the exact IANA-registered set).
 
 Every **name-shaped** field is composed from two primitives — `dns_label` (one
-label: 1–63 chars, LDH plus `_` service labels) and `fqdn_hostname` (an absolute
-name, trailing dot required) — so no surface can accept a name another rejects:
+label: 1–63 chars, LDH plus `_` service labels and `/`) and `fqdn_hostname` (an
+absolute name, trailing dot required) — so no surface can accept a name another
+rejects:
 
 | Field | Rule |
 |---|---|
@@ -472,7 +473,16 @@ name, trailing dot required) — so no surface can accept a name another rejects
 The reason the bar is set here is the **rendered zone file**: a stored value
 carrying whitespace, a newline, a comma or an over-long label breaks the
 `<owner> <ttl> IN <TYPE> <rdata>` line and Knot then refuses the whole zone on
-reload, so such a value must never reach the DB in the first place.
+reload, so such a value must never reach the DB in the first place. It is *not*
+"must be a hostname" — a DNS label is not restricted to the RFC 1123 host syntax,
+and **RFC 2317 classless reverse delegation** is the case that matters in
+practice: `0/27` is a legal label, so the delegation's NS set, the `<n>.0/27.…`
+CNAMEs pointing into it, and the delegated child zone's own origin all validate
+and import like any other name. The accepted character set is exactly the one
+libknot writes unescaped (alphanumerics, `-`, `_`, `*`, `/`); anything outside it
+would have to be rendered `\DDD`, which no surface here emits. Because Knot's
+`%s` file formatter also writes that slash literally, the `knot` backend creates
+the directory component such an origin implies before writing the zone file.
 
 The zone-file render must be byte-faithful and pass Knot's `kzonecheck`: quoted
 rdata escapes `"`/`\` and writes any non-printable byte as `\DDD`, and a TXT value

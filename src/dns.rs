@@ -95,6 +95,12 @@ pub fn is_ipv6(s: &str) -> bool {
 /// write path may store one — which is why all of them funnel through the two primitives below
 /// ([`dns_label`] and [`fqdn_hostname`]) instead of validating names ad-hoc.
 ///
+/// What the bar is *not* is "must be a hostname": a DNS label is not restricted to the RFC 1123
+/// host syntax, and the one place that bites in practice is RFC 2317 classless reverse delegation,
+/// whose labels carry a slash (`0/27`). Those are ordinary names here — as an owner (the `0/27` NS
+/// set), inside an rdata target (the `<n>.0/27.…` CNAMEs pointing into the delegation) and as a
+/// zone origin (hosting the delegated child) — see [`dns_label`].
+///
 /// RFC-reasonable, with a few corners cut for uncommon cases — numeric enums are range-checked to
 /// their wire width (octet / 16-bit) rather than to the exact IANA-registered set, so a
 /// not-yet-known-here algorithm number is still accepted.
@@ -104,13 +110,28 @@ pub mod check {
     // --- name primitives: every name-shaped field below is composed from these two ---
 
     /// **One DNS label** — 1–63 octets of letters, digits and `-` (never first or last), plus `_`
-    /// for service labels (`_dmarc`, `_acme-challenge`). No dot and no `*`: a dotted sequence and
-    /// the wildcard are name-level concerns, handled by the callers below.
+    /// for service labels (`_dmarc`, `_acme-challenge`) and `/` for RFC 2317 classless reverse
+    /// delegations (`0/27.62.185.83.in-addr.arpa.` and the CNAMEs pointing into it). A label is not
+    /// a *hostname* (RFC 1123) — RFC 2181 §11 puts no restriction on its bytes at all — so the line
+    /// we hold is the one Knot draws: letters, digits, `-`, `_`, `*` and `/` are what libknot writes
+    /// literally, everything else it would have to escape as `\DDD`, which no surface here emits.
+    /// The slash may not lead or trail (the RFC 2317 form is `<first-address>/<prefix-length>`).
+    /// No dot and no `*`: a dotted sequence and the wildcard are name-level concerns, handled by
+    /// the callers below.
     pub fn dns_label(s: &str) -> Result<(), String> {
-        if s == "*" || s.contains('.') || rl::dns_name(s).is_err() {
-            return Err(format!(
-                "invalid DNS label {s:?} (1–63 characters: letters, digits, '-', '_')"
-            ));
+        let bad = || {
+            Err(format!(
+                "invalid DNS label {s:?} (1–63 characters: letters, digits, '-', '_', \
+                 and '/' for RFC 2317 reverse delegations)"
+            ))
+        };
+        if s.len() > 63 || s.contains('.') || s.contains('*') {
+            return bad();
+        }
+        // Each side of a slash is an ordinary LDH-plus-underscore label, which keeps `0/27` legal
+        // while `/27`, `0/` and `0//27` stay rejected (an empty part fails `dns_name`).
+        if s.split('/').any(|part| rl::dns_name(part).is_err()) {
+            return bad();
         }
         Ok(())
     }
@@ -352,6 +373,24 @@ mod tests {
         assert!(check::hostname("mail.example.com.").is_ok());
         assert!(check::hostname("mail").is_ok());
         assert!(check::hostname("*.example.com.").is_err());
+    }
+
+    /// RFC 2317 classless reverse delegation: `0/27` is a label like any other, at every position a
+    /// name can appear.
+    #[test]
+    fn rfc2317_labels() {
+        assert!(check::dns_label("0/27").is_ok());
+        assert!(check::dns_label("128/25").is_ok());
+        for bad in ["/27", "0/", "0//27", "*/27", "0/2 7", "0/27.", format!("{}/27", "a".repeat(61)).as_str()] {
+            assert!(check::dns_label(bad).is_err(), "{bad:?} must be rejected");
+        }
+        // The three surfaces a delegation touches: the owner of the NS set, the CNAME target that
+        // points into it, and the origin of the delegated child zone.
+        assert!(check::record_label("0/27").is_ok());
+        assert!(check::target_name("3.0/27.83.62.185.in-addr.arpa.").is_ok());
+        assert!(check::zone_origin("0/27.83.62.185.in-addr.arpa.").is_ok());
+        assert!(check::fqdn_hostname("0/27.83.62.185.in-addr.arpa.").is_ok());
+        assert!(check::ddns_hostname("0/27.83.62.185.in-addr.arpa").is_ok());
     }
 
     #[test]
