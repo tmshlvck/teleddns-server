@@ -391,10 +391,11 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
     ];
     for (slug, ty, desc) in rrs {
         let title = format!("RR {ty}");
-        // Zone first, then name: the order an operator reads a zone file in. Both headers stay
-        // clickable, so this is only the starting point.
-        admin = admin
-            .entity_with(slug, move |t| t.title(title).description(desc).sort("zone").sort("label"));
+        // No initial sort: the table opens in insertion order with every header unmarked, and the
+        // operator picks the order they want. (`.sort("zone").sort("label")` would open it in
+        // zone-then-name order — the order a zone file reads in — at the cost of two headers already
+        // showing an arrow on arrival.)
+        admin = admin.entity_with(slug, move |t| t.title(title).description(desc));
     }
     admin
         .separator()
