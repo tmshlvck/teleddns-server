@@ -2483,8 +2483,6 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "relativelylight"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d38eb6c2bae057a493cebcbfff474b929996786405d6c81f27eb11530c65f241"
 dependencies = [
  "argon2",
  "askama",

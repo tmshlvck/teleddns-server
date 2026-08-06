@@ -139,7 +139,10 @@ pub fn build_engine(
     z.field("expire").validate_int(crate::dns::check::soa_interval);
     z.field("minimum").validate_int(crate::dns::check::soa_interval);
     z.field("ttl").validate_int(crate::dns::check::ttl);
-    z.row_label = Box::new(|row| row["origin"].as_str().unwrap_or_default().to_string());
+    // Label zone rows by their origin — *declared*, not a closure, so the library can also turn a
+    // record table's `?sort=zone` into `ORDER BY zone.origin`: the RR tables sort by the zone name
+    // shown in the cell rather than the numeric foreign key behind it.
+    z.label_column("origin");
     crud.register(z, gate.clone());
 
     // One RR table per type. `reg_rr!` applies the shared Name/TTL/Zone metadata, then the listed
@@ -356,7 +359,14 @@ pub fn build_engine(
 pub fn build_admin(engine: &Engine) -> Admin<'_> {
     // No component title (the navbar brand `ui_title` is the single app heading) — omitting
     // `.title(...)` leaves `has_title = false`, so no empty heading element is rendered.
-    let mut admin = Admin::new(engine).group("DNS").entity_with("zone", |t| {
+    // One zone picker in the side-panel, applied to every table below that has a `zone` relation —
+    // i.e. all fourteen RR tables plus `zone_role` / `rr_role`. An operator normally works inside one
+    // zone at a time, so they choose it once here instead of re-choosing it on every record type they
+    // switch to; the choice is remembered and lands in the URL fragment, so a zone's records can be
+    // bookmarked or sent to a colleague. Tables without a zone (API keys, accounts, audit) ignore it.
+    //
+    // This narrows the *view*, not access — who may see or edit which zone stays with the gate.
+    let mut admin = Admin::new(engine).filter("zone").group("DNS").entity_with("zone", |t| {
         t.title("Zones").description(
             "DNS zones and their SOA. Creating a zone auto-generates the SOA and a default apex NS; \
              record changes bump the serial and trigger a backend sync.",
@@ -381,7 +391,10 @@ pub fn build_admin(engine: &Engine) -> Admin<'_> {
     ];
     for (slug, ty, desc) in rrs {
         let title = format!("RR {ty}");
-        admin = admin.entity_with(slug, move |t| t.title(title).description(desc));
+        // Zone first, then name: the order an operator reads a zone file in. Both headers stay
+        // clickable, so this is only the starting point.
+        admin = admin
+            .entity_with(slug, move |t| t.title(title).description(desc).sort("zone").sort("label"));
     }
     admin
         .separator()
