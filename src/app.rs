@@ -20,8 +20,9 @@ use std::sync::Arc;
 /// the grants (PRD §3.2), so renaming it would need a migration, not a config edit.
 pub const ADMIN_GROUP: &str = "admin";
 
-/// The session-cookie name (shared by `Auth` and the audit sink's session resolution).
-const SESSION_COOKIE: &str = "teleddns_session";
+/// The session-cookie name (shared by `Auth` and the audit sink's session resolution — the CLI paths
+/// build their own sink, hence `pub`).
+pub const SESSION_COOKIE: &str = "teleddns_session";
 
 /// The double-submit CSRF token cookie (relativelylight `csrf`). Named per app — a co-hosted app on
 /// the same host would otherwise fight us for the default `rl_csrf` name. `keys.rs` reads it from the
@@ -55,8 +56,14 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     crate::web::init_ui_title(&cfg.ui_title); // navbar brand
     let db = crate::db::connect(&cfg.db_dsn).await?;
     Migrator::up(&db, None).await?; // versioned schema (auth + app tables), applied once
-    seed_admin(&db).await?;
-    crate::audit::prune(&db, cfg.audit_retention_days).await; // drop rows past the retention window
+    // The audit sink persists a row per write; shared as the WriteObserver for the admin auto-CRUD
+    // and the auth handlers, and used directly by the DDNS/API/CF/keys handlers. Built first because
+    // the seed and the retention pass below both write state, and both are audited like anything else.
+    // The address arrives on the event, already resolved by the `resolve_real_ip` layer, so the sink
+    // needs nothing but the DB and the session-cookie name to resolve the actor.
+    let audit: Arc<crate::audit::Audit> = Arc::new(crate::audit::Audit::new(db.clone(), SESSION_COOKIE));
+    seed_admin(&db, &audit).await?;
+    crate::audit::prune(&db, cfg.audit_retention_days, &audit).await; // drop rows past the retention window
     // Hygiene for rows written before an empty admin-form input on a nullable column meant NULL: a
     // blank `sso_provider` used to read as "this is an SSO account" (no password login) and a blank
     // `totp_secret` as "2FA on" (demanding a code no authenticator can produce). relativelylight's
@@ -68,11 +75,6 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let secure = cfg.public_url.starts_with("https://");
-    // The audit sink persists a row per write; shared as the WriteObserver for the admin auto-CRUD
-    // and the auth handlers, and used directly by the DDNS/API/CF handlers.
-    // The address arrives on the event, already resolved by the `resolve_real_ip` layer, so the sink
-    // needs nothing but the DB and the session-cookie name to resolve the actor.
-    let audit: Arc<crate::audit::Audit> = Arc::new(crate::audit::Audit::new(db.clone(), SESSION_COOKIE));
     // SSO login buttons for the login page (empty when no providers are configured).
     let sso_buttons = crate::sso::buttons_html(&cfg);
     // The profile page (password + 2FA) is owned by relativelylight; teleddns composes its
@@ -249,8 +251,12 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// On first start (no users yet), seed an `admin` user in the `admin` group and log the generated
-/// password once.
-async fn seed_admin(db: &DatabaseConnection) -> Result<(), Box<dyn std::error::Error>> {
+/// password once. Audited (`source: startup`) like every other account creation — the very first
+/// administrator is exactly the one whose provenance an auditor will ask about.
+async fn seed_admin(
+    db: &DatabaseConnection,
+    audit: &crate::audit::Audit,
+) -> Result<(), Box<dyn std::error::Error>> {
     let count = relativelylight::auth::user::Entity::find().count(db).await?;
     if count > 0 {
         return Ok(());
@@ -258,6 +264,15 @@ async fn seed_admin(db: &DatabaseConnection) -> Result<(), Box<dyn std::error::E
     let pw = random_password();
     auth::make_admin(db, ADMIN_GROUP, "admin", &pw).await?;
     tracing::warn!(username = "admin", password = %pw, "seeded initial admin user");
+    audit
+        .record_local(
+            "startup",
+            "create",
+            user_target(db, "admin").await,
+            None,
+            Some(serde_json::json!({ "username": "admin", "group": ADMIN_GROUP, "seeded": true })),
+        )
+        .await;
     Ok(())
 }
 
@@ -290,5 +305,42 @@ pub async fn reset_password(
         auth::set_password(&db, username, &pw).await?;
         println!("password for {username} set to: {pw}");
     }
+    // Audited only on success: an unknown username (or an SSO account refusing the reset) returns
+    // above and changed nothing. Break-glass in particular is the one command that can hand somebody
+    // the console past 2FA — the log is where that shows up afterwards. Never the password itself.
+    let audit = crate::audit::Audit::new(db.clone(), SESSION_COOKIE);
+    audit
+        .record_local(
+            "cli",
+            "update",
+            user_target(&db, username).await,
+            None,
+            Some(serde_json::json!({
+                "username": username,
+                "password_reset": true,
+                "break_glass": break_glass,
+                // What --break-glass additionally did, spelled out: these are the account states an
+                // auditor would otherwise have to infer from the flag.
+                "totp_cleared": break_glass,
+                "reactivated": break_glass,
+                "admin_group": break_glass,
+            })),
+        )
+        .await;
     Ok(())
+}
+
+/// `auth_user/{id}` for a username, so a CLI row addresses the account the same way an admin-console
+/// row does. Falls back to the name when the id can't be read — a target that is slightly off beats an
+/// audit row that isn't written.
+async fn user_target(db: &DatabaseConnection, username: &str) -> String {
+    use sea_orm::{ColumnTrait, QueryFilter};
+    let found = relativelylight::auth::user::Entity::find()
+        .filter(relativelylight::auth::user::Column::Username.eq(username))
+        .one(db)
+        .await;
+    match found {
+        Ok(Some(u)) => format!("auth_user/{}", u.id),
+        _ => format!("auth_user/{username}"),
+    }
 }

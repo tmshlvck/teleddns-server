@@ -182,11 +182,29 @@ password + 2FA), then exercise `/api/...`.
   `422`), the public data types `#[non_exhaustive]` (build them from `Default` + setters, never a struct
   literal), and `crud::ColumnMeta` renamed `crud::Column`. Moving to `0.3` will be a read of the library's
   `CHANGELOG.md` §Upgrading, not a version bump — see also `docs/AUTH.md` §5e–§5i / §7.
-- **Audit** is written by `audit.rs`: it's the `WriteObserver` relativelylight
-  fires for the admin auto-CRUD + auth handlers, and the DDNS/API/CF handlers call
-  `Audit::record` directly. Rows land in the read-only `audit` table; retention is
-  app-side (`audit_retention_days`, pruned at startup). A future `admin` CLI to
-  dump/clear the log is anticipated but not implemented.
+- **Audit** is written by `audit.rs`, and **every path that writes or deletes app state goes through
+  it** — there are exactly three ways in: the `WriteObserver` relativelylight fires for the admin
+  auto-CRUD + auth handlers; `Audit::record` (DDNS/API/CF/`keys.rs`, principal + `RealIp` already
+  resolved); and `Audit::record_local` for the paths with no request behind them (`admin import`,
+  `admin reset-password`, the first-start seed, the retention pass), actored by the shell user with
+  `auth_type: local`. `audit::SOURCES` is the vocabulary — add a surface, add it there, and it shows
+  up in the console's column help. Rows land in the read-only `audit` table; retention is app-side
+  (`audit_retention_days`, pruned at startup — and the prune audits itself, since it is the one thing
+  that removes rows). What is *not* audited is machinery, not action: `sync_task`, the idempotency
+  store, `last_used_at`, sessions, lockout counters. A future `admin` CLI to dump/clear the log is
+  anticipated but not implemented.
+- **There is no generic "audit every DB write" hook, on purpose.** SeaORM offers no connection-level
+  write interceptor, and the per-entity `ActiveModelBehavior` hooks that do exist (`after_save`, used
+  by `sync.rs`) see the row and nothing else — not the actor, not the auth type, not the client
+  address, which is most of an audit row. They also don't fire for the bulk deletes every delete path
+  uses. So auditing stays at the call site, where the principal is in scope, and the *contract* rather
+  than a hook is what keeps it complete: a new write path calls `record`/`record_local` before it
+  returns. **The `source` on a library-emitted event is stored verbatim** — the library names its own
+  emitters (`observe::WriteEvent::source`, a `&'static str` at each emission site), teleddns names its
+  own at the `record`/`record_local` call site, and nothing is translated in between. The `crud` →
+  **`autocrud`** rename is relativelylight's own (on its `main`, unreleased); our pinned 0.2.1 still
+  writes `crud`, and stored rows keep whichever spelling they were written with, so `audit::SOURCES`
+  lists both.
 - **Input validation** lives in `dns::check` — typed field predicates built on
   `relativelylight::validate`, shared by the DDNS/native API/CF write paths, `admin import`, **and**
   the admin CRUD forms (wired via `MetaField::validate_str`/`validate_int` in `web.rs`). Every

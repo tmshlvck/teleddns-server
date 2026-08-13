@@ -1,6 +1,13 @@
 //! `admin import`: bulk-load a BIND zone file into the DB. A pragmatic line-based parser handling
 //! `$ORIGIN`/`$TTL`, `@`, relative/absolute owners, owner inheritance, comments, and the SOA paren
 //! block (skipped — we own the SOA). Records go through the same validation + push path as the API.
+//!
+//! It runs from a shell with no request behind it, so it audits through [`crate::audit::Audit::record_local`]
+//! (`source: cli`, actor from the environment). Three rows at most, not one per record: the zone
+//! create when the zone is new, the `--replace` wipe (destructive, and it happens *before* anything is
+//! written — it deserves to be findable on its own), and one summary of the import. A row per record
+//! would put thousands of rows in the log for a single operator action and describe it no better than
+//! "N imported from this file into this zone" does.
 
 use crate::api::record_view;
 use crate::config::Config;
@@ -41,17 +48,32 @@ pub async fn import(
     let origin = dns::normalize_label(&origin);
     println!("importing {} records into {origin}", parsed.records.len());
 
+    let audit = crate::audit::Audit::new(db.clone(), crate::app::SESSION_COOKIE);
+
     // Ensure the zone exists.
     let z = match zone::Entity::find().filter(zone::Column::Origin.eq(&origin)).one(&db).await? {
         Some(z) => z,
-        None => zone::Model::new_defaults(&origin, cfg.default_ttl as i32).insert(&db).await?,
+        None => {
+            let z = zone::Model::new_defaults(&origin, cfg.default_ttl as i32).insert(&db).await?;
+            audit
+                .record_local(
+                    "cli",
+                    "create",
+                    format!("zone/{}", z.id),
+                    None,
+                    Some(json!({ "origin": z.origin, "ttl": z.ttl, "serial": z.serial })),
+                )
+                .await;
+            z
+        }
     };
 
     if replace {
         // Remove every RR of the zone first.
+        let mut deleted = 0u64;
         macro_rules! d {
             ($ent:path, $col:path) => {
-                <$ent>::delete_many().filter($col.eq(z.id)).exec(&db).await?;
+                deleted += <$ent>::delete_many().filter($col.eq(z.id)).exec(&db).await?.rows_affected;
             };
         }
         d!(rr::a::Entity, rr::a::Column::ZoneId);
@@ -63,6 +85,15 @@ pub async fn import(
         d!(rr::mx::Entity, rr::mx::Column::ZoneId);
         d!(rr::srv::Entity, rr::srv::Column::ZoneId);
         d!(rr::caa::Entity, rr::caa::Column::ZoneId);
+        audit
+            .record_local(
+                "cli",
+                "delete",
+                format!("zone/{}", z.id),
+                Some(json!({ "origin": z.origin, "records_deleted": deleted, "reason": "import --replace" })),
+                None,
+            )
+            .await;
     }
 
     let mut ok = 0usize;
@@ -79,6 +110,21 @@ pub async fn import(
     // Ensure at least the push is enqueued even if create hooks coalesced.
     crate::sync::enqueue(&db, &origin).await.ok();
     let _ = now();
+    audit
+        .record_local(
+            "cli",
+            "import",
+            format!("zone/{}", z.id),
+            None,
+            Some(json!({
+                "origin": origin,
+                "file": path,
+                "replace": replace,
+                "imported": ok,
+                "skipped": skipped,
+            })),
+        )
+        .await;
     println!("imported {ok} records, skipped {skipped}");
     Ok(())
 }

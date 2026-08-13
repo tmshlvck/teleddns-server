@@ -514,7 +514,25 @@ replicate via native DNS.
 
 Every mutating action emits a structured **audit** log line — actor (user +
 token), source IP (post reverse-proxy rewrite), action, target, and `source` ∈
-{`ddns`, `api`, `cfapi`, `ui`}.
+{`ddns`, `api`, `cfapi`, `keys`, `autocrud`, `auth-profile`, `auth-admin`, `cli`,
+`startup`}. The library-emitted values (`autocrud`, `auth-*`) are stored exactly
+as the library reports them; `autocrud` is spelled `crud` up to relativelylight
+0.2.1, and a stored row keeps the spelling it was written with until it ages out.
+
+**Every write path is on that list**, including the ones with no HTTP request
+behind them: `admin import` (the zone create, the `--replace` wipe and a summary
+of the run), `admin reset-password` (`--break-glass` especially — it is the one
+command that hands somebody the console past 2FA), the first-start admin seed,
+and the retention pass, which is the only thing that removes audit rows and so
+records itself. Those rows are actored by the **shell** user (`SUDO_USER`, else
+`USER`) with `auth_type: local` and no user id — a shell account is not an app
+account, and the fact worth recording is that the change came from the host
+rather than the network.
+
+Deliberately **not** audited: the push journal, the `Idempotency-Key` store, a
+key's `last_used_at` stamp, sessions and the lockout counters. Each is machinery
+behind an action that is already audited, or a live counter the console shows;
+a row per hit would bury the log without adding a fact.
 
 ---
 

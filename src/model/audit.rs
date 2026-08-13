@@ -12,19 +12,24 @@ pub struct Model {
     pub id: i32,
     /// When it happened (UTC Unix seconds).
     pub ts: i64,
-    /// Surface: `ddns` | `api` | `cfapi` | `crud` (admin auto-CRUD) | `auth-profile` | `auth-admin`.
+    /// Surface: `ddns` | `api` | `cfapi` | `keys` (the profile's API-key card) | `autocrud` (the admin
+    /// console's auto-generated CRUD; spelled `crud` by relativelylight ≤ 0.2.1, so older rows carry
+    /// that) | `auth-profile` | `auth-admin` | `cli` (an `admin` subcommand) | `startup` (the
+    /// first-start seed, the retention pass). [`crate::audit::SOURCES`] is the list.
     pub source: String,
-    /// `create` | `update` | `delete`.
+    /// `create` | `update` | `delete`, plus `import` for a whole `admin import` run.
     pub operation: String,
     /// The affected target — `entity[/key]`, e.g. `zone/3`, `rr_a/12`, `auth_user/1`.
     pub target: String,
-    /// Authenticated user id, if known.
+    /// Authenticated user id, if known. `NULL` for a CLI/startup row: the operator is a shell account,
+    /// which is not an app account.
     pub actor_user_id: Option<i32>,
-    /// Authenticated username (or `-`).
+    /// Authenticated username, the shell user for a CLI/startup row (or `-`).
     pub actor_username: String,
-    /// How the caller authenticated: `session` | `basic` | `bearer` | `x-auth-key` | `none`.
+    /// How the caller authenticated: `session` | `basic` | `bearer` | `x-auth-key` | `local` (ran on
+    /// the host) | `none`.
     pub auth_type: String,
-    /// Resolved client IP (post reverse-proxy rewrite).
+    /// Resolved client IP (post reverse-proxy rewrite), or `local` for a CLI/startup row.
     pub client_ip: String,
     /// Prior state (JSON), when captured. `NULL` on create or when not available.
     #[sea_orm(column_type = "Text", nullable)]

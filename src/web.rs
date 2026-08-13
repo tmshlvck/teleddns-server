@@ -342,6 +342,9 @@ pub fn build_engine(
         a.field(f).read_only = true;
     }
     a.field("ts").datetime();
+    // Name the surfaces in the console rather than only in the source: `source` is the column an
+    // operator reads the log by, and "cli" or "autocrud" mean nothing without the list.
+    a.field("source").description = Some(format!("one of: {}", crate::audit::SOURCES.join(", ")));
     a.row_label = Box::new(|row| {
         format!(
             "{} {} {}",

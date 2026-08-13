@@ -24,8 +24,10 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use rand::Rng;
+use relativelylight::middleware::RealIp;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use serde::Deserialize;
+use serde_json::json;
 
 /// Render the API-keys card (mint form + list + revoke buttons) for one user. Returned as an HTML
 /// fragment so the profile page (relativelylight) can append it below password/2FA.
@@ -59,7 +61,12 @@ pub struct CsrfForm {
 }
 
 /// POST /keys — mint a key, then show a one-time confirmation page with the raw value.
-pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form<MintForm>) -> Response {
+pub async fn mint(
+    headers: HeaderMap,
+    State(app): State<AppState>,
+    RealIp(ip): RealIp,
+    Form(f): Form<MintForm>,
+) -> Response {
     let Some(who) = signed_in(&app, &headers).await else {
         return Redirect::to(app.auth.login_path()).into_response();
     };
@@ -101,10 +108,28 @@ pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form
         last_used_at: sea_orm::ActiveValue::Set(None),
         disabled: sea_orm::ActiveValue::Set(false),
     };
-    if am.insert(&app.db).await.is_err() {
-        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "could not mint key").into_response();
-    }
+    let key = match am.insert(&app.db).await {
+        Ok(k) => k,
+        Err(_) => {
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "could not mint key").into_response()
+        }
+    };
     tracing::info!(actor = %who.username, "minted API key");
+    // A minted key is a new credential for the account — audited like any other write. The `after`
+    // carries the label, the display prefix and the expiry, never the key or its hash: the audit table
+    // is readable in the console, and a credential in it would be a credential leak.
+    app.audit
+        .record(
+            "keys",
+            "create",
+            format!("api_key/{}", key.id),
+            &who,
+            "session",
+            ip,
+            None,
+            Some(json!({ "name": key.name, "prefix": key.prefix, "expires_at": key.expires_at })),
+        )
+        .await;
 
     // Show the raw key once, then send the user back to their profile.
     let body = format!(
@@ -122,6 +147,7 @@ pub async fn mint(headers: HeaderMap, State(app): State<AppState>, Form(f): Form
 pub async fn revoke(
     headers: HeaderMap,
     State(app): State<AppState>,
+    RealIp(ip): RealIp,
     Path(id): Path<i32>,
     Form(f): Form<CsrfForm>,
 ) -> Response {
@@ -131,12 +157,34 @@ pub async fn revoke(
     if let Some(r) = csrf_rejected(&app, &headers, f.csrf.as_deref()) {
         return r;
     }
+    // Read the row first, so the audit `before` can describe what was revoked (a delete_many reports a
+    // count, not a row) — and so a request naming somebody else's key audits nothing at all.
+    let existing = api_key::Entity::find_by_id(id)
+        .filter(api_key::Column::UserId.eq(who.user_id))
+        .one(&app.db)
+        .await
+        .ok()
+        .flatten();
     // Only delete a key the caller owns.
     let _ = api_key::Entity::delete_many()
         .filter(api_key::Column::Id.eq(id))
         .filter(api_key::Column::UserId.eq(who.user_id))
         .exec(&app.db)
         .await;
+    if let Some(k) = existing {
+        app.audit
+            .record(
+                "keys",
+                "delete",
+                format!("api_key/{}", k.id),
+                &who,
+                "session",
+                ip,
+                Some(json!({ "name": k.name, "prefix": k.prefix, "expires_at": k.expires_at })),
+                None,
+            )
+            .await;
+    }
     Redirect::to("/profile").into_response()
 }
 
