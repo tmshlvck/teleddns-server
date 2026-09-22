@@ -314,6 +314,26 @@ pub mod check {
         rl::hex(s).map_err(|_| "must be a hex string (an even number of hex digits)".into())
     }
 
+    /// A knot.conf template name — the identifier `zone[origin].template` is set to.
+    ///
+    /// Cheap syntactic sanity only, in the spirit of every other predicate here: the authority on
+    /// whether a template *exists* is Knot's own `conf-set`, which refuses an unknown one. What this
+    /// stops is a value that would be a problem to put in a `knotc` argument at all — empty,
+    /// whitespace, control characters, or something absurdly long. Knot's identifiers are
+    /// `[A-Za-z0-9_-]` plus `.`, so that is the set allowed.
+    pub fn template_name(s: &str) -> Result<(), String> {
+        if s.is_empty() {
+            return Err("must not be empty (leave the field blank to use the server default)".into());
+        }
+        if s.len() > 64 {
+            return Err("must be at most 64 characters".into());
+        }
+        if !s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
+            return Err("must be letters, digits, dot, dash or underscore (a knot.conf template id)".into());
+        }
+        Ok(())
+    }
+
     /// Base64-encoded rdata (DNSKEY public key).
     pub fn base64(s: &str) -> Result<(), String> {
         rl::base64(s).map_err(|_| "must be base64-encoded".into())
@@ -330,6 +350,18 @@ pub mod check {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The template name reaches a `knotc conf-set` argument, so anything that would make that
+    /// command mean something else — or nothing — has to be refused here.
+    #[test]
+    fn template_names_are_knot_identifiers() {
+        for ok in ["master", "dnssec-signing", "signed_2026", "tmpl.a", "M1"] {
+            assert!(check::template_name(ok).is_ok(), "should accept {ok}");
+        }
+        for bad in ["", " ", "a b", "a\nb", "a;b", "--opt=x y", &"x".repeat(65)] {
+            assert!(check::template_name(bad).is_err(), "should reject {bad:?}");
+        }
+    }
 
     #[test]
     fn fqdn_norm() {

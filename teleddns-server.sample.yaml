@@ -138,12 +138,25 @@ session_idle_timeout: "8h"
 
 # Backend. "log" (default) just logs what it would push — safe for first boot
 # and dev. "knot" writes <knot_zone_dir>/<origin>.zone, declares the zone in
-# Knot's config DB as a member of <knot_template>, and runs `knotc zone-reload`.
+# Knot's config DB as a member of its template, and runs `knotc zone-reload`.
 backend: "log"
 # backend: "knot"
 # knot_zone_dir: "/var/lib/knot/zones"
 # knotc_path: "knotc"
-# knot_template: "master"
+# The template a zone is declared under when it names none of its own. A zone's `template`
+# field (console / native API) overrides it — that is how DNSSEC signing is turned on for one
+# zone without turning it on for the rest.
+# RENAMED in 0.5: this was `knot_template`. `deny_unknown_fields` means the old key is now a
+# hard startup error rather than a silently ignored one.
+# default_knot_template: "master"
+
+# Template names zones may be assigned to. Empty = unrestricted (identical to the old
+# single-template behaviour). Setting it does two things:
+#   * the console's zone form becomes a <select>, and the API rejects anything else with a 422;
+#   * it defines which templates orphan-pruning recognises as OURS — a zone declared under a
+#     template in neither this list nor `default_knot_template` is never wrongly deleted, but is
+#     never recognised either, so it lingers forever. List every template you use.
+# knot_templates: ["master", "dnssec-signing"]
 # After zone-reload, wait this long for Knot to actually serve the pushed SOA serial before
 # treating the push as failed (a reload only means "accepted"). "0" disables the check.  ["5s"]
 # knot_confirm_timeout: "5s"

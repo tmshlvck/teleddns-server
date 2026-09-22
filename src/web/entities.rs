@@ -58,6 +58,8 @@ pub fn build_engine(
     auth: &Auth,
     audit: Arc<crate::audit::Audit>,
     default_ttl: u32,
+    // Template names an operator allows zones to be assigned to; empty = unrestricted.
+    knot_templates: &[String],
     password_policy: Option<relativelylight::validate::PasswordPolicy>,
 ) -> Engine {
     let gate = Arc::new(GroupReadWrite::new(auth, [crate::app::ADMIN_GROUP]));
@@ -136,6 +138,21 @@ pub fn build_engine(
     z.field("expire").validate_int(crate::dns::check::soa_interval);
     z.field("minimum").validate_int(crate::dns::check::soa_interval);
     z.field("ttl").validate_int(crate::dns::check::ttl);
+    z.field("template").label = Some("Knot template".into());
+    z.field("template").description = Some(
+        "Which knot.conf template this zone is declared under — this is how DNSSEC signing is \
+         turned on for one zone and not the rest. Leave empty to use the server's default."
+            .into(),
+    );
+    // With an allow-list configured, `options` on a *text* column is both the `<select>` here and a
+    // membership check on write (a value outside the list is a 422) — the same enforcement the
+    // native API does for itself in `api::zones`. Without one, any syntactically sane identifier is
+    // accepted and Knot's own `conf-set` is the authority on whether it exists.
+    if knot_templates.is_empty() {
+        z.field("template").validate_str(crate::dns::check::template_name);
+    } else {
+        z.field("template").options = knot_templates.to_vec();
+    }
     // Label zone rows by their origin — *declared*, not a closure, so the library can also turn a
     // record table's `?sort=zone` into `ORDER BY zone.origin`: the RR tables sort by the zone name
     // shown in the cell rather than the numeric foreign key behind it.

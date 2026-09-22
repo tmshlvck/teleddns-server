@@ -57,21 +57,32 @@ pub struct Config {
     pub knot_zone_dir: String,
     /// Path to the `knotc` binary.
     pub knotc_path: String,
-    /// The knot.conf template assigned to each managed zone.
-    pub knot_template: String,
+    /// The knot.conf template a zone is declared under when it names none of its own — the
+    /// **default**, not the only one. A zone's `template` column overrides it per zone, which is how
+    /// a signed zone (a `dnssec-signing` policy) sits beside unsigned ones on the same server.
+    pub default_knot_template: String,
+    /// Template names an operator is willing to have zones assigned to. Empty (the default) means
+    /// unrestricted — identical to the old single-template behaviour for anyone who doesn't set it.
+    /// Populating it turns the per-zone `template` field into a `<select>` in the console *and* a
+    /// membership check on the API, and — the part that matters operationally — it defines which
+    /// templates orphan-pruning recognises as ours (see `knot_delete_zones`).
+    pub knot_templates: Vec<String>,
     /// After `knotc zone-reload`, how long to wait for Knot to actually serve the pushed SOA serial
     /// before treating the push as failed (a `zone-reload` returns as soon as it's *accepted*, so
     /// without this a zone Knot then rejects would look pushed). `0` disables the confirmation.
     #[serde(with = "humantime_serde_opt")]
     pub knot_confirm_timeout: Duration,
     /// How often to run the full sweep: re-push every zone (covers RRs transitively) and, if
-    /// `knot_delete_zones`, prune backend zones under `knot_template` that aren't in the DB. Also
+    /// `knot_delete_zones`, prune backend zones under a template we own that aren't in the DB. Also
     /// runs once shortly after startup (the first worker tick).
     #[serde(with = "humantime_serde_opt")]
     pub full_resync_period: Duration,
-    /// During the full sweep, delete backend zones declared under `knot_template` that are not in
-    /// our DB (conf-unset + delete the zone file). Default on; set false to only get the
-    /// push-everything half of the sweep.
+    /// During the full sweep, delete backend zones declared under a template we own
+    /// (`default_knot_template` plus everything in `knot_templates`) that are not in our DB
+    /// (conf-unset + delete the zone file). Default on; set false to only get the push-everything
+    /// half of the sweep. A zone declared under a template in *neither* list is invisible to this —
+    /// not wrongly deleted, but not recognised as ours either, which is the reason to populate
+    /// `knot_templates` once a second template exists.
     pub knot_delete_zones: bool,
 
     /// Days to keep audit-log rows; older rows are pruned at startup. `0` = keep forever.
@@ -176,7 +187,8 @@ impl Default for Config {
             backend: "log".into(),
             knot_zone_dir: "/var/lib/knot/zones".into(),
             knotc_path: "knotc".into(),
-            knot_template: "master".into(),
+            default_knot_template: "master".into(),
+            knot_templates: vec![],
             knot_confirm_timeout: Duration::from_secs(5),
             full_resync_period: Duration::from_secs(24 * 3600),
             knot_delete_zones: true,

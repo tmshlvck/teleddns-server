@@ -635,9 +635,12 @@ waiting on `knotc`. A single in-process worker drains the journal:
 - **Full resync** on startup and every `full_resync_period` (default 24 h)
   unconditionally re-enqueues a push for **every** zone (a push regenerates the
   full zone from current state, so this also covers RRs). If `knot_delete_zones`
-  (default on), the same pass lists zones the backend has declared under
-  `knot_template` and enqueues a `zone-remove` for any that aren't in the DB —
-  teleddns takes ownership of everything under its template and prunes the rest.
+  (default on), the same pass lists zones the backend has declared under a template
+  it **owns** — `default_knot_template` ∪ `knot_templates` — and enqueues a
+  `zone-remove` for any that aren't in the DB. Teleddns takes ownership of everything
+  under those templates and prunes the rest; a zone under a template in neither list
+  is not ours, so it is left alone (and, equally, never recognised — which is why the
+  allow-list is worth populating the day a second template exists).
   A backend that can't enumerate its zones (the `log` backend) skips the prune
   half silently.
 
@@ -650,9 +653,11 @@ Journal states: `pending`, `in_flight`, `done`, `failed`; kinds: `zone`,
 The worker drives the local Knot via `knotc`. On each push it:
 
 1. regenerates the **full BIND zone file** to `<knot_zone_dir>/<origin>.zone`;
-2. on a zone's first push this process, **declares it** in Knot's config DB —
-   `knotc conf-begin; conf-set 'zone[<o>]'; conf-set 'zone[<o>].template'
-   <knot_template>; conf-commit` (cached, idempotent);
+2. **declares it** in Knot's config DB under its resolved template —
+   `knotc conf-begin; [conf-set 'zone[<o>]';] conf-set 'zone[<o>].template'
+   <template>; conf-commit`. Cached per `(origin, template)` and idempotent, so a
+   repeat push is free; a zone whose template **changed** is re-set rather than
+   skipped, since moving a zone onto a signing template is how signing is switched on;
 3. `knotc zone-reload <origin>`;
 4. **confirms the reload took** — a `zone-reload` returns as soon as it is
    *accepted*, so the worker then polls `knotc zone-status <origin> +serial` until
@@ -669,10 +674,19 @@ makes the IXFR valid). Secondaries **auto-provision** from a Knot-generated
 catalog membership live in the operator's **base `knot.conf`**, not in teleddns; a
 `zone-remove` runs `conf-unset` + deletes the file.
 
-The **template name is global config** (`knot_template`), applied to every managed
-zone. A backend selector chooses the implementation: a no-op **`log`** backend
-(default; logs what it would push — safe for first boot and dev) or the **`knot`**
-backend.
+The template is **per zone, with a global default**: `zone.template` (nullable) wins,
+else `default_knot_template`. The worker resolves that fallback — it is the one place
+holding both the zone row and the configuration — and hands `Backend::push_zone` an
+already-resolved name, so no backend has to know about `Config`.
+
+This is the whole mechanism behind per-zone DNSSEC (§7.4): a zone that should be signed
+is moved onto a template carrying a `dnssec-signing` policy while the rest stay on
+`master`. `knot_templates` is the operator's allow-list — when non-empty the console
+renders a `<select>` and the native API 422s anything else, and it defines the
+ownership set above.
+
+A backend selector chooses the implementation: a no-op **`log`** backend (default; logs
+what it would push — safe for first boot and dev) or the **`knot`** backend.
 
 ### 7.3 Bulk import
 
@@ -772,11 +786,11 @@ Key groups:
 - **TTLs** — `default_ttl` (API-created records, default 3600), `ddns_rr_ttl`
   (DDNS-touched A/AAAA, default 60).
 - **Backend sync** — `backend` (`log` | `knot`), `knot_zone_dir`, `knotc_path`,
-  `knot_template`, `knot_confirm_timeout` (default 5 s; post-reload serial
+  `default_knot_template`, `knot_templates`, `knot_confirm_timeout` (default 5 s; post-reload serial
   confirmation, §7.2), `backend_sync_delay` (default 10 s), `backend_sync_period`
   (default 300 s; also the reconcile cadence), `warn_on_nopush` (default 3600 s),
   `full_resync_period` (default 24 h; §7.1 full resync), `knot_delete_zones`
-  (default true; prune backend zones under `knot_template` not in the DB).
+  (default true; prune backend zones under an owned template not in the DB).
 - **Credential lockout** (§3.6) — `username_lockout_after` (default 10) +
   `username_lockout_duration` (15 m), `ip_lockout_after` (100) + `ip_lockout_duration`
   (15 m), `ip_lockout_whitelist` (never-locked CIDRs); `0` disables either counter, and the

@@ -7,8 +7,14 @@ pub struct LogBackend;
 
 #[async_trait]
 impl Backend for LogBackend {
-    async fn push_zone(&self, origin: &str, zonefile: &str, serial: i64) -> Result<(), String> {
-        tracing::info!(%origin, serial, bytes = zonefile.len(), "log backend: would push zone");
+    async fn push_zone(
+        &self,
+        origin: &str,
+        zonefile: &str,
+        serial: i64,
+        template: &str,
+    ) -> Result<(), String> {
+        tracing::info!(%origin, serial, %template, bytes = zonefile.len(), "log backend: would push zone");
         tracing::debug!(%origin, "\n{zonefile}");
         Ok(())
     }

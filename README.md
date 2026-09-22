@@ -51,7 +51,8 @@ backend: "log"                        # "log" (default, no-op: logs the rendered
 # backend: "knot"                     # drive a co-located Knot master (see Production deployment)
 # knot_zone_dir: "/var/lib/knot/zones"
 # knotc_path: "/usr/sbin/knotc"
-# knot_template: "master"
+# default_knot_template: "master"           # renamed from `knot_template` in 0.5
+# knot_templates: ["master", "dnssec-signing"]   # allow-list; empty = unrestricted
 ```
 
 Durations are quoted strings (`"10s"`). The config file is found via `-c/--config`,
@@ -532,11 +533,19 @@ knotc conf-read 'zone[catalog.example.]'            # sanity: reads the committe
 
 Keep the base config's `zone:` block to just the catalog zone — teleddns adds and
 removes per-domain `zone[...]` entries itself, idempotently (a restart is safe).
-teleddns treats every zone declared under `knot_template` as its own: a daily
-sweep (also run once at startup) prunes any such zone that isn't in its database.
-Set `knot_delete_zones: false` if you want to declare zones under that template by
-hand as well. To change templates/keys later, edit `knot.conf` and re-run `knotc
-conf-import`.
+teleddns treats every zone declared under a template it **owns** — `default_knot_template`
+plus everything in `knot_templates` — as its own: a daily sweep (also run once at
+startup) prunes any such zone that isn't in its database. A zone under a template in
+neither list is never touched, but is also never recognised, so an orphan under a
+forgotten template lingers forever: list every template you use. Set
+`knot_delete_zones: false` if you want to declare zones under those templates by hand
+as well. To change templates/keys later, edit `knot.conf` and re-run `knotc conf-import`.
+
+A zone can pin itself to one of those templates with its own **`template`** field (the
+console's zone form, or `template` on the native API); empty means "use the default".
+That is the whole mechanism behind per-zone DNSSEC: a signed zone goes under a template
+carrying a `dnssec-signing` policy while everything else stays on `master`. See
+[`DNSSEC.md`](DNSSEC.md).
 
 ### 3. teleddns config + systemd
 
@@ -550,7 +559,8 @@ trust_proxy: true                                 # honor X-Forwarded-For from t
 backend: "knot"
 knot_zone_dir: "/var/lib/knot/zones"              # == the master template's storage
 knotc_path: "/usr/sbin/knotc"
-knot_template: "master"
+default_knot_template: "master"
+knot_templates: ["master", "dnssec-signing"]      # every template you declare zones under
 
 public_url: "https://ddns.example.com"            # external HTTPS base (SSO + cookies)
 ops_ip_src_allowed: ["10.9.0.0/24"]                  # Prometheus / uptime host

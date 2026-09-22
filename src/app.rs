@@ -131,8 +131,18 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         &auth,
         audit.clone(),
         cfg.default_ttl,
+        &cfg.knot_templates,
         cfg.password_policy(),
     ));
+    // An operator running knot with one template is fine; one who has added a second (a signing
+    // policy, say) and not listed it here has zones the orphan sweep cannot recognise as ours.
+    if cfg.backend == "knot" && cfg.knot_templates.is_empty() {
+        tracing::warn!(
+            default_knot_template = %cfg.default_knot_template,
+            "config `knot_templates` is empty: only the default template is recognised as ours, so \
+             a zone declared under any other is invisible to orphan pruning"
+        );
+    }
 
     // The OpenAPI document describes the three APIs this app publishes — the native JSON API, the
     // Cloudflare facade and DDNS — and nothing else. There used to be a fourth, auto-generated from

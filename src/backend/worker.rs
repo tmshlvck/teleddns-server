@@ -56,6 +56,9 @@ pub fn spawn(
     let period = cfg.backend_sync_period.as_secs() as i64;
     let full_resync_period = cfg.full_resync_period.as_secs() as i64;
     let delete_zones = cfg.knot_delete_zones;
+    // The template a zone that names none of its own is declared under. Resolved here, in the one
+    // place that has both the zone row and the config, so no backend has to know about `Config`.
+    let default_template = cfg.default_knot_template.clone();
 
     tokio::spawn(async move {
         // At-least-once: anything left in_flight from a previous run goes back to pending.
@@ -69,7 +72,7 @@ pub fn spawn(
         let mut last_auth_prune = 0i64;
         loop {
             ticker.tick().await;
-            if let Err(e) = tick(&db, &*backend, period, &last_push, &metrics).await {
+            if let Err(e) = tick(&db, &*backend, period, &last_push, &metrics, &default_template).await {
                 tracing::warn!(error = %e, "sync worker tick failed");
             }
             last_tick.store(now(), Ordering::Relaxed);
@@ -211,6 +214,7 @@ async fn tick(
     period: i64,
     last_push: &AtomicI64,
     metrics: &crate::metrics::Metrics,
+    default_template: &str,
 ) -> Result<(), sea_orm::DbErr> {
     // Reclaim stuck in-flight rows (older than 2× the period).
     let cutoff = now() - 2 * period.max(1);
@@ -236,7 +240,7 @@ async fn tick(
             // A newer/older duplicate for the same origin is already being handled this tick.
             continue;
         }
-        process(db, backend, task, last_push, metrics).await?;
+        process(db, backend, task, last_push, metrics, default_template).await?;
     }
     Ok(())
 }
@@ -247,6 +251,7 @@ async fn process(
     task: sync_task::Model,
     last_push: &AtomicI64,
     metrics: &crate::metrics::Metrics,
+    default_template: &str,
 ) -> Result<(), sea_orm::DbErr> {
     // Claim it.
     let id = task.id;
@@ -265,7 +270,12 @@ async fn process(
             .await?
         {
             Some(z) => match super::zonefile::render_zone(db, &z).await {
-                Ok(text) => backend.push_zone(&task.origin, &text, z.serial).await,
+                // The zone's own template, else the server default — the fallback lives here
+                // because this is the one place that holds both the row and the configuration.
+                Ok(text) => {
+                    let template = z.template.as_deref().unwrap_or(default_template);
+                    backend.push_zone(&task.origin, &text, z.serial, template).await
+                }
                 Err(e) => Err(format!("render: {e}")),
             },
             // The zone was deleted; treat a stale `zone` task as a removal.

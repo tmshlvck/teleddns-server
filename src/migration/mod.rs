@@ -24,6 +24,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0004_lowercase_names::Migration),
             Box::new(m0005_session_clocks_and_recovery::Migration),
             Box::new(m0006_audit_ts_index::Migration),
+            Box::new(m0007_zone_template::Migration),
         ]
     }
 }
@@ -427,6 +428,59 @@ mod m0006_audit_ts_index {
         async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
             m.drop_index(Index::drop().name("ix_audit_ts_source").table(Alias::new("audit")).to_owned())
                 .await
+        }
+    }
+}
+
+/// `zone.template` — the knot.conf template this zone is declared under, `NULL` meaning "use
+/// `default_knot_template`".
+///
+/// Nullable on purpose: `NULL` is not a missing value here, it is the *answer* "whatever the server
+/// says", so a deployment that never sets it keeps behaving exactly as it did when there was one
+/// global template. A zone that names a template pins itself to it — which is how a signed zone
+/// (under a `dnssec-signing` policy) lives beside unsigned ones on the same Knot.
+///
+/// **Guarded by `has_column`, and it must be.** `m0001_init` builds its tables from the *live*
+/// entity definitions, so the day `zone::Model` gained this field `m0001` started creating it too:
+/// on a fresh database the column already exists by the time this step runs, while an existing one
+/// still needs it. The same reason `m0003` is guarded — see its note.
+mod m0007_zone_template {
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0007_zone_template"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            if m.has_column("zone", "template").await? {
+                return Ok(()); // fresh database: m0001_init already built it from the entity
+            }
+            m.alter_table(
+                Table::alter()
+                    .table(Alias::new("zone"))
+                    .add_column(ColumnDef::new(Alias::new("template")).text().null())
+                    .to_owned(),
+            )
+            .await
+        }
+
+        async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            if !m.has_column("zone", "template").await? {
+                return Ok(());
+            }
+            m.alter_table(
+                Table::alter()
+                    .table(Alias::new("zone"))
+                    .drop_column(Alias::new("template"))
+                    .to_owned(),
+            )
+            .await
         }
     }
 }

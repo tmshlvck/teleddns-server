@@ -20,6 +20,11 @@ pub struct Model {
     pub expire: i32,
     pub minimum: i32,
     pub ttl: i32,
+    /// The knot.conf template this zone is declared under; `NULL` = use `default_knot_template`.
+    /// Pinning a zone to its own template is how a DNSSEC-signing policy is applied to one zone
+    /// without applying it to every zone on the server.
+    #[sea_orm(column_type = "Text", nullable)]
+    pub template: Option<String>,
     /// Row lifecycle timestamps — Unix seconds, UTC, maintained by `before_save`.
     pub created_at: i64,
     pub updated_at: i64,

@@ -118,7 +118,13 @@ pub async fn create(
         return err(StatusCode::CONFLICT, "zone already exists");
     }
 
-    let am = zone::Model::new_defaults(&origin, app.cfg.default_ttl as i32);
+    let template = match parse_template(&app, &body) {
+        Ok(t) => t.flatten(),
+        Err(r) => return r,
+    };
+
+    let mut am = zone::Model::new_defaults(&origin, app.cfg.default_ttl as i32);
+    am.template = Set(template);
     let z = match am.insert(&app.db).await {
         Ok(z) => z,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
@@ -195,6 +201,13 @@ pub async fn update(
             }
         }
     }
+    // The Knot template. `Some(None)` is an explicit null/"" — clear the override, go back to the
+    // server default — which is not the same as the key being absent (leave it alone).
+    match parse_template(&app, &body) {
+        Ok(Some(t)) => am.template = Set(t),
+        Ok(None) => {}
+        Err(r) => return r,
+    }
     // A zone SOA edit bumps the serial (content changed); the zone after_save hook enqueues a push.
     am.serial = Set(z.serial + 1);
     let before = zone_view(&z);
@@ -245,6 +258,36 @@ pub async fn delete(
 
 // --- helpers ---
 
+/// Validate a `template` value from a request body against the *same* rule the admin form applies
+/// (`web::entities`): membership of `knot_templates` when the operator configured an allow-list,
+/// otherwise plain syntactic sanity. Two surfaces, one rule — the looser one would otherwise be the
+/// documented way around the stricter.
+///
+/// `Ok(None)` is an explicit `null` or `""`: clear the override and fall back to the server default.
+fn parse_template(app: &AppState, body: &Value) -> Result<Option<Option<String>>, Response> {
+    let Some(v) = body.get("template") else {
+        return Ok(None); // absent = leave whatever is there
+    };
+    let s = match v {
+        Value::Null => return Ok(Some(None)),
+        Value::String(s) if s.trim().is_empty() => return Ok(Some(None)),
+        Value::String(s) => s.trim(),
+        _ => return Err(err(StatusCode::BAD_REQUEST, "template must be a string or null")),
+    };
+    let allowed = &app.cfg.knot_templates;
+    if allowed.is_empty() {
+        if let Err(e) = dns::check::template_name(s) {
+            return Err(err(StatusCode::UNPROCESSABLE_ENTITY, &format!("template {e}")));
+        }
+    } else if !allowed.iter().any(|t| t == s) {
+        return Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &format!("template must be one of: {}", allowed.join(", ")),
+        ));
+    }
+    Ok(Some(Some(s.to_string())))
+}
+
 fn zone_view(z: &zone::Model) -> Value {
     json!({
         "id": z.id,
@@ -257,6 +300,7 @@ fn zone_view(z: &zone::Model) -> Value {
         "expire": z.expire,
         "minimum": z.minimum,
         "ttl": z.ttl,
+        "template": z.template,
     })
 }
 

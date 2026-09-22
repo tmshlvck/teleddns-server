@@ -43,9 +43,17 @@ pub enum Probe {
 pub trait Backend: Send + Sync {
     /// Write/declare/reload a zone, then **confirm the server is serving `serial`** (a bare reload
     /// only means the request was accepted). `origin` has a trailing dot; `zonefile` is the full
-    /// BIND text; `serial` is the SOA serial rendered into it. Returns `Err` if the confirmation
-    /// times out — so a zone the server rejects becomes a real, retried, logged failure.
-    async fn push_zone(&self, origin: &str, zonefile: &str, serial: i64) -> Result<(), String>;
+    /// BIND text; `serial` is the SOA serial rendered into it; `template` is the **already-resolved**
+    /// knot.conf template (the zone's own, or the server default — the caller does that fallback, so
+    /// a backend never has to know the config). Returns `Err` if the confirmation times out — so a
+    /// zone the server rejects becomes a real, retried, logged failure.
+    async fn push_zone(
+        &self,
+        origin: &str,
+        zonefile: &str,
+        serial: i64,
+        template: &str,
+    ) -> Result<(), String>;
     /// Remove a zone (undeclare + delete its file).
     async fn remove_zone(&self, origin: &str) -> Result<(), String>;
     /// Liveness, plus any cheap self-description. Called **once** per request that needs any of

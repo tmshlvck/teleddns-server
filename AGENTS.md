@@ -160,6 +160,23 @@ password + 2FA), then exercise `/api/...`.
   fetch a day of rows to add them up in Rust: on a DDNS fleet that is the largest table in the
   deployment. If you add a window or a column, check `EXPLAIN QUERY PLAN` still says
   `COVERING INDEX`.
+- **The Knot template is per zone, resolved in one place.** `zone.template` (nullable) wins, else
+  `config.default_knot_template`; the **worker** does that fallback, because it is the one place
+  holding both the zone row and the config, and `Backend::push_zone` takes an already-resolved name
+  so no backend ever reads `Config`. Two consequences worth keeping: `ensure_declared` caches
+  `(origin, template)` and **re-sets a zone whose template changed** — moving a zone onto a
+  `dnssec-signing` template *is* how signing is switched on, so an origin-keyed cache would silently
+  make the feature a no-op; and "ours" for orphan pruning is `default_knot_template` ∪
+  `knot_templates`, so a zone under an unlisted template is never deleted and never recognised.
+- **Both template surfaces or neither.** `config.knot_templates` gates the console's zone form
+  (`MetaField::options` in `web/entities.rs` — a `<select>` *and* a membership check) **and**
+  `api::zones::parse_template`. Same shape as the password-policy invariant above: wire one and you
+  have built the documented way around the other. Empty list = unrestricted on both, with
+  `dns::check::template_name` as the syntactic floor on both.
+- **A migration that adds a column must be guarded by `has_column`.** `m0001_init` builds its tables
+  from the **live** entity definitions, so the moment a model gains a field, `m0001` starts creating
+  it too — a fresh database then has the column before the `ALTER` step runs, and an unguarded
+  `add_column` is a `duplicate column name` at boot. `m0003` and `m0007` are the worked examples.
 - **A shipped migration is never renumbered.** `Migrator::migrations()` is the truth; the two
   `TODO-*.md` plans carry *proposed* numbers that go stale the moment anything else ships. Check the
   vec before picking one, and renumber the plan, not the code.

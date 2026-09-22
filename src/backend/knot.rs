@@ -13,21 +13,29 @@ use tokio::process::Command;
 pub struct KnotBackend {
     zone_dir: PathBuf,
     knotc: String,
-    template: String,
+    /// Every template this server considers **ours**, for orphan pruning — the default plus the
+    /// configured allow-list. See [`KnotBackend::list_managed_zones`]. There is deliberately no
+    /// `default_template` here: the worker resolves a zone's template before calling `push_zone`,
+    /// so a backend never has to decide what a zone with no template of its own means.
+    owned_templates: HashSet<String>,
     /// How long to wait for Knot to serve a pushed serial before failing the push.
     confirm_timeout: Duration,
-    /// Origins already declared in Knot's config DB this process (avoids repeat conf-set).
-    declared: Mutex<HashSet<String>>,
+    /// `origin → template` already declared in Knot's config DB this process, so a repeat push is
+    /// not a repeat `conf-set`. Keyed by *both*, because a zone whose template changed needs
+    /// re-declaring and an origin-only cache would silently skip it.
+    declared: Mutex<HashMap<String, String>>,
 }
 
 impl KnotBackend {
     pub fn new(cfg: &crate::config::Config) -> Self {
+        let mut owned_templates: HashSet<String> = cfg.knot_templates.iter().cloned().collect();
+        owned_templates.insert(cfg.default_knot_template.clone());
         KnotBackend {
             zone_dir: PathBuf::from(&cfg.knot_zone_dir),
             knotc: cfg.knotc_path.clone(),
-            template: cfg.knot_template.clone(),
+            owned_templates,
             confirm_timeout: cfg.knot_confirm_timeout,
-            declared: Mutex::new(HashSet::new()),
+            declared: Mutex::new(HashMap::new()),
         }
     }
 
@@ -84,13 +92,28 @@ impl KnotBackend {
         }
     }
 
-    /// Whether the zone is already declared in Knot's committed configuration. `conf-read` reads the
-    /// committed config (no transaction), unlike `conf-get` which needs an open transaction.
-    async fn already_declared(&self, origin: &str) -> bool {
-        self.knotc(&["conf-read", &format!("zone[{origin}]")]).await.is_ok()
+    /// The template Knot currently has this zone under, if the zone is declared at all. `conf-read`
+    /// reads the committed config (no transaction), unlike `conf-get` which needs an open one.
+    ///
+    /// `Some("")` is a declared zone with no template — possible if an operator declared it by hand.
+    /// `None` means not declared.
+    async fn declared_template(&self, origin: &str) -> Option<String> {
+        self.knotc(&["conf-read", &format!("zone[{origin}]")]).await.ok()?;
+        let out = self
+            .knotc(&["conf-read", &format!("zone[{origin}].template")])
+            .await
+            .unwrap_or_default();
+        Some(parse_conf_value(&out))
     }
 
-    /// All origins declared in Knot's committed config under `self.template`, for orphan pruning.
+    /// All origins declared in Knot's committed config under a template we own, for orphan pruning.
+    ///
+    /// "Ours" is `default_knot_template` ∪ `knot_templates`, and that set is the whole reason the
+    /// allow-list is worth configuring: a zone pushed under a template named in *neither* is
+    /// invisible here. It is never wrongly deleted — the answer is "not ours" and pruning leaves it
+    /// alone — but it is also never recognised, so an orphan under a forgotten template lingers
+    /// forever. Populate `knot_templates` the day a second template exists.
+    ///
     /// Best-effort: an origin whose template can't be determined is left out rather than risking a
     /// wrong deletion; a single per-origin `knotc` failure only skips that origin.
     async fn list_managed_zones(&self) -> Result<HashSet<String>, String> {
@@ -101,40 +124,53 @@ impl KnotBackend {
                 .knotc(&["conf-read", &format!("zone[{origin}].template")])
                 .await
                 .unwrap_or_default();
-            if tmpl.trim() == self.template {
+            if self.owned_templates.contains(parse_conf_value(&tmpl).as_str()) {
                 result.insert(origin);
             }
         }
         Ok(result)
     }
 
-    /// Ensure the zone is declared as a member of the configured template. Idempotent across process
-    /// restarts: if the zone is already in Knot's config we do nothing (Knot rejects re-declaring an
+    /// Ensure the zone is declared in Knot under `template`. Idempotent across process restarts: a
+    /// zone already declared under the same template is left alone (Knot rejects re-declaring an
     /// existing `zone[...]` with a "duplicate identifier" error), so a restart doesn't wedge pushes.
-    async fn ensure_declared(&self, origin: &str) -> Result<(), String> {
-        if self.declared.lock().unwrap().contains(origin) {
+    ///
+    /// A zone whose template has **changed** — an operator moving it onto a signing policy — is the
+    /// case an origin-keyed cache would get wrong, so the cache holds the template too and a
+    /// mismatch re-sets it. Moving a zone under a `dnssec-signing` template is how signing is turned
+    /// on, so this path is the feature, not an edge case.
+    async fn ensure_declared(&self, origin: &str, template: &str) -> Result<(), String> {
+        if self.declared.lock().unwrap().get(origin).is_some_and(|t| t == template) {
             return Ok(());
         }
-        // Already in the running config (e.g. declared before a restart) → just cache and move on.
-        if self.already_declared(origin).await {
-            self.declared.lock().unwrap().insert(origin.to_string());
+        let current = self.declared_template(origin).await;
+        if current.as_deref() == Some(template) {
+            // Already right in the committed config (e.g. declared before a restart) → cache it.
+            self.declared.lock().unwrap().insert(origin.to_string(), template.to_string());
             return Ok(());
         }
-        // conf-begin; conf-set zone[o]; conf-set zone[o].template T; conf-commit
+        let declared = current.is_some();
+        // conf-begin; [conf-set zone[o];] conf-set zone[o].template T; conf-commit
         self.knotc(&["conf-begin"]).await?;
         let set_zone = format!("zone[{origin}]");
         let set_tmpl = format!("zone[{origin}].template");
-        if let Err(e) = self.knotc(&["conf-set", &set_zone]).await {
-            let _ = self.knotc(&["conf-abort"]).await;
-            return Err(e);
-        }
-        if let Err(e) = self.knotc(&["conf-set", &set_tmpl, &self.template]).await {
+        let apply = async || -> Result<(), String> {
+            if !declared {
+                self.knotc(&["conf-set", &set_zone]).await?;
+            }
+            self.knotc(&["conf-set", &set_tmpl, template]).await?;
+            Ok(())
+        };
+        if let Err(e) = apply().await {
             let _ = self.knotc(&["conf-abort"]).await;
             return Err(e);
         }
         self.knotc(&["conf-commit"]).await?;
-        self.declared.lock().unwrap().insert(origin.to_string());
-        tracing::info!(%origin, template = %self.template, "declared zone in Knot config");
+        self.declared.lock().unwrap().insert(origin.to_string(), template.to_string());
+        match current {
+            Some(was) => tracing::warn!(%origin, %was, now = %template, "moved zone to another Knot template"),
+            None => tracing::info!(%origin, %template, "declared zone in Knot config"),
+        }
         Ok(())
     }
 
@@ -170,6 +206,14 @@ fn parse_one_serial(out: &str) -> Option<i64> {
     None
 }
 
+/// The value out of a `knotc conf-read <item>` line. knotc answers `zone[example.com.].template = \
+/// master`, but an older/terser build just prints the value, so take what follows the last `=` and
+/// fall back to the whole line. Empty when the item is unset.
+fn parse_conf_value(out: &str) -> String {
+    let line = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    line.rsplit_once('=').map(|(_, v)| v).unwrap_or(line).trim().to_string()
+}
+
 /// Parse `knotc conf-read zone` (all declared zones): one `zone[origin]` line per zone.
 fn parse_zone_list(out: &str) -> Vec<String> {
     out.lines()
@@ -195,14 +239,20 @@ fn parse_serial_map(out: &str) -> HashMap<String, i64> {
 
 #[async_trait]
 impl Backend for KnotBackend {
-    async fn push_zone(&self, origin: &str, zonefile: &str, serial: i64) -> Result<(), String> {
+    async fn push_zone(
+        &self,
+        origin: &str,
+        zonefile: &str,
+        serial: i64,
+        template: &str,
+    ) -> Result<(), String> {
         let path = self.zone_path(origin);
         self.ensure_zone_dir(&path).await?;
         tokio::fs::write(&path, zonefile)
             .await
             .map_err(|e| format!("writing {}: {e}", path.display()))?;
         tracing::info!(%origin, serial, bytes = zonefile.len(), path = %path.display(), "wrote zone file");
-        self.ensure_declared(origin).await?;
+        self.ensure_declared(origin, template).await?;
         self.knotc(&["zone-reload", origin]).await?;
         // A reload only means "accepted" — confirm Knot actually loaded it and serves the serial.
         self.confirm_serial(origin, serial).await?;
@@ -272,5 +322,39 @@ mod tests {
         let out = "zone[a.com.]\nzone[b.com.]\n";
         assert_eq!(parse_zone_list(out), vec!["a.com.".to_string(), "b.com.".to_string()]);
         assert!(parse_zone_list("").is_empty());
+    }
+
+    /// Which template a zone is under decides whether orphan-pruning may delete it, so misreading
+    /// `conf-read` output is a way to delete someone else's zone. Both output shapes knotc produces
+    /// must give the bare value, and an unset item must give the empty string, not the whole line.
+    #[test]
+    fn parses_a_conf_value_in_either_knotc_output_shape() {
+        assert_eq!(parse_conf_value("zone[example.com.].template = master"), "master");
+        assert_eq!(parse_conf_value("master\n"), "master");
+        assert_eq!(parse_conf_value("  dnssec-signing  "), "dnssec-signing");
+        assert_eq!(parse_conf_value(""), "");
+        assert_eq!(parse_conf_value("\n\n"), "");
+        // An item that exists but is unset prints the key with nothing after the `=`.
+        assert_eq!(parse_conf_value("zone[example.com.].template ="), "");
+    }
+
+    /// "Ours" for orphan pruning is the default template **plus** the allow-list. A zone under a
+    /// template in neither is not ours — left alone, never deleted — which is the whole reason
+    /// `knot_templates` is worth configuring once a second template exists.
+    #[test]
+    fn owned_templates_is_the_default_plus_the_allow_list() {
+        let mut cfg = crate::config::Config {
+            default_knot_template: "master".into(),
+            knot_templates: vec!["signed".into(), "master".into()],
+            ..Default::default()
+        };
+        let b = KnotBackend::new(&cfg);
+        assert!(b.owned_templates.contains("master"));
+        assert!(b.owned_templates.contains("signed"));
+        assert!(!b.owned_templates.contains("someone-elses"));
+
+        // The default is always ours, even when the operator forgot to list it.
+        cfg.knot_templates = vec!["signed".into()];
+        assert!(KnotBackend::new(&cfg).owned_templates.contains("master"));
     }
 }

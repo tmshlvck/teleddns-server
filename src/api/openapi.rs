@@ -88,9 +88,14 @@ fn paths(sec: &Value) -> Vec<(String, Value)> {
                 "get": op("List zones (paginated; X-Total-Count)", sec, "native-api"),
                 "post": op_doc(
                     "Create a zone (Superadmin; auto SOA + apex NS; Idempotency-Key)",
-                    "Body: `{ \"origin\": \"example.com.\" }`. `origin` must be a valid DNS name; it \
-                     is normalized to an absolute FQDN. The SOA (with MNAME `ns.<origin>`, RNAME \
-                     `hostmaster.<origin>`) and a default apex NS are generated automatically.",
+                    "Body: `{ \"origin\": \"example.com.\", \"template\": \"signed\" }`. `origin` \
+                     must be a valid DNS name; it is normalized to an absolute FQDN. The SOA (with \
+                     MNAME `ns.<origin>`, RNAME `hostmaster.<origin>`) and a default apex NS are \
+                     generated automatically.\n\n\
+                     `template` is optional: the knot.conf template this zone is declared under, \
+                     which is how DNSSEC signing is enabled for one zone and not the rest. Omit it \
+                     (or send `null`) to use the server's `default_knot_template`. When the operator \
+                     has configured `knot_templates`, a value outside that list is a 422.",
                     sec, "native-api"),
             }),
         ),
@@ -100,8 +105,10 @@ fn paths(sec: &Value) -> Vec<(String, Value)> {
                 "get": op("Get a zone (Zone Manager)", sec, "native-api"),
                 "put": op_doc(
                     "Update a zone's SOA (Zone Manager; bumps serial)",
-                    "Body may set any of `mname`/`rname` (DNS names) and `refresh`/`retry`/`expire`/\
-                     `minimum`/`ttl` (0..2147483647 seconds). The serial is bumped automatically.",
+                    "Body may set any of `mname`/`rname` (DNS names), `refresh`/`retry`/`expire`/\
+                     `minimum`/`ttl` (0..2147483647 seconds) and `template` (the knot.conf template; \
+                     `null` or `\"\"` clears the override and falls back to the server default, \
+                     omitting the key leaves it unchanged). The serial is bumped automatically.",
                     sec, "native-api"),
                 "delete": op("Delete a zone (Superadmin)", sec, "native-api"),
             }),
