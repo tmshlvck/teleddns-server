@@ -1,0 +1,149 @@
+{#- The operator's landing page: the numbers `/healthcheck` and `/metrics` report, rendered for a
+    person. Everything here is read-only — the console at /admin is where things change. -#}
+
+{% if !warnings.is_empty() %}
+<div class="alert alert-warning">
+  <strong>Needs attention</strong>
+  <ul class="mb-0 mt-1">{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+  {% for c in cards %}
+  <div class="col-6 col-lg">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <div class="text-muted small text-uppercase">{{ c.label }}</div>
+        <div class="fs-3 {{ c.tone }}">{{ c.value }}</div>
+        <div class="text-muted small">{{ c.note }}</div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-7">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <h2 class="h5">Write activity</h2>
+        <p class="text-muted small">Changes recorded in the audit log, by the surface they arrived
+          on. A DDNS fleet updates continuously, so an empty short window on a live deployment is a
+          symptom; the long ones are what makes that judgeable.</p>
+        <table class="table table-sm align-middle mb-0">
+          <thead><tr>
+            <th>Last</th>
+            {% for s in surfaces %}<th class="text-end">{{ s }}</th>{% endfor %}
+            <th class="text-end">Total</th>
+          </tr></thead>
+          <tbody>
+            {% for w in windows %}
+            <tr>
+              <td class="text-muted">{{ w.label }}</td>
+              {% for n in w.counts %}
+              <td class="text-end{% if *n == 0 %} text-body-tertiary{% endif %}">{{ n }}</td>
+              {% endfor %}
+              <td class="text-end fw-medium">{{ w.total }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <h2 class="h5">DNS backend
+          <span class="badge {{ backend.state_class }} align-middle">{{ backend.state }}</span></h2>
+        <p class="text-muted small mb-2">The server teleddns pushes zones into
+          (<code>{{ backend.name }}</code>).</p>
+        {% if let Some(detail) = backend.detail %}
+        <pre class="small bg-body-tertiary border rounded p-2 mb-2"><code>{{ detail }}</code></pre>
+        {% endif %}
+        {% if let Some(error) = backend.error %}
+        <div class="alert alert-danger small py-2 mb-2">{{ error }}</div>
+        {% endif %}
+        <dl class="row mb-0 small">
+          <dt class="col-7 fw-normal">Last successful push</dt>
+          <dd class="col-5 text-end mb-1">{{ backend.last_push }}</dd>
+          <dt class="col-7 fw-normal">Zones in the database</dt>
+          <dd class="col-5 text-end mb-1">{{ backend.zones_db }}</dd>
+          <dt class="col-7 fw-normal">Zones it is serving</dt>
+          <dd class="col-5 text-end mb-0">
+            {% if let Some(n) = backend.zones_served %}{{ n }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}
+          </dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-7">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <h2 class="h5">Zone sync</h2>
+        <p class="text-muted small">The serial in the database against the serial the DNS backend is
+          actually answering with. Drifted zones are listed first.</p>
+        {% if zones.is_empty() %}
+        <p class="text-muted mb-0">No zones yet. <a href="/admin/zone">Create one</a>.</p>
+        {% else %}
+        <table class="table table-sm align-middle mb-0">
+          <thead><tr><th>Zone</th><th class="text-end">Database</th><th class="text-end">Served</th><th></th></tr></thead>
+          <tbody>
+            {% for z in zones %}
+            <tr>
+              <td><a href="/admin/zone?filter[origin]={{ z.origin }}" class="text-decoration-none">{{ z.origin }}</a></td>
+              <td class="text-end"><code>{{ z.db_serial }}</code></td>
+              <td class="text-end"><code>{{ z.live_serial }}</code></td>
+              <td class="text-end"><span class="badge {{ z.badge_class }}">{{ z.badge }}</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if more_zones > 0 %}
+        <p class="text-muted small mt-2 mb-0">and {{ more_zones }} more —
+          <a href="/admin/zone">the full list is in the console</a>.</p>
+        {% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card shadow-sm mb-3">
+      <div class="card-body">
+        <h2 class="h5">Push queue</h2>
+        <p class="text-muted small">Every change appends a push; the worker coalesces them per zone
+          and retries with backoff. A <em>failed</em> row is one that gave up — that is the one
+          state worth acting on.</p>
+        <dl class="row mb-0">
+          <dt class="col-7 fw-normal">Pending</dt><dd class="col-5 text-end mb-1">{{ pending }}</dd>
+          <dt class="col-7 fw-normal">In flight</dt><dd class="col-5 text-end mb-1">{{ in_flight }}</dd>
+          <dt class="col-7 fw-normal">Failed</dt>
+          <dd class="col-5 text-end mb-0{% if failed > 0 %} text-danger fw-bold{% endif %}">{{ failed }}</dd>
+        </dl>
+        {% if !dead_letters.is_empty() %}
+        <hr>
+        <p class="small mb-1">Gave up on:</p>
+        <ul class="small mb-0">{% for o in dead_letters %}<li><code>{{ o }}</code></li>{% endfor %}</ul>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h2 class="h5">Records by type</h2>
+        <div class="d-flex flex-wrap gap-2 mt-2">
+          {% for t in by_type %}
+          <a href="/admin/rr_{{ t.slug }}" class="btn btn-sm btn-outline-secondary">
+            {{ t.name }} <span class="badge text-bg-secondary">{{ t.count }}</span>
+          </a>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

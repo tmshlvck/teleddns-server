@@ -1,6 +1,7 @@
 //! Application bootstrap: wire config → DB → migrations → engine → router → server.
 
 use crate::config::Config;
+use axum::response::Redirect;
 use axum::routing::get;
 use axum::Router;
 use crate::migration::Migrator;
@@ -14,7 +15,7 @@ use std::sync::Arc;
 /// The group whose members hold the **Superadmin** role (global authority). **One name for all of
 /// it**: the library's
 /// `Auth::admin_group` (which drives the profile-manager default), the console's `GroupReadWrite` gate
-/// (`web.rs`), the Superadmin decision in `authz::user_groups`, the first-start seed, and `admin
+/// (`web::entities`), the Superadmin decision in `authz::user_groups`, the first-start seed, and `admin
 /// reset-password --break-glass`. If those ever disagree, an "admin" ends up outside the group the gate
 /// checks — able to log in, able to administer nothing. Not configurable on purpose: it is baked into
 /// the grants (PRD §3.2), so renaming it would need a migration, not a config edit.
@@ -25,8 +26,8 @@ pub const ADMIN_GROUP: &str = "admin";
 pub const SESSION_COOKIE: &str = "teleddns_session";
 
 /// The double-submit CSRF token cookie (relativelylight `csrf`). Named per app — a co-hosted app on
-/// the same host would otherwise fight us for the default `rl_csrf` name. `keys.rs` reads it from the
-/// browser to put the token on its own forms.
+/// the same host would otherwise fight us for the default `rl_csrf` name. Every cookie-authenticated
+/// form echoes the token in a hidden `_csrf` field, rendered server-side.
 pub const CSRF_COOKIE: &str = "teleddns_csrf";
 
 /// Shared, cheaply-cloneable application state.
@@ -53,7 +54,7 @@ pub struct AppState {
 
 /// Run the HTTP server.
 pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
-    crate::web::init_ui_title(&cfg.ui_title); // navbar brand
+    crate::web::init(&cfg); // navbar brand + the timezones the picker offers
     let db = crate::db::connect(&cfg.db_dsn).await?;
     Migrator::up(&db, None).await?; // versioned schema (auth + app tables), applied once
     // The audit sink persists a row per write; shared as the WriteObserver for the admin auto-CRUD
@@ -112,12 +113,12 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .on_write(audit.clone()) // audit auth-table changes (password change, manager reset)
         .login_shell(move |form| crate::web::login_shell(form, &sso_buttons))
         .profile_shell(crate::web::profile_shell)
-        .profile_extra(move |who| {
+        // Our own section on the profile page: the caller's API keys. 0.3 hands the hook the
+        // request's CSRF token alongside the identity, which is what lets the section hold real
+        // forms rendered complete — no script fills them in afterwards.
+        .profile_extra(move |s| {
             let db = extra_db.clone();
-            async move {
-                let uid = who.id.parse::<i32>().unwrap_or(0);
-                crate::keys::section(&db, uid).await
-            }
+            async move { crate::keys::section(&db, &s).await }
         });
     // OIDC single sign-on (optional): built from config, routes merged below.
     let sso = crate::sso::build(&cfg, &auth);
@@ -133,26 +134,11 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         cfg.password_policy(),
     ));
 
-    // The app owns the OpenAPI root; the admin CRUD entity endpoints + schemas are merged in.
-    let app_doc = utoipa::openapi::OpenApiBuilder::new()
-        .info(
-            utoipa::openapi::InfoBuilder::new()
-                .title("teleddns-server API")
-                .version(env!("CARGO_PKG_VERSION"))
-                .build(),
-        )
-        .build();
-    let merged = relativelylight::crud::openapi::merge_into(app_doc, &engine)
-        .to_pretty_json()
-        .unwrap_or_default();
-    // Fold in the hand-written native-API + CF-facade paths (their handlers aren't introspected).
-    let openapi = match serde_json::from_str::<serde_json::Value>(&merged) {
-        Ok(mut doc) => {
-            crate::api::openapi::merge(&mut doc);
-            serde_json::to_string_pretty(&doc).unwrap_or(merged)
-        }
-        Err(_) => merged,
-    };
+    // The OpenAPI document describes the three APIs this app publishes — the native JSON API, the
+    // Cloudflare facade and DDNS — and nothing else. There used to be a fourth, auto-generated from
+    // the crud engine, that existed only to feed the console's JavaScript; the console is
+    // server-rendered now, so that surface and its generator are both gone.
+    let openapi = crate::api::openapi::document(env!("CARGO_PKG_VERSION"));
 
     // Handles on those same counters for the DDNS/API/CF credential checks (see `principal`): one
     // account has one budget whether it is guessed at on the console or on the DDNS endpoint.
@@ -204,7 +190,16 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .post(crate::ddns::update)
         .fallback(crate::ddns::reject_method);
     let app = Router::new()
-        .route("/", get(crate::web::home))
+        // The dashboard, and the console: one pair of handlers for every entity, the path saying
+        // which one (`Admin::base("/admin")`). A GET renders, a POST on the same path writes.
+        .route("/", get(crate::web::dashboard::page))
+        .route("/admin", get(|| async { Redirect::permanent(crate::web::FIRST_ENTITY) }))
+        .route(
+            "/admin/{entity}",
+            get(crate::web::admin_show).post(crate::web::admin_save),
+        )
+        // Where the navbar's timezone picker posts: sets the cookie the server formats with.
+        .route("/tz", axum::routing::post(crate::web::set_tz))
         .route("/keys", axum::routing::post(crate::keys::mint))
         .route("/keys/{id}/revoke", axum::routing::post(crate::keys::revoke))
         .route("/nic/update", ddns.clone())
@@ -217,8 +212,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .merge(crate::api::router())
         .merge(crate::cfapi::router())
         .with_state(state.clone())
-        .merge(auth.routes())
-        .merge(engine.router());
+        .merge(auth.routes());
     // Merge the SSO login/callback routes (their own state) when configured.
     let app = match &sso {
         Some(s) => app.merge(s.routes()),

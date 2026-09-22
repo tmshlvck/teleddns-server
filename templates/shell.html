@@ -1,0 +1,64 @@
+{#- The one page shell every teleddns page goes through (`web::Shell`). The library renders HTML
+    *fragments*; the `<html>`, the navbar, the Bootstrap stylesheet and `crud::ui::CSS` are ours.
+
+    There is no framework here and no script file: the console is a plain multi-page app, so every
+    control is a link or a form. The only JavaScript in the whole shell is the light/dark toggle at
+    the bottom, which is pure enhancement — without it the page is light. -#}
+<!doctype html>
+<html lang="en">
+<head>
+  {#- Set the Bootstrap colour mode before first paint (a remembered choice, else the browser's
+      prefers-color-scheme) so a dark-mode user doesn't get a white flash. -#}
+  <script>(function(){try{var s=localStorage.getItem('theme');}catch(e){}var t=s||((window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light');document.documentElement.setAttribute('data-bs-theme',t);})();</script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  {#- The ~40 rules Bootstrap doesn't cover (mostly the <dialog> the create/edit form opens in). -#}
+  <style>{{ css|safe }}</style>
+</head>
+<body class="bg-body-tertiary d-flex flex-column min-vh-100">
+  <nav class="navbar bg-body border-bottom px-3 gap-3">
+    <a class="navbar-brand" href="/">{{ brand }}</a>
+    <ul class="navbar-nav flex-row gap-3 me-auto">
+      {% for item in nav %}
+      <li class="nav-item">
+        <a class="nav-link py-0{% if item.active %} active fw-medium{% endif %}" href="{{ item.href }}">{{ item.label }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+    <div class="d-flex align-items-center gap-3">
+      {#- The timezone picker (relativelylight `time::TzPicker`) posts to our /tz, which sets the
+          cookie the *server* formats timestamps with — table cells, datetime inputs and CSV alike.
+          Empty on the pages rendered without a request in hand (login, profile). -#}
+      {{ tz_picker|safe }}
+      {% if !user.is_empty() %}
+      <span class="navbar-text">
+        <a href="/profile" class="link-body-emphasis text-decoration-none fw-medium">{{ user }}</a>
+        &middot; <a href="/logout" class="link-secondary text-decoration-none">log out</a>
+      </span>
+      {% endif %}
+      <button id="theme-toggle" type="button" class="btn btn-sm btn-outline-secondary border-0 px-2"
+              onclick="ruToggleTheme()" aria-label="Toggle light / dark mode">&#9790;</button>
+    </div>
+  </nav>
+
+  <main class="container-fluid py-3 flex-grow-1">{{ body|safe }}</main>
+
+  <footer class="border-top py-3 mt-auto">
+    <div class="container-fluid text-center small text-muted">
+      <span>teleddns-server v{{ version }}</span>
+      &middot; <a href="/docs" class="link-secondary text-decoration-none">API docs</a>
+      &middot; <a href="{{ repo }}" class="link-secondary text-decoration-none" target="_blank" rel="noopener">GitHub</a>
+      &middot; &copy; 2026 Tomas Hlavacek &middot; <span>GPL-3.0-or-later</span>
+    </div>
+  </footer>
+
+  <script>
+    function ruTheme(){return document.documentElement.getAttribute('data-bs-theme')||'light';}
+    function ruThemeIcon(){var b=document.getElementById('theme-toggle');if(b){var d=ruTheme()==='dark';b.textContent=d?'☀':'☾';b.title=d?'Switch to light mode':'Switch to dark mode';}}
+    function ruToggleTheme(){var n=ruTheme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-bs-theme',n);try{localStorage.setItem('theme',n);}catch(e){}ruThemeIcon();}
+    document.addEventListener('DOMContentLoaded',ruThemeIcon);
+  </script>
+</body>
+</html>

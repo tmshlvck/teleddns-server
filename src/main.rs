@@ -19,6 +19,7 @@ mod net;
 mod ops;
 mod principal;
 mod sso;
+mod stats;
 mod sync;
 mod web;
 mod zoneimport;

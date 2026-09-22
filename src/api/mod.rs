@@ -1,6 +1,7 @@
-//! The native JSON management API (PRD §6.1): bearer-only, level-scoped, unified type-discriminated
-//! records with opaque ids, DB pagination, and Idempotency-Key replay. The app owns the OpenAPI
-//! document; these routes are described there via utoipa paths merged in `app.rs` (kept minimal here).
+//! The native JSON management API (PRD §6.1): bearer-only, grant-scoped, unified type-discriminated
+//! records with opaque ids, DB pagination, and Idempotency-Key replay. Described by the hand-written
+//! [`openapi`] document served at `/openapi.json` — these handlers are the app's own, so their
+//! description is too.
 
 pub mod idempotency;
 pub mod openapi;

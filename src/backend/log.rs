@@ -1,6 +1,6 @@
 //! The no-op `log` backend (default): logs what it would push. Safe for first boot and development.
 
-use super::{Backend, Probe};
+use super::{Backend, Probe, Status};
 use async_trait::async_trait;
 
 pub struct LogBackend;
@@ -18,8 +18,9 @@ impl Backend for LogBackend {
         Ok(())
     }
 
-    async fn probe(&self) -> Probe {
-        Probe::Na
+    async fn status(&self) -> Status {
+        // Nothing to be up or down: this backend pushes nowhere.
+        Status { probe: Probe::Na, ..Default::default() }
     }
 
     async fn zone_serials(&self) -> Result<Option<std::collections::HashMap<String, i64>>, String> {

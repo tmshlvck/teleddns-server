@@ -29,6 +29,12 @@ pub struct Config {
     pub debug: bool,
     /// Brand shown in the web UI navbar (top-left). Default "TeleDDNS Server Manager".
     pub ui_title: String,
+    /// IANA zone names the console's timezone picker offers (the chosen one rides in a cookie and
+    /// the **server** formats every timestamp with it — table cells, datetime inputs and CSV exports
+    /// alike). Empty = relativelylight's default list (UTC + Europe + the United States); the single
+    /// entry `all` offers every zone the host's tz database knows. A name the host doesn't know is
+    /// dropped with a startup warning rather than offered as an option that quietly means UTC.
+    pub timezones: Vec<String>,
 
     /// $TTL + records created via the management API.
     pub default_ttl: u32,
@@ -161,6 +167,7 @@ impl Default for Config {
             trust_proxy: false,
             debug: false,
             ui_title: "TeleDDNS Server Manager".into(),
+            timezones: vec![],
             default_ttl: 3600,
             ddns_rr_ttl: 60,
             backend_sync_delay: Duration::from_secs(10),

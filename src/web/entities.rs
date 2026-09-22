@@ -1,16 +1,11 @@
-//! The operator web console: a relativelylight `crud::ui::Admin` panel over our entities, plus the
-//! app-owned page shell, login/profile styling, and the home/docs handlers. The full console is
-//! Superadmin-gated (the `admin` group); everyone else acts through the DDNS/API surfaces and the
-//! profile page.
+//! Every entity the operator console manages, and the metadata that makes its form usable: labels,
+//! help text, defaults, and — the load-bearing part — a `dns::check` validator on each field, the
+//! *same* predicate the DDNS/native-API/CF write paths enforce. Build the engine here; the panel
+//! that renders it is [`super::panel`].
 
-use crate::app::AppState;
-use axum::extract::State;
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Redirect, Response};
-use relativelylight::auth::{Auth, GroupReadWrite, Identity};
+use relativelylight::auth::{Auth, GroupReadWrite};
 use relativelylight::crud::engine::Engine;
 use relativelylight::crud::seaorm::{Crud, MetaModel};
-use relativelylight::crud::ui::Admin;
 use sea_orm::DatabaseConnection;
 use std::sync::Arc;
 
@@ -66,12 +61,13 @@ pub fn build_engine(
     password_policy: Option<relativelylight::validate::PasswordPolicy>,
 ) -> Engine {
     let gate = Arc::new(GroupReadWrite::new(auth, [crate::app::ADMIN_GROUP]));
-    let mut crud = Crud::new(db, "/admin/api");
+    // 0.3 dropped the mount path: every link the UI renders is query-only and relative, so the engine
+    // never learns where the console is served from.
+    let mut crud = Crud::new(db);
     crud.on_write(audit);
-    // The console's API is cookie-authenticated, so every write must echo the double-submit CSRF token
-    // (`auth.csrf()` shares one token cookie with the login/profile forms). The crud::ui tables add the
-    // `X-CSRF-Token` header to their own fetches; a bearer-authenticated caller is exempt (nothing
-    // ambient to abuse) — but that's the native API's job anyway, not this engine's.
+    // The console's writes are cookie-authenticated, so every posted form must echo the double-submit
+    // CSRF token (`auth.csrf()` shares one token cookie with the login/profile forms). The library
+    // renders the hidden `_csrf` input itself and `Admin::submit` refuses a body without it.
     crud.csrf(auth.csrf());
 
     // Zone (+ inline SOA). The SOA fields get plain-language labels + example values.
@@ -358,239 +354,3 @@ pub fn build_engine(
     crud.into_engine()
 }
 
-/// Build the admin panel fragment structure (grouped side-panel). Rendered per-request via
-/// `render_for` so write controls hide for non-writers.
-pub fn build_admin(engine: &Engine) -> Admin<'_> {
-    // No component title (the navbar brand `ui_title` is the single app heading) — omitting
-    // `.title(...)` leaves `has_title = false`, so no empty heading element is rendered.
-    // One zone picker in the side-panel, applied to every table below that has a `zone` relation —
-    // i.e. all fourteen RR tables plus `zone_role` / `rr_role`. An operator normally works inside one
-    // zone at a time, so they choose it once here instead of re-choosing it on every record type they
-    // switch to; the choice is remembered and lands in the URL fragment, so a zone's records can be
-    // bookmarked or sent to a colleague. Tables without a zone (API keys, accounts, audit) ignore it.
-    //
-    // This narrows the *view*, not access — who may see or edit which zone stays with the gate.
-    let mut admin = Admin::new(engine).filter("zone").group("DNS").entity_with("zone", |t| {
-        t.title("Zones").description(
-            "DNS zones and their SOA. Creating a zone auto-generates the SOA and a default apex NS; \
-             record changes bump the serial and trigger a backend sync.",
-        )
-    });
-    // (slug, RR type, description). Title shown as "RR <type>".
-    let rrs: [(&str, &str, &str); 14] = [
-        ("rr_a", "A", "Address — maps a name to an IPv4 address."),
-        ("rr_aaaa", "AAAA", "IPv6 address — maps a name to an IPv6 address."),
-        ("rr_ns", "NS", "Nameserver — delegates a name to authoritative nameservers."),
-        ("rr_ptr", "PTR", "Pointer — reverse DNS: maps an address back to a name."),
-        ("rr_cname", "CNAME", "Canonical name — aliases one name to another (can't coexist with other records at the same name)."),
-        ("rr_txt", "TXT", "Text — arbitrary text; used for SPF, DKIM, domain verification, etc."),
-        ("rr_mx", "MX", "Mail exchange — where email for the zone is delivered."),
-        ("rr_srv", "SRV", "Service — advertises the host and port of a service (SIP, XMPP, …)."),
-        ("rr_caa", "CAA", "Certification Authority Authorization — which CAs may issue certificates."),
-        ("rr_sshfp", "SSHFP", "SSH fingerprint — publishes SSH host-key fingerprints for verification."),
-        ("rr_tlsa", "TLSA", "TLSA / DANE — binds a certificate or key to a name for TLS."),
-        ("rr_dnskey", "DNSKEY", "DNSSEC public keys for the zone."),
-        ("rr_ds", "DS", "Delegation Signer — the DNSSEC link placed in the parent zone."),
-        ("rr_naptr", "NAPTR", "Naming Authority Pointer — regexp-based rewriting (ENUM, SIP discovery)."),
-    ];
-    for (slug, ty, desc) in rrs {
-        let title = format!("RR {ty}");
-        // No initial sort: the table opens in insertion order with every header unmarked, and the
-        // operator picks the order they want. (`.sort("zone").sort("label")` would open it in
-        // zone-then-name order — the order a zone file reads in — at the cost of two headers already
-        // showing an arrow on arrival.)
-        admin = admin.entity_with(slug, move |t| t.title(title).description(desc));
-    }
-    admin
-        .separator()
-        .group("Access")
-        .entity_with("api_key", |t| {
-            t.title("API keys").description(
-                "Bearer tokens for the HTTP API and DDNS. A key has no rights of its own — it acts as \
-                 its owner, so what it may touch is whatever that account's grants allow. Only the \
-                 hash is stored; the raw key is shown once at mint.",
-            )
-        })
-        .entity_with("zone_role", |t| {
-            t.title("Zone grants").description(
-                "Zone Manager: the group may manage every record in the zone, of any type, including \
-                 deletes.",
-            )
-        })
-        .entity_with("rr_role", |t| {
-            t.title("Record grants").description(
-                "RR Manager: the group may create and update the A/AAAA set at one (zone, name) — what \
-                 a DDNS client needs, and nothing else.",
-            )
-        })
-        .separator()
-        .group("Accounts")
-        .entity_with("auth_user", |t| {
-            t.title("Users").description(
-                "Login accounts — for people, and for devices that need their own narrow grant. Set an \
-                 SSO provider on an account to make it external (no local password / 2FA).",
-            )
-        })
-        .entity_with("auth_group", |t| {
-            t.title("Groups").description(
-                "Groups carry the grants below; membership of `admin` is the Superadmin role.",
-            )
-        })
-        .entity_with("auth_username_lockout", |t| {
-            t.title("Locked accounts").description(
-                "Accounts with recent failed logins (console, DDNS HTTP Basic). Delete a row to \
-                 unlock one immediately; otherwise it clears itself when the lockout expires.",
-            )
-        })
-        .entity_with("auth_ip_lockout", |t| {
-            t.title("Locked addresses").description(
-                "Client addresses with recent failed credential checks — this is what brakes bearer- \
-                 token guessing, which names no account. Delete a row to unlock.",
-            )
-        })
-        .separator()
-        .group("Audit")
-        .entity_with("audit", |t| {
-            t.read_only(true).per_page(50).title("Audit log").description(
-                "Append-only record of every state-changing request (DDNS, API, CF facade, admin, \
-                 auth). Read-only.",
-            )
-        })
-    // (API docs, profile, and log out now live in the page header/footer — see `shell`.)
-}
-
-/// The repository, shown in the footer.
-const REPO_URL: &str = "https://github.com/tmshlvck/teleddns-server";
-
-/// The server version, shown in the footer.
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// The navbar brand (`ui_title`), set once at startup; defaults to "TeleDDNS" until then.
-static UI_TITLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-/// Set the navbar brand from config (call once at startup).
-pub fn init_ui_title(title: &str) {
-    let _ = UI_TITLE.set(title.to_string());
-}
-
-fn ui_title() -> &'static str {
-    UI_TITLE.get().map(String::as_str).unwrap_or("TeleDDNS Server Manager")
-}
-
-/// Sets the initial Bootstrap color mode before first paint (so there's no flash): a remembered
-/// choice from `localStorage`, else the browser's `prefers-color-scheme`. Runs first in `<head>`.
-const THEME_HEAD: &str = r#"<script>(function(){try{var s=localStorage.getItem('theme');}catch(e){}var t=s||((window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light');document.documentElement.setAttribute('data-bs-theme',t);})();</script>"#;
-
-/// The light/dark toggle behavior: the top-right button shows a sun in dark mode (→ switch to light)
-/// and a moon in light mode (→ switch to dark); the choice is remembered in `localStorage`.
-const THEME_JS: &str = r#"<script>
-function ruTheme(){return document.documentElement.getAttribute('data-bs-theme')||'light';}
-function ruThemeIcon(){var b=document.getElementById('theme-toggle');if(b){var d=ruTheme()==='dark';b.textContent=d?'☀':'☾';b.title=d?'Switch to light mode':'Switch to dark mode';}}
-function ruToggleTheme(){var n=ruTheme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-bs-theme',n);try{localStorage.setItem('theme',n);}catch(e){}ruThemeIcon();}
-document.addEventListener('DOMContentLoaded',ruThemeIcon);
-</script>"#;
-
-/// The app's HTML page shell (Bootstrap + Alpine — required by the crud::ui fragments). The header
-/// shows the configurable brand (`ui_title`) and the signed-in username as a link to their profile
-/// (+ log out) and a light/dark toggle; the footer carries the server name + version, the API docs
-/// and source links, and the copyright.
-pub fn shell(title: &str, user: &str, body: &str) -> String {
-    let brand = crate::keys::html_escape(ui_title());
-    let nav_user = if user.is_empty() {
-        String::new()
-    } else {
-        // Clicking the username opens the profile page.
-        format!(
-            r#"<span class="navbar-text">
-<a href="/profile" class="link-body-emphasis text-decoration-none fw-medium">{user}</a>
- · <a href="/logout" class="link-secondary text-decoration-none">log out</a></span>"#,
-            user = crate::keys::html_escape(user)
-        )
-    };
-    format!(
-        r#"<!doctype html><html lang="en"><head>{THEME_HEAD}<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-<!-- Required by the relativelylight crud::ui fragments: hides x-cloak'd elements (the admin panels
-     and the create/edit modal) until Alpine initializes, so no incomplete markup flashes on load. -->
-<style>[x-cloak] {{ display: none !important; }}</style>
-<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-</head><body class="bg-body-tertiary d-flex flex-column min-vh-100">
-<nav class="navbar bg-body border-bottom px-3"><a class="navbar-brand" href="/">{brand}</a>
-<div class="d-flex align-items-center gap-3 ms-auto">{nav_user}<button id="theme-toggle" type="button"
- class="btn btn-sm btn-outline-secondary border-0 px-2" onclick="ruToggleTheme()"
- aria-label="Toggle light / dark mode">&#9790;</button></div></nav>
-<main class="container-fluid py-3 flex-grow-1">{body}</main>
-<footer class="border-top py-3 mt-auto"><div class="container-fluid text-center small text-muted">
-<span>teleddns-server v{VERSION}</span>
- · <a href="/docs" class="link-secondary text-decoration-none">API docs</a>
- · <a href="{REPO_URL}" class="link-secondary text-decoration-none" target="_blank" rel="noopener">GitHub</a>
- · © 2026 Tomas Hlavacek · <span>GPL-3.0-or-later</span></div></footer>
-{THEME_JS}</body></html>"#
-    )
-}
-
-/// Home = the admin console, login-gated. Anonymous → redirect to login.
-pub async fn home(headers: HeaderMap, State(app): State<AppState>) -> Response {
-    let Some(who) = app.auth.identify(&headers).await else {
-        return Redirect::to(app.auth.login_path()).into_response();
-    };
-    let body = match build_admin(&app.engine).render_for(&headers).await {
-        Ok(html) => html,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    Html(shell("teleddns admin", &who.username, &body)).into_response()
-}
-
-pub async fn openapi_json(State(app): State<AppState>) -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "application/json")], app.openapi.clone())
-}
-
-pub async fn docs() -> Html<&'static str> {
-    Html(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>teleddns API docs</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head>
-<body><div id="swagger-ui"></div>
-<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-<script>window.onload=()=>{SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui'});};</script>
-</body></html>"#,
-    )
-}
-
-/// App chrome around the library's login form, with any configured SSO buttons appended below it.
-pub fn login_shell(form: &str, sso_buttons: &str) -> String {
-    let body = format!(
-        r#"<div class="card shadow-sm mx-auto mt-5" style="max-width:24rem"><div class="card-body">
-<h1 class="h5 mb-3">Log in</h1>{form}{sso_buttons}</div></div>"#
-    );
-    shell("Log in — teleddns", "", &body)
-}
-
-/// The CSRF refusal, in our page shell instead of relativelylight's bare one (`Auth::csrf_rejection`,
-/// which also covers `csrf::enforce` on our own routes). Same discipline as the default: the request
-/// never proved it came from this site, so it names no user and sets no cookie, and it stays a `403`.
-pub fn csrf_rejected() -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        Html(shell(
-            "Request rejected — teleddns",
-            "",
-            r#"<div class="card shadow-sm mx-auto mt-5" style="max-width:32rem"><div class="card-body">
-<h1 class="h5 mb-3">Request rejected</h1>
-<p class="mb-1">This form's security token was missing or stale — usually a page left open too long, or
-one reloaded after signing out.</p>
-<p class="mb-0"><a href="/">Reload the console</a> and try again.</p></div></div>"#,
-        )),
-    )
-        .into_response()
-}
-
-/// App chrome around the library's profile/password/2FA page.
-pub fn profile_shell(fragment: &str, who: &Identity) -> String {
-    let body = format!(
-        r#"<div class="card shadow-sm mx-auto mt-4" style="max-width:36rem"><div class="card-body">{fragment}
-<hr><a href="/">&larr; Back to admin</a></div></div>"#
-    );
-    shell("Profile — teleddns", &who.username, &body)
-}

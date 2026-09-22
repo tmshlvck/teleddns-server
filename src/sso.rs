@@ -105,8 +105,8 @@ pub fn buttons_html(cfg: &Config) -> String {
         let label = if p.display_name.is_empty() { &p.name } else { &p.display_name };
         out.push_str(&format!(
             r#"<a class="btn btn-outline-primary" href="{BASE_PATH}/{key}/login">Sign in with {label}</a>"#,
-            key = crate::keys::html_escape(&p.name),
-            label = crate::keys::html_escape(label),
+            key = relativelylight::crud::ui::esc_str(&p.name),
+            label = relativelylight::crud::ui::esc_str(label),
         ));
     }
     out.push_str("</div>");

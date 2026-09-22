@@ -2,7 +2,7 @@
 //! push (idempotent, cached), and `knotc zone-reload`. Everything cluster-static (ACLs, TSIG, catalog
 //! membership) lives in the operator's base knot.conf template — this backend only assigns it.
 
-use super::{Backend, Probe};
+use super::{Backend, Probe, Status};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -223,10 +223,17 @@ impl Backend for KnotBackend {
         Ok(())
     }
 
-    async fn probe(&self) -> Probe {
+    async fn status(&self) -> Status {
+        // `knotc status` is both the liveness probe and the one line worth showing an operator
+        // (knotd's version and configuration summary), so it is one spawn, not two.
         match self.knotc(&["status"]).await {
-            Ok(_) => Probe::Up,
-            Err(_) => Probe::Down,
+            Ok(out) => Status {
+                probe: Probe::Up,
+                detail: Some(out.split('\n').next().unwrap_or("").trim().to_string())
+                    .filter(|s| !s.is_empty()),
+                error: None,
+            },
+            Err(e) => Status { probe: Probe::Down, detail: None, error: Some(e) },
         }
     }
 

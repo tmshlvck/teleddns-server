@@ -12,33 +12,36 @@
 //! own, and the audit log names the device rather than a person.
 //!
 //! Both posts are **cookie-authenticated**, so both carry relativelylight's double-submit CSRF token
-//! (`relativelylight::csrf`), exactly as the library's own password/2FA forms do. The token can't be
-//! rendered server-side here — `Auth::profile_extra` hands us the identity, not the request — so the
-//! forms declare `data-csrf` and [`CSRF_SCRIPT`] copies the (deliberately JS-readable) token cookie
-//! into their hidden `_csrf` field on load. The handlers verify it before doing anything.
+//! (`relativelylight::csrf`), exactly as the library's own password/2FA forms do. Since 0.3 the token
+//! is handed to us with the identity (`ProfileSection::csrf`), so the forms are rendered complete,
+//! server-side — the script that used to copy the cookie into them on load is gone.
 
 use crate::app::AppState;
 use crate::model::{api_key, now};
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use rand::Rng;
+use relativelylight::auth::ProfileSection;
+use relativelylight::crud::ui::esc_str;
+use relativelylight::csrf::Csrf;
 use relativelylight::middleware::RealIp;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use serde::Deserialize;
 use serde_json::json;
 
-/// Render the API-keys card (mint form + list + revoke buttons) for one user. Returned as an HTML
+/// Render the API-keys card (mint form + list + revoke buttons) for the caller. Returned as an HTML
 /// fragment so the profile page (relativelylight) can append it below password/2FA.
-pub async fn section(db: &DatabaseConnection, user_id: i32) -> String {
+pub async fn section(db: &DatabaseConnection, s: &ProfileSection) -> String {
+    let user_id = s.who.id.parse::<i32>().unwrap_or(0);
     let keys = api_key::Entity::find()
         .filter(api_key::Column::UserId.eq(user_id))
         .order_by_desc(api_key::Column::Id)
         .all(db)
         .await
         .unwrap_or_default();
-    render_card(&keys)
+    render_card(&keys, &s.csrf)
 }
 
 #[derive(Deserialize)]
@@ -48,7 +51,6 @@ pub struct MintForm {
     /// an empty `<input type=number>` posts `expires_days=`, which is not an integer.
     #[serde(default)]
     pub expires_days: Option<String>,
-    /// The double-submit CSRF token (filled in by [`CSRF_SCRIPT`]).
     #[serde(default, rename = "_csrf")]
     pub csrf: Option<String>,
 }
@@ -67,30 +69,24 @@ pub async fn mint(
     RealIp(ip): RealIp,
     Form(f): Form<MintForm>,
 ) -> Response {
-    let Some(who) = signed_in(&app, &headers).await else {
-        return Redirect::to(app.auth.login_path()).into_response();
+    let who = match signed_in(&app, &headers, f.csrf.as_deref()).await {
+        Ok(who) => who,
+        Err(r) => return r,
     };
-    if let Some(r) = csrf_rejected(&app, &headers, f.csrf.as_deref()) {
-        return r;
-    }
     // Bound the label (own key, HTML-escaped on display, but keep it sane). Empty → a default below.
     let name = f.name.trim();
     if name.chars().count() > 128 {
-        return (axum::http::StatusCode::BAD_REQUEST, "key label too long (max 128 characters)")
-            .into_response();
+        return (StatusCode::BAD_REQUEST, "key label too long (max 128 characters)").into_response();
     }
     let name = if name.is_empty() { "key".to_string() } else { name.to_string() };
 
-    let raw = gen_token();
-    let hashed = crate::principal::hash_key(&raw);
-    let prefix = raw.chars().take(12).collect::<String>();
     let expires_at = match f.expires_days.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => None, // blank = never
         Some(s) => match s.parse::<i64>() {
             Ok(d) if d > 0 => Some(now() + d * 86400),
             _ => {
                 return (
-                    axum::http::StatusCode::BAD_REQUEST,
+                    StatusCode::BAD_REQUEST,
                     "expiry must be a positive number of days (or blank for never)",
                 )
                     .into_response()
@@ -98,21 +94,20 @@ pub async fn mint(
         },
     };
 
+    let raw = gen_token();
     let am = api_key::ActiveModel {
         id: sea_orm::ActiveValue::NotSet,
         user_id: sea_orm::ActiveValue::Set(who.user_id),
         name: sea_orm::ActiveValue::Set(name),
-        hashed_key: sea_orm::ActiveValue::Set(hashed),
-        prefix: sea_orm::ActiveValue::Set(prefix),
+        hashed_key: sea_orm::ActiveValue::Set(crate::principal::hash_key(&raw)),
+        prefix: sea_orm::ActiveValue::Set(raw.chars().take(12).collect()),
         expires_at: sea_orm::ActiveValue::Set(expires_at),
         last_used_at: sea_orm::ActiveValue::Set(None),
         disabled: sea_orm::ActiveValue::Set(false),
     };
     let key = match am.insert(&app.db).await {
         Ok(k) => k,
-        Err(_) => {
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "could not mint key").into_response()
-        }
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "could not mint key").into_response(),
     };
     tracing::info!(actor = %who.username, "minted API key");
     // A minted key is a new credential for the account — audited like any other write. The `after`
@@ -132,31 +127,31 @@ pub async fn mint(
         .await;
 
     // Show the raw key once, then send the user back to their profile.
-    let body = format!(
-        r#"<div class="card shadow-sm mx-auto mt-4" style="max-width:36rem"><div class="card-body">
-<h1 class="h5">API key created</h1>
+    crate::web::notice(
+        "API key created — teleddns",
+        &who.username,
+        &format!(
+            r#"<h1 class="h5">API key created</h1>
 <div class="alert alert-success mt-3"><strong>Copy it now — it is shown only once:</strong>
 <pre class="mb-0 mt-2"><code>{}</code></pre></div>
-<a class="btn btn-primary" href="/profile">Back to profile</a></div></div>"#,
-        html_escape(&raw)
-    );
-    Html(crate::web::shell("API key created — teleddns", &who.username, &body)).into_response()
+<a class="btn btn-primary" href="/profile">Back to profile</a>"#,
+            esc_str(&raw)
+        ),
+    )
 }
 
 /// POST /keys/{id}/revoke — delete one of the caller's own keys, then return to the profile.
 pub async fn revoke(
     headers: HeaderMap,
     State(app): State<AppState>,
-    RealIp(ip): RealIp,
     Path(id): Path<i32>,
+    RealIp(ip): RealIp,
     Form(f): Form<CsrfForm>,
 ) -> Response {
-    let Some(who) = signed_in(&app, &headers).await else {
-        return Redirect::to(app.auth.login_path()).into_response();
+    let who = match signed_in(&app, &headers, f.csrf.as_deref()).await {
+        Ok(who) => who,
+        Err(r) => return r,
     };
-    if let Some(r) = csrf_rejected(&app, &headers, f.csrf.as_deref()) {
-        return r;
-    }
     // Read the row first, so the audit `before` can describe what was revoked (a delete_many reports a
     // count, not a row) — and so a request naming somebody else's key audits nothing at all.
     let existing = api_key::Entity::find_by_id(id)
@@ -188,32 +183,23 @@ pub async fn revoke(
     Redirect::to("/profile").into_response()
 }
 
-async fn signed_in(app: &AppState, headers: &HeaderMap) -> Option<crate::principal::Principal> {
-    crate::principal::from_session(&app.auth, &app.db, headers).await.ok().flatten()
-}
-
-/// Verify the double-submit CSRF token on a cookie-authenticated post; `Some(response)` is the 403 to
-/// return when it doesn't check out — the *same* page relativelylight renders for its own forms
-/// (`Auth::csrf_rejection`), so a stale token looks the same wherever the operator met it.
-fn csrf_rejected(app: &AppState, headers: &HeaderMap, token: Option<&str>) -> Option<Response> {
-    if app.auth.csrf().verify(headers, token) {
-        return None;
+/// Resolve the caller from their session **and** verify the double-submit CSRF token, which every
+/// cookie-authenticated post must carry. A stale token renders the same refusal relativelylight
+/// shows for its own forms, so an operator meets one page for it wherever it happens.
+async fn signed_in(
+    app: &AppState,
+    headers: &HeaderMap,
+    token: Option<&str>,
+) -> Result<crate::principal::Principal, Response> {
+    let Ok(Some(who)) = crate::principal::from_session(&app.auth, &app.db, headers).await else {
+        return Err(Redirect::to(app.auth.login_path()).into_response());
+    };
+    if !app.auth.csrf().verify(headers, token) {
+        tracing::warn!("rejected an API-key form post with a missing or invalid CSRF token");
+        return Err(crate::web::csrf_rejected());
     }
-    tracing::warn!("rejected an API-key form post with a missing or invalid CSRF token");
-    Some(crate::web::csrf_rejected())
+    Ok(who)
 }
-
-/// Copies the CSRF token cookie into the hidden `_csrf` field of every `form[data-csrf]` in the
-/// fragment. The cookie is not `HttpOnly` by design (it is not a credential — the point is that only
-/// a same-origin page can read it); relativelylight's `crud::ui` tables do the same for their fetches.
-const CSRF_SCRIPT: &str = r#"<script>
-(function(){var n='{cookie}=',v='';
-document.cookie.split('; ').forEach(function(c){if(c.indexOf(n)===0){v=decodeURIComponent(c.slice(n.length));}});
-document.querySelectorAll('form[data-csrf] input[name="_csrf"]').forEach(function(i){i.value=v;});})();
-</script>"#;
-
-/// The hidden field `CSRF_SCRIPT` fills in.
-const CSRF_INPUT: &str = r#"<input type="hidden" name="_csrf">"#;
 
 fn gen_token() -> String {
     let mut rng = rand::thread_rng();
@@ -221,54 +207,49 @@ fn gen_token() -> String {
     format!("tddns_{body}")
 }
 
-/// The card fragment (no page shell) — embedded on the profile page.
-fn render_card(keys: &[api_key::Model]) -> String {
-    let mut rows = String::new();
-    for k in keys {
-        let exp = k.expires_at.map(|e| e.to_string()).unwrap_or_else(|| "never".into());
-        let used = k.last_used_at.map(|e| e.to_string()).unwrap_or_else(|| "never".into());
-        rows.push_str(&format!(
-            r#"<tr><td>{name}</td><td><code>{prefix}…</code></td><td>{exp}</td><td>{used}</td>
-<td><form method="post" action="/keys/{id}/revoke" data-csrf onsubmit="return confirm('Revoke this key?')">
-{CSRF_INPUT}<button class="btn btn-sm btn-outline-danger">Revoke</button></form></td></tr>"#,
-            name = html_escape(&k.name),
-            prefix = html_escape(&k.prefix),
-            id = k.id,
-        ));
-    }
-    if rows.is_empty() {
-        rows = r#"<tr><td colspan="5" class="text-muted">No keys yet.</td></tr>"#.into();
-    }
+/// The card fragment (no page shell) — embedded on the profile page. `csrf` is *this request's*
+/// token: the hook is handed it precisely so the section can contain real forms.
+fn render_card(keys: &[api_key::Model], csrf: &str) -> String {
+    let token = Csrf::hidden_input(csrf);
+    let rows: String = keys
+        .iter()
+        .map(|k| {
+            format!(
+                r#"<tr><td>{name}</td><td><code>{prefix}…</code></td><td>{exp}</td><td>{used}</td>
+<td><form method="post" action="/keys/{id}/revoke" onsubmit="return confirm('Revoke this key?')">
+{token}<button class="btn btn-sm btn-outline-danger">Revoke</button></form></td></tr>"#,
+                name = esc_str(&k.name),
+                prefix = esc_str(&k.prefix),
+                exp = k.expires_at.map(|e| e.to_string()).unwrap_or_else(|| "never".into()),
+                used = k.last_used_at.map(|e| e.to_string()).unwrap_or_else(|| "never".into()),
+                id = k.id,
+            )
+        })
+        .collect();
+    let rows = if rows.is_empty() {
+        r#"<tr><td colspan="5" class="text-muted">No keys yet.</td></tr>"#.to_string()
+    } else {
+        rows
+    };
 
-    let mint_form = format!(
-        r#"<form method="post" action="/keys" data-csrf class="row g-2 align-items-end">
-{CSRF_INPUT}
-<div class="col-auto"><label class="form-label">Name</label>
-<input class="form-control" name="name" placeholder="router at home"></div>
-<div class="col-auto"><label class="form-label">Expires (days, blank = never)</label>
-<input class="form-control" name="expires_days" type="number" min="1"></div>
-<div class="col-auto"><button class="btn btn-primary">Mint key</button></div>
-</form>"#
-    );
-
-    let csrf_script = CSRF_SCRIPT.replace("{cookie}", crate::app::CSRF_COOKIE);
     format!(
         r#"<hr class="my-4">
 <h2 class="h5">API keys</h2>
 <p class="text-muted">Bearer tokens for the DDNS endpoint and the management APIs. A key acts as
 <em>you</em> — the same zones and records you may manage, checked on every request — so revoke it here if
 a device is lost. The raw key is shown once, when created.</p>
-{mint_form}
+<form method="post" action="/keys" class="row g-2 align-items-end">
+{token}
+<div class="col-auto"><label class="form-label">Name</label>
+<input class="form-control" name="name" placeholder="router at home"></div>
+<div class="col-auto"><label class="form-label">Expires (days, blank = never)</label>
+<input class="form-control" name="expires_days" type="number" min="1"></div>
+<div class="col-auto"><button class="btn btn-primary">Mint key</button></div>
+</form>
 <table class="table table-sm align-middle mt-3"><thead><tr>
 <th>Name</th><th>Prefix</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
-<tbody>{rows}</tbody></table>
-{csrf_script}"#
+<tbody>{rows}</tbody></table>"#
     )
-}
-
-/// Minimal HTML escaping for user-controlled strings rendered into the page.
-pub fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -288,24 +269,21 @@ mod tests {
         }
     }
 
-    /// Every form in the card must carry the hidden `_csrf` field the script fills, and the script
-    /// must know the *app's* cookie name (the placeholder substituted) — else the posts 403.
+    /// Every form in the card must carry the request's CSRF token, rendered *into* it — the posts
+    /// are refused without one, and since 0.3 there is no script to fill it in afterwards.
     #[test]
-    fn every_form_carries_the_csrf_field_and_the_script_knows_the_cookie() {
-        let html = render_card(&[key(1), key(2)]);
-        // 1 mint form + 2 revoke forms, each with the hidden input.
-        assert_eq!(html.matches(r#"<form method="post""#).count(), 3);
-        assert_eq!(html.matches(CSRF_INPUT).count(), 3);
-        assert_eq!(html.matches("data-csrf").count(), 4); // the 3 forms + the script's selector
-        assert!(html.contains(&format!("'{}='", crate::app::CSRF_COOKIE)), "cookie name: {html}");
-        assert!(!html.contains("{cookie}"), "the placeholder must be substituted");
+    fn every_form_carries_the_request_s_csrf_token() {
+        let html = render_card(&[key(1), key(2)], "tok3n");
+        assert_eq!(html.matches(r#"<form method="post""#).count(), 3); // 1 mint + 2 revoke
+        assert_eq!(html.matches(r#"name="_csrf" value="tok3n""#).count(), 3);
+        assert!(!html.contains("<script"), "the card ships no JavaScript: {html}");
     }
 
     /// Every user can mint: a key is only ever its owner, so one held by a user with no grants can do
     /// nothing — and starts working by itself if they are later granted something.
     #[test]
     fn the_card_offers_a_mint_form_and_a_revoke_form_per_key() {
-        let html = render_card(&[key(1)]);
+        let html = render_card(&[key(1)], "t");
         assert!(html.contains(r#"action="/keys""#), "mint form");
         assert!(html.contains(r#"action="/keys/1/revoke""#));
         assert!(!html.to_lowercase().contains("level"), "no level anywhere: {html}");

@@ -11,12 +11,13 @@ name = "teleddns-server"
 path = "src/main.rs"
 
 [dependencies]
-# relativelylight from crates.io. `0.2` is one compatible range for a `0.x` crate, so a patch release is
+# relativelylight from crates.io. `0.3` is one compatible range for a `0.x` crate, so a patch release is
 # picked up and a behaviour break (which bumps the minor) is not — `Cargo.lock` pins the exact version
-# either way. Before the 0.2.0 release this was a git dependency on an exact commit; there is no reason
-# left to carry one. Upgrading to 0.3 will be a read of the library's CHANGELOG §Upgrading, not a bump.
+# either way. 0.3 re-homed the web UI in Rust: `crud::ui` renders server-side HTML and the crate's JSON
+# /metadata/OpenAPI surface is gone (there is no `openapi` feature any more), so the console is plain
+# MPA and the only documented API is the one this app writes itself (`api/openapi.rs`).
 # `validate-base64` enables validate::base64 (used for the DNSKEY public-key field check).
-relativelylight = { version = "0.2", features = ["crud", "axum", "ui", "openapi", "csv", "auth", "sso", "validate-base64"] }
+relativelylight = { version = "0.3", features = ["crud", "axum", "ui", "csv", "auth", "sso", "validate-base64"] }
 
 sea-orm = { version = "1.1", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
@@ -35,7 +36,6 @@ serde_yaml = "0.9"
 
 clap = { version = "4", features = ["derive"] }
 askama = "0.13"
-utoipa = "5"
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

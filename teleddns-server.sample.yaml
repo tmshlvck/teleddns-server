@@ -60,6 +60,17 @@ debug: false
 # Brand shown in the web UI navbar (top-left).   ["TeleDDNS Server Manager"]
 # ui_title: "TeleDDNS Server Manager"
 
+# Zones the console's timezone picker offers. The chosen one rides in a cookie and the
+# *server* formats every timestamp with it — table cells, datetime inputs and CSV
+# exports alike, so an export matches what is on screen. The database and the APIs stay
+# UTC regardless.
+#   omitted / []  = UTC + Europe + the United States (the library's default list)
+#   ["all"]       = every zone this host's tz database knows
+#   [ ... ]       = exactly these, in this order
+# A name the host doesn't know is dropped with a startup warning rather than offered as
+# an option that quietly means UTC.
+# timezones: ["UTC", "Europe/Prague"]
+
 # TTLs (seconds).
 default_ttl: 3600   # records created via the management API / import   [3600]
 ddns_rr_ttl: 60     # A/AAAA records touched via the DDNS endpoint      [60]

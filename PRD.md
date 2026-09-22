@@ -400,12 +400,35 @@ a `public_url` (external HTTPS base) and one entry per IdP.
 This is provider config only; **none of it is on the API**. The local groups it
 maintains are what carry the roles, via zone / record grants.
 
-### 4.3 Admin console
+### 4.3 Dashboard
 
-Server-rendered CRUD over zones, records (per type), users, groups, and grants,
-gated on Superadmin (the admin group). Write controls are hidden from callers who lack write
-access, but the API/handler remains the actual enforcement point (hiding is
-cosmetic).
+`/` is the post-login landing page for a Superadmin: zone and record counts, the
+backend's liveness and last push, the sync worker's last tick, and the number of
+zones not being served at their current serial — plus a per-zone table of database
+serial against served serial, the push queue's pending/in-flight/failed counts, and
+the origins the worker has given up on. It is **read-only** and derived from the same
+`Stats` the healthcheck and `/metrics` publish, so the three can never disagree about
+whether something is wrong. A caller who is not a Superadmin is sent to `/profile`
+instead, which is what they can actually use.
+
+### 4.4 Admin console
+
+Server-rendered CRUD over zones, records (per type), users, groups, and grants at
+`/admin/{entity}`, gated on Superadmin (the admin group). Reads *and* writes are
+enforced by the gate at the handler (the render refuses, rather than hiding buttons
+over rows a caller may not read).
+
+The console is a **multi-page app**: one `get` renders the table and one `post` on
+the same path applies a write, answering `303` back to the row it changed. The whole
+view — page, sort, search, which zone is filtered, which row's create/edit dialog is
+open — is in the query string, so every screen is a bookmarkable link and the zone an
+operator picks follows them across all fifteen record tables. A rejected write
+re-renders the dialog with the messages beside the fields and the typed values still
+in them. Timestamps are formatted **server-side** in the zone chosen by the navbar
+picker (a cookie), which is also the zone a CSV export uses.
+
+There is no JSON API behind these pages and no client-side state; the only script the
+app ships is the light/dark toggle.
 
 ---
 
@@ -801,14 +824,16 @@ repeated here.
 ### 11.1 Stack
 
 Rust 2021 / `tokio`; `axum` 0.8; `SeaORM` 1.1 (`sqlx-sqlite` + `sqlx-postgres`,
-`runtime-tokio-rustls`); `utoipa` 5 for OpenAPI; `askama` 0.13 for the page shell;
-`serde`/`serde_yaml` + `clap` for layered config; `prometheus` for metrics;
-`tracing` for structured logs. Passwords are argon2id (via the library); API keys
-are SHA-256-hashed. Built on
+`runtime-tokio-rustls`); `askama` 0.13 for the page shell and the dashboard;
+`serde_json` for the hand-written OpenAPI document; `serde`/`serde_yaml` + `clap`
+for layered config; `prometheus` for metrics; `tracing` for structured logs.
+Passwords are argon2id (via the library); API keys are SHA-256-hashed. Built on
 [`relativelylight`](https://github.com/tmshlvck/relativelylight) — a crates.io
-dependency at `version = "0.2"` (one compatible range for a `0.x` crate; `Cargo.lock`
+dependency at `version = "0.3"` (one compatible range for a `0.x` crate; `Cargo.lock`
 pins the exact version), features
-`crud, axum, ui, openapi, csv, auth, sso, validate-base64`.
+`crud, axum, ui, csv, auth, sso, validate-base64`. **No front-end dependency
+beyond Bootstrap 5's stylesheet:** the console is server-rendered HTML with no
+framework, no build step and no script file.
 
 ### 11.2 Library boundary — reuse vs. build
 
@@ -819,8 +844,9 @@ the re-authentication gate, the DB-backed credential lockout, the OIDC `sso` mod
 the `Authz` gate + presets); the `csrf` double-submit token; the `middleware` layers
 (`resolve_real_ip`, which every consumer of a client address depends on); the `crud`
 engine + `MetaModel` introspection driving the **operator admin console** over our
-entities; `crud::ui::Admin`/`Table` fragments; OpenAPI + CSV; and `validate` (the
-shared field-validator predicates and the password policy — §5.2, §4.1).
+entities; `crud::ui::Admin`/`Table` HTML fragments and their write path (`submit`);
+CSV import/export; the server-side timezone (`time::Tz`/`TzPicker`); and `validate`
+(the shared field-validator predicates and the password policy — §5.2, §4.1).
 
 **We build (app code):** the DNS domain model (`zone` + one entity per RR type); the
 bearer **API-key** entity + a principal resolver (the library authenticates browsers,
@@ -834,9 +860,15 @@ journal**; and config, migrations, metrics, healthcheck, CLI, and zone-file impo
 ### 11.3 Key decisions
 
 - **The app owns the roots.** Per the library's composition contract, the app owns
-  the axum router, the page shell (Bootstrap + Alpine, required by the crud
-  fragments), and the OpenAPI document; the library only contributes routes, HTML
-  fragments, and schemas.
+  the axum router, the page shell (Bootstrap 5's stylesheet plus `crud::ui::CSS`),
+  and the OpenAPI document; since library 0.3 the library contributes **no routes at
+  all** — only HTML fragments and a write path the app calls from its own handlers.
+- **The console is a multi-page app.** One `get` renders and one `post` on the same
+  path writes, answering `303`; the whole view (page, sort, filters, search, which
+  entity, which dialog) lives in the query string, so every screen is a link. There
+  is no JSON API behind the pages — the generated CRUD wire that once fed the
+  browser was removed with the JavaScript that consumed it (library 0.3). The three
+  APIs this server *publishes* (§6) are hand-written and hand-documented.
 - **One authorization model, three surfaces.** DDNS, the native API, and the CF
   facade all resolve a `Principal` (session / HTTP Basic / bearer) and then ask one of
   two predicates, `zone_manager` or `rr_manager` (§3.3). A credential never carries
@@ -899,5 +931,9 @@ Knot backend + worker, §8 operability, §9 config + CLI.
   (`ip_src_allowed`). Real-IP resolution now *is* a middleware — the library's
   `resolve_real_ip`, outermost and mandatory (§3.6) — and CSRF is in place for every
   cookie-authenticated write (§4.1).
-- **Admin timezone display** — the DB/API are UTC and the admin renders UTC; a
-  server-timezone option (to match Knot/syslog) is deferred (see `AGENTS.md`).
+- **Timezone display is done** (was deferred): the DB and the APIs stay UTC, and the
+  console formats every timestamp server-side in the zone chosen from the navbar
+  picker — cells, datetime inputs and CSV exports alike. Offered zones come from
+  `config.timezones`. The two pages the library renders for us (login, profile) get no
+  picker: their hooks are handed a fragment and an identity, never the request, so
+  they stay UTC.

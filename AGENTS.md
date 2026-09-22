@@ -11,10 +11,11 @@ deviates from the dyn API) is [`DYNDNS2.md`](DYNDNS2.md) — keep it in step wit
 
 A Rust rewrite of a co-located DNS + Dynamic-DNS control-plane for a Knot DNS
 master, built on the [`relativelylight`](https://github.com/tmshlvck/relativelylight)
-back-office library (a **crates.io dependency**, `version = "0.2"` in `Cargo.toml`). The library
-provides the SeaORM CRUD engine + metadata, the auto-generated admin UI
-(`crud::ui::Admin`), OpenAPI generation, and `auth` (users/groups/sessions/login/
-profile, argon2id, TOTP, the `Authz` gate). Everything DNS-specific is app code.
+back-office library (a **crates.io dependency**, `version = "0.3"` in `Cargo.toml`). The library
+provides the SeaORM CRUD engine + metadata, the server-rendered admin UI
+(`crud::ui::Admin` — plain HTML fragments, no JavaScript framework), and `auth`
+(users/groups/sessions/login/profile, argon2id, TOTP, the `Authz` gate). Everything
+DNS-specific is app code, and so is every route: the library contributes none.
 
 ## Build / test / run
 
@@ -45,26 +46,29 @@ password + 2FA), then exercise `/api/...`.
 | `authz.rs` | `Level` algebra, the `min()` cap, `effective_level`, `user_groups` |
 | `principal.rs` | resolve session / HTTP Basic / bearer → `Principal` (with a token level); the one place credential failures are counted + metered |
 | `keys.rs` | self-service API-key component (`section()` composed onto `/profile` via `Auth::profile_extra`; CSRF-checked mint/revoke of the caller's own keys) |
+| `stats.rs` | the numbers `/healthcheck`, `/metrics` and the dashboard all report — one `Stats::gather`, one `warnings()` predicate, so the three can't disagree |
 | `sync.rs` | serial bump + push enqueue (called from RR/zone `after_save` hooks and write paths) |
 | `audit.rs` | audit sink: `WriteObserver` for admin/auth writes + `record()` for DDNS/API/CF; writes the `audit` table |
 | `ddns.rs` | dyndns2 endpoint |
-| `api/` | native JSON API: `record_view` (unified type-discriminated mapping), `zones`, `records`, `idempotency`, `openapi` (paths supplement) |
+| `api/` | native JSON API: `record_view` (unified type-discriminated mapping), `zones`, `records`, `idempotency`, `openapi` (the **whole** OpenAPI document — native + CF + DDNS, hand-written) |
 | `cfapi/` | Cloudflare facade (`/client/v4`) |
 | `backend/` | `Backend` trait, `log` + `knot` impls, `worker` (journal drain), `zonefile` (BIND render) |
 | `ops.rs` | `/healthcheck` + `/metrics` |
 | `net.rs` | just two middlewares (source admission via `ip_src_allowed`/`ops_ip_src_allowed`, access log — the library ships no logging, so the request log is ours). Neither resolves an address — both read the `RealIp` extension `relativelylight::middleware::resolve_real_ip` fills at the outermost layer. CIDR rules are `relativelylight::net`'s `parse_nets`/`in_nets` (both families and the `::ffff:` form) |
 | `metrics.rs` | Prometheus registry + instruments |
 | `sso.rs` | build relativelylight `Sso` (OIDC) from config; login-page buttons |
-| `web.rs` | admin console (crud::ui::Admin), page shell (header username→`/profile`, footer docs/GitHub/copyright), login/profile styling |
+| `web/` | the console, a plain MPA: `mod.rs` (page shell + the `get`/`post` handler pair behind `/admin/{entity}` + the login/profile/CSRF chrome + `/tz`), `entities.rs` (the CRUD engine: every managed entity's labels, help and validators), `dashboard.rs` (the landing page) |
+| `templates/` | the two askama templates the app owns: `shell.html` (the only `<html>` in the tree) and `dashboard.html` |
 | `zoneimport.rs` | BIND zone-file parser for `admin import` |
 
 ## Design invariants — keep these
 
-- **The app owns the roots.** `relativelylight` contributes routes, HTML
-  fragments, and OpenAPI schemas; `app.rs` owns the axum router, the page shell
-  (Bootstrap + Alpine, required by the crud fragments), and the OpenAPI document.
+- **The app owns the roots.** Since library 0.3 `relativelylight` contributes **no routes at all** —
+  only HTML fragments and a write path. `app.rs` owns the axum router, `web/mod.rs` owns the page
+  shell (Bootstrap 5's *stylesheet* plus `crud::ui::CSS`, and nothing else), and `api/openapi.rs`
+  owns the whole OpenAPI document.
 - **One name for the admin group.** `app::ADMIN_GROUP` drives `Auth::admin_group`, the
-  console gate in `web.rs`, the Superadmin decision in `authz::user_groups`, the first-start seed,
+  console gate in `web/entities.rs`, the Superadmin decision in `authz::user_groups`, the first-start seed,
   and `--break-glass`. Never write the literal `"admin"` again — a mismatch mints an
   "admin" outside the group the gate checks.
 - **A credential is its owner — nothing more.** `principal.rs` fills `Principal` from the *user*
@@ -94,10 +98,21 @@ password + 2FA), then exercise `/api/...`.
   `Retry-After`, `abuse` on DDNS). A request with no credential at all is *not* counted, and an
   *authenticated* check (the profile password) is not limited at all. If you add a credential
   source, route it through here.
+- **The console is a multi-page app; keep it that way.** One `get` renders (`render_for`), one
+  `post` on the *same path* writes (`submit`), and a write answers `303`. The view — page, sort,
+  filters, search, which entity, which dialog is open — lives in the **query string** and nowhere
+  else, so every screen is a link. There is no JSON between browser and server, no client-side
+  state, and no script file: the only JavaScript the app ships is the shell's light/dark toggle
+  (enhancement — without it the page is light) and Swagger UI on `/docs`, which is a viewer for the
+  *machine* API, not part of the console. If you reach for `fetch`, you are rebuilding the thing
+  0.3 deleted.
+- **Both handlers must build the same panel.** `web::panel()` is a *function* for that reason: a
+  link the read side renders has to be a write the post side accepts, and `submit` refuses an
+  entity the panel doesn't list before it consults any gate. Never inline one of them.
 - **Cookie-authenticated writes need the CSRF token.** relativelylight's own forms and
-  the `crud` engine (`crud.csrf(auth.csrf())` in `web.rs`) enforce it; app-owned
-  cookie-auth posts must too — `keys.rs` is the worked example (hidden `_csrf` field
-  filled from the token cookie by `CSRF_SCRIPT`, verified with `Csrf::verify`).
+  the `crud` engine (`crud.csrf(auth.csrf())` in `web/entities.rs`) render and enforce it; app-owned
+  cookie-auth posts must too — `keys.rs` is the worked example (`Csrf::hidden_input` from the token
+  `Auth::profile_extra` hands it, verified with `Csrf::verify`).
   Bearer-authenticated surfaces are exempt by design, so `/api` and `/client/v4` stay
   header-only.
 - **The library schedules nothing; the worker does.** `relativelylight` spawns no tasks, so
@@ -122,16 +137,32 @@ password + 2FA), then exercise `/api/...`.
   reference. Don't reach for a library layer that isn't there.
 - **Both password surfaces or neither.** `config.password_level` feeds `Auth::password_policy` (the
   profile + manager pages) **and** the `password_hash` field validator on the admin user form
-  (`web.rs`). Wire a new one and you have created the documented way around the other. It governs typed
+  (`web/entities.rs`). Wire a new one and you have created the documented way around the other. It governs typed
   input only — `admin reset-password` and the first-start seed must always be able to set a password.
 - **Every mutation bumps the serial + enqueues a push.** RR/zone create+update go
   through SeaORM `ActiveModel::insert/update`, whose `after_save` hooks call
   `sync::*`. Bulk deletes bypass per-row hooks, so delete paths (native API, CF,
   DDNS, zone-delete) enqueue **explicitly**. If you add a write path, keep this
   contract.
-- **The native API is hand-written** (unified type-discriminated records, opaque
-  ids), not `relativelylight::crud` — that's the one place we don't auto-generate.
-  The admin UI *does* use the library's per-entity CRUD (one table per RR type).
+- **The published APIs are ours, and they are the only ones.** The native API, the CF facade and
+  DDNS are hand-written (unified type-discriminated records, opaque ids), and `api/openapi.rs`
+  describes exactly those three — it is the whole document. The console has **no** API behind it;
+  0.3 removed the generated CRUD wire that existed only to feed the old JavaScript. Don't publish a
+  new surface to make a page work: a page is a handler.
+- **Three surfaces, one set of numbers.** `/healthcheck`, `/metrics` and the dashboard all read
+  `stats::Stats`, and "is anything wrong" is `Stats::warnings` — one predicate, so a WARN on the
+  healthcheck and a red banner on the dashboard always mean the same thing. Add a number there, not
+  in a handler. **The backend is asked once**: `Backend::status()` returns liveness *and* its own
+  status line in one call, because on knot that call is a `knotc` subprocess and three consumers
+  wanting a piece of it must not mean three spawns.
+- **Counting is the database's job.** `stats::activity` asks the audit log for six windows with
+  `WHERE ts >= ? GROUP BY source` — covered end to end by `ix_audit_ts_source` (`m0006`). Never
+  fetch a day of rows to add them up in Rust: on a DDNS fleet that is the largest table in the
+  deployment. If you add a window or a column, check `EXPLAIN QUERY PLAN` still says
+  `COVERING INDEX`.
+- **A shipped migration is never renumbered.** `Migrator::migrations()` is the truth; the two
+  `TODO-*.md` plans carry *proposed* numbers that go stale the moment anything else ships. Check the
+  vec before picking one, and renumber the plan, not the code.
 - **Records are one table per RR type**, generated by the `rr_entity!` macro. Add
   a type by adding a macro line + arms in `record_view`, `zonefile`, `zoneimport`,
   and the admin panel list.
@@ -154,34 +185,32 @@ password + 2FA), then exercise `/api/...`.
 - **CORS** is still not added; the only network filter is the CIDR source-admission list
   (`ip_src_allowed`). Everything else on the old list of gaps has landed: real-ip resolution is the
   library's `resolve_real_ip` layer (see the invariant above), CSRF covers every cookie-authenticated
-  write, and 0.2.0 brings re-auth before a password/2FA change, session invalidation after a password
+  write, and 0.2.0 brought re-auth before a password/2FA change, session invalidation after a password
   change, and TOTP recovery codes. Still missing, library-side: passkeys/WebAuthn, and re-auth through
   the IdP for SSO accounts (an SSO account has no local factor, so it passes the re-auth gate
   unchallenged — relativelylight `docs/AUTH.md` §5h states the limit).
-- **Admin timezone display (TODO, low priority).** The DB/API are UTC and the admin
-  renders timestamps in UTC (relativelylight's `crud::ui::TIME_JS` + `TZ_PICKER_HTML`
-  support UTC/browser-local/named zones — see relativelylight `docs/TIME.md`, not yet
-  wired here). Consider a **server-timezone** option so the admin shows times in the
-  host's zone, matching the Knot logs / syslog. Would mean: expose the server TZ (config
-  or the host's `/etc/localtime`) via a tiny endpoint and set `$store.tz` from it on load.
-- `relativelylight` is a **crates.io dependency** (`version = "0.2"`), which for a `0.x` crate is one
+- **Timezones are done** (this was the long-standing TODO). The DB and the APIs stay UTC; the
+  console's navbar picker (`time::TzPicker`, offered zones from `config.timezones`) posts to `/tz`,
+  which sets a cookie, and the **server** formats every timestamp with it — table cells, datetime
+  inputs and the CSV export alike, so an export matches what is on screen. The picker only appears
+  on pages rendered from a request: `login_shell` / `profile_shell` are handed a fragment and an
+  identity, never the request, so those two pages are UTC.
+- `relativelylight` is a **crates.io dependency** (`version = "0.3"`), which for a `0.x` crate is one
   compatible range: a patch release is picked up, a behaviour break bumps the minor and is not, and
-  `Cargo.lock` pins the exact version regardless. We are on **0.2.1**, which added relation-aware
-  sorting and filtering: `?sort=zone` orders an RR table by the zone *name* shown in the cell rather
-  than the FK behind it (a join onto `zone.origin`, which `z.label_column("origin")` in `web.rs` is what
-  enables), `?filter[zone]=7` is an exact FK match, and `Admin::filter("zone")` puts one zone picker in
-  every RR table's toolbar, shared across all of them. Two fixes came with it that this app was exposed
-  to: paginating a listing whose sort column ties could repeat rows across pages while skipping others
-  (the primary key now breaks every tie), and `?<col>=<value>` on a non-text column, which was a
-  substring match — `?zone_id=3` also matched 13 and 30 — and is now a 400 pointing at `filter[…]`.
-  0.2.0 before it turned the security defaults
-  on: CSRF on the auth forms, the DB-backed login lockout (`Auth::new(db, lockout)`), the mandatory
-  `resolve_real_ip` layer, `set_password` as a reset (not an upsert) plus `reset_admin_access` for
-  break-glass, an empty input on a *nullable* column stored as `NULL`, `NOT NULL` columns enforced as
-  `required` by the crud engine (a hook-stamped column must be `read_only` or creates start failing with
-  `422`), the public data types `#[non_exhaustive]` (build them from `Default` + setters, never a struct
-  literal), and `crud::ColumnMeta` renamed `crud::Column`. Moving to `0.3` will be a read of the library's
-  `CHANGELOG.md` §Upgrading, not a version bump — see also `docs/AUTH.md` §5e–§5i / §7.
+  `Cargo.lock` pins the exact version regardless. We are on **0.3.0**, which re-homed the web UI in
+  Rust: `Crud::new(db)` lost its mount path, `render()` became `async render_for(&headers, &state)`,
+  writes need a `post` route calling `submit(&headers, ip, &body, &state)` (raw `Bytes` — a CSV
+  import is a real file upload), `Table::format` takes a Rust closure instead of a string of
+  JavaScript, `Auth::profile_extra` is handed a `ProfileSection` (identity **and** this request's
+  CSRF token), `time::JS` is gone in favour of a server-side `Tz`, and the `openapi` feature, the
+  JSON/metadata API and `Crud::into_router` no longer exist. **Reads are gated now** — `render_for`
+  answers 401/403 itself rather than rendering rows a caller may not read. The 0.2.0 defaults it
+  inherits are still in force: CSRF on the auth forms, the DB-backed login lockout, the mandatory
+  `resolve_real_ip` layer, `set_password` as a reset plus `reset_admin_access` for break-glass, an
+  empty input on a *nullable* column stored as `NULL`, `NOT NULL` columns enforced as `required` (a
+  hook-stamped column must be `read_only`), and `#[non_exhaustive]` public types (build them from
+  `Default` + setters, never a struct literal). Moving to `0.4` will be a read of the library's
+  `CHANGELOG.md` §Upgrading and `docs/MIGRATION-*.md`, not a version bump.
 - **Audit** is written by `audit.rs`, and **every path that writes or deletes app state goes through
   it** — there are exactly three ways in: the `WriteObserver` relativelylight fires for the admin
   auto-CRUD + auth handlers; `Audit::record` (DDNS/API/CF/`keys.rs`, principal + `RealIp` already
@@ -202,12 +231,12 @@ password + 2FA), then exercise `/api/...`.
   returns. **The `source` on a library-emitted event is stored verbatim** — the library names its own
   emitters (`observe::WriteEvent::source`, a `&'static str` at each emission site), teleddns names its
   own at the `record`/`record_local` call site, and nothing is translated in between. The `crud` →
-  **`autocrud`** rename is relativelylight's own (on its `main`, unreleased); our pinned 0.2.1 still
-  writes `crud`, and stored rows keep whichever spelling they were written with, so `audit::SOURCES`
-  lists both.
+  **`autocrud`** rename is relativelylight's own and **landed in 0.3**, so new rows say `autocrud`
+  while rows written under 0.2.x keep `crud` — nothing rewrites them, which is why `audit::SOURCES`
+  lists both and must go on doing so.
 - **Input validation** lives in `dns::check` — typed field predicates built on
   `relativelylight::validate`, shared by the DDNS/native API/CF write paths, `admin import`, **and**
-  the admin CRUD forms (wired via `MetaField::validate_str`/`validate_int` in `web.rs`). Every
+  the admin CRUD forms (wired via `MetaField::validate_str`/`validate_int` in `web/entities.rs`). Every
   name-shaped field composes the two primitives `check::dns_label` (one label) and
   `check::fqdn_hostname` (absolute name) — `record_label`, `ddns_hostname`, `target_name`,
   `hostname`, `zone_origin` are all thin wrappers, so all surfaces reject exactly the same junk. The
@@ -220,12 +249,15 @@ password + 2FA), then exercise `/api/...`.
   Quoted rdata (CAA value, NAPTR flags/service/regexp) is capped at one 255-octet character-string by
   `check::char_string`; TXT is the exception — long values are legal and `backend::zonefile`
   splits them into 255-octet strings. Add a new RR field or type? Add its `check::*` validator
-  (built on the primitives) and wire it on every surface: the `reg_rr!` macro in `web.rs`, the
+  (built on the primitives) and wire it on every surface: the `reg_rr!` macro in `web/entities.rs`, the
   `write_record` arm in `api/record_view.rs`, and the OpenAPI body doc in `api/openapi.rs`.
 
 ## Conventions
 
-SeaORM 1.1, axum 0.8, askama 0.13, utoipa 5 (matching the library). Match the
+SeaORM 1.1, axum 0.8, askama 0.13 (matching the library). `utoipa` is gone with the
+OpenAPI generator — the document is `serde_json` in `api/openapi.rs`. Match the
 surrounding terse, well-commented style; keep doc comments current (they carry
 the contract). Errors on the API are `{ "error": … }` with the right status
-(400/401/403/404/422/500); the CF facade uses the CF envelope.
+(400/401/403/404/422/500); the CF facade uses the CF envelope. HTML the app
+writes itself goes through `crud::ui::esc_str` (or an askama template, which
+escapes for you) — never `format!` a database value straight into a page.

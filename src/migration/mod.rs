@@ -23,6 +23,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0003_drop_api_key_level::Migration),
             Box::new(m0004_lowercase_names::Migration),
             Box::new(m0005_session_clocks_and_recovery::Migration),
+            Box::new(m0006_audit_ts_index::Migration),
         ]
     }
 }
@@ -386,6 +387,46 @@ mod m0005_session_clocks_and_recovery {
                 }
             }
             Ok(())
+        }
+    }
+}
+
+/// An index on `audit (ts, source)`. Not a model change — no column, no data rewrite.
+///
+/// The audit log is append-only and retained a year by default, so it is the biggest table in a
+/// busy deployment (a fleet of DDNS clients writes a row per update). Two things scan it by time:
+/// `audit::prune` (`DELETE … WHERE ts < ?`) at startup, and the dashboard's activity panel, which
+/// asks "how many writes, per surface, since T" six times per page load. Unindexed, each of those
+/// is a full scan. `(ts, source)` is leading-column-usable for the plain range, and **covering**
+/// for the panel's `WHERE ts >= ? GROUP BY source` — it never touches the row.
+mod m0006_audit_ts_index {
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0006_audit_ts_index"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            m.create_index(
+                Index::create()
+                    .name("ix_audit_ts_source")
+                    .table(Alias::new("audit"))
+                    .col(Alias::new("ts"))
+                    .col(Alias::new("source"))
+                    .to_owned(),
+            )
+            .await
+        }
+
+        async fn down(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            m.drop_index(Index::drop().name("ix_audit_ts_source").table(Alias::new("audit")).to_owned())
+                .await
         }
     }
 }

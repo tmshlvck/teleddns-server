@@ -83,7 +83,8 @@ membership; it refuses an SSO account.
 
 Then open **`http://127.0.0.1:8080/`**, log in, and you have:
 
-- **Web UI / admin** — zones, records, users, groups, grants, audit log
+- **Dashboard** — `/`: zone/record counts, backend liveness, per-zone sync state, the push queue
+- **Console** — `/admin/zone` and the table beside it: zones, records, users, groups, grants, audit log
 - **API docs** — `/docs` (Swagger UI); spec at `/openapi.json`
 - **Profile** — password, 2FA, and self-service API keys at `/profile` (or click your name in the header)
 - **Health / metrics** — `/healthcheck` · `/metrics`
@@ -109,23 +110,36 @@ users, groups and grants; the APIs manage only zones and records.
 
 ### Web UI / admin
 
-A server-rendered console (login required) for zones, records (one editor per RR
-type), users, groups, access grants, API keys, and a read-only audit log. Every
-field is validated on input and carries inline help. The whole console is
+A **server-rendered multi-page app** (login required) for zones, records (one
+editor per RR type), users, groups, access grants, API keys, and a read-only audit
+log. Every field is validated on input and carries inline help. The whole console is
 **Superadmin**-only (the `admin` group); everyone else works through the DDNS/API
-surfaces and the self-service profile page.
+surfaces and the self-service profile page, and is sent there on login.
 
-**Working inside one zone.** Each record table carries a **zone picker** beside its
-search box, and the choice follows you from one RR type to the next — pick the zone
-once rather than on every editor you open. It is remembered between visits and travels
-in the URL (`#filter.zone=7`), so a link to one zone's records can be bookmarked or
+`/` is the **dashboard** — the numbers `/healthcheck` reports, rendered for a person,
+plus the serial each zone is actually being answered with beside the one in the
+database. `/admin/{entity}` is the console; every table's view (page, sort, search,
+zone filter, the open create/edit dialog) lives in the URL, so any screen is a link
+you can bookmark or put in a runbook, and the zone you pick follows you from one
+record type to the next. The navbar's **timezone** picker sets a cookie the *server*
+formats with, so a CSV export matches what is on screen.
+
+Nothing on the console is built in the browser: no framework, no JSON API behind the
+pages, no script file. The page loads Bootstrap's stylesheet and about forty lines of
+CSS, and the only JavaScript is the light/dark toggle — turn scripting off and
+everything still works, in light mode.
+
+**Working inside one zone.** Each record table carries a **zone picker** in the side
+panel, and the choice follows you from one RR type to the next — pick the zone once
+rather than on every editor you open. It travels in the URL
+(`/admin/rr_a?filter[zone]=7`), so a link to one zone's records can be bookmarked or
 sent to a colleague. Every column header sorts, **Zone** included: that one orders by
 the zone name shown in the cell, not the row id behind it.
 
-Cookie-authenticated writes (the login/profile forms, the API-key card, the console's
-own JSON API under `/admin/api`) require a **double-submit CSRF token** and answer
-`403` without it. Browsers handle this by themselves; a *script* that posts to
-`/login` or `/admin/api/…` must read the `teleddns_csrf` cookie and echo it in the
+Cookie-authenticated writes (the login/profile forms, the API-key card, every console
+form) require a **double-submit CSRF token** and answer `403` without it. The server
+renders the token into each form, so browsers handle it by themselves; a *script* that
+posts to `/login` must read the `teleddns_csrf` cookie and echo it in the
 `X-CSRF-Token` header (or a `_csrf` form field) — or just use a bearer token on the
 native API instead, which is exempt (an `Authorization` header is not ambient).
 
@@ -540,6 +554,10 @@ knot_template: "master"
 
 public_url: "https://ddns.example.com"            # external HTTPS base (SSO + cookies)
 ops_ip_src_allowed: ["10.9.0.0/24"]                  # Prometheus / uptime host
+
+ui_title: "Example DNS"                           # navbar brand
+timezones: ["UTC", "Europe/Prague"]               # the console's timezone picker; "all" offers
+                                                  # every zone the host knows (default: UTC + EU + US)
 ```
 
 `/etc/systemd/system/teleddns-server.service`:
