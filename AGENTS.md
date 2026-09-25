@@ -17,6 +17,34 @@ provides the SeaORM CRUD engine + metadata, the server-rendered admin UI
 (users/groups/sessions/login/profile, argon2id, TOTP, the `Authz` gate). Everything
 DNS-specific is app code, and so is every route: the library contributes none.
 
+## Before you start — fetch first
+
+**`git fetch` before branching, and before changing anything on `master`.** The
+authoritative history is `origin/master` on GitHub, and this repository is worked on
+from more than one machine, so a local `master` is only ever a claim about the past.
+
+```sh
+git fetch origin
+git log --oneline master..origin/master     # empty = you are at the tip
+git status -sb                              # "[behind N]" = stop and pull
+```
+
+Not a formality. It has already cost real work once: a branch was started from a local
+`master` that was **seven weeks and seven commits stale** — including two releases
+(`v0.4.2`, `v0.4.3`) — and the divergence only surfaced at the next `pull`, as a
+five-file conflict in the middle of a rebase of a 1,700-line change. Everything was
+recoverable, and an hour went into recovering it. Thirty seconds of `git fetch` at the
+start would have avoided all of it.
+
+Two related habits, for the same reason:
+
+- **`pull` here rebases** (`pull.rebase` is on), so a pull onto unpushed local commits
+  *replays* them and can stop mid-way. `git config pull.ff only` makes a diverged pull
+  refuse instead, which is the safer default when work is in flight.
+- **Push a branch when you finish it**, rather than letting local commits accumulate
+  across sessions — an unpushed commit is invisible to every other machine, including
+  the one that will make the next conflicting change.
+
 ## Build / test / run
 
 ```sh
