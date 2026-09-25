@@ -269,6 +269,26 @@ password + 2FA), then exercise `/api/...`.
   (built on the primitives) and wire it on every surface: the `reg_rr!` macro in `web/entities.rs`, the
   `write_record` arm in `api/record_view.rs`, and the OpenAPI body doc in `api/openapi.rs`.
 
+## Next release
+
+The version in `Cargo.toml` is deliberately **not** bumped as features land; it is
+set at release time in its own commit (see `Release 0.4.1`). What is queued:
+
+- **`0.5.0`, and it must be a minor bump**: `knot_template` was renamed to
+  `default_knot_template`, and `Config` is `deny_unknown_fields`, so an existing
+  config file is a **hard startup error** until the operator edits it. That is the
+  one genuine break in the queue — the relativelylight 0.3 / MPA work before it
+  broke neither config nor database (only the console moved from `/` to
+  `/admin/{entity}`, and the undocumented `/admin/api` CRUD wire was removed).
+- Also worth saying out loud in the release notes: **the upgrade is one-way.** Once
+  a migration has run, the previous binary refuses to start — `sea-orm-migration`
+  errors with "Migration file of version '…' is missing, this migration has been
+  applied but its file is missing". Rolling back means deleting that
+  `seaql_migrations` row (and undoing whatever it did) by hand. True of every
+  migration this project has ever shipped; it has just never been written down.
+
+There is no `CHANGELOG.md`; the release commit message is the changelog.
+
 ## Conventions
 
 SeaORM 1.1, axum 0.8, askama 0.13 (matching the library). `utoipa` is gone with the

@@ -368,6 +368,28 @@ mod tests {
         assert!(default.check("a well chosen passphrase", &[]).is_ok());
     }
 
+    /// The `knot_template` → `default_knot_template` rename is only safe *because* an old config
+    /// fails loudly: `deny_unknown_fields` turns the stale key into a startup error instead of a
+    /// silently ignored line that would leave every zone on the wrong template. This pins that —
+    /// adding a `#[serde(alias = "knot_template")]`, or dropping `deny_unknown_fields`, would
+    /// quietly restore the failure mode the rename exists to prevent.
+    #[test]
+    fn the_renamed_knot_template_key_is_a_hard_error() {
+        let err = serde_yaml::from_str::<Config>("knot_template: master\n")
+            .expect_err("the pre-0.5 key must not parse");
+        assert!(
+            err.to_string().contains("knot_template"),
+            "the error must name the offending key: {err}"
+        );
+        // And the replacements do parse, including the allow-list.
+        let cfg: Config = serde_yaml::from_str(
+            "default_knot_template: signed\nknot_templates: [master, signed]\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.default_knot_template, "signed");
+        assert_eq!(cfg.knot_templates, vec!["master".to_string(), "signed".to_string()]);
+    }
+
     #[test]
     fn yaml_partial_overrides_defaults() {
         let cfg: Config =

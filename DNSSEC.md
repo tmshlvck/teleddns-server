@@ -175,6 +175,20 @@ kdig @<primary> telephant.eu CDNSKEY +short
 The last two should already be non-empty — that's `double-ds` doing its job even
 with no rollover in progress.
 
+### Do not put DNSKEY records in a signed zone
+
+teleddns has an **RR DNSKEY** table, and the rendered zone file includes whatever
+is in it. For a zone under a signing template that is a trap: Knot generates the
+apex DNSKEY RRset itself from its own keys, and an apex DNSKEY fed to it in the
+zone file is at best ignored and at worst a load error. **Leave the DNSKEY table
+empty for any zone Knot signs.** It exists for zones signed elsewhere and served
+here as ordinary data.
+
+**DS records are the opposite** — those you *do* manage here. A DS belongs at a
+delegation point inside your zone (`sub.example.com. DS …` in `example.com.`),
+pointing at a signed child, and it is exactly what the RFC 7344 parent role (§6c)
+will one day write for you. Nothing about a zone being signed changes that.
+
 The secondary needs **no** DNSSEC-specific config at all: it AXFRs whatever the
 primary now signs, same as every other record type, through the same catalog
 zone. The one thing worth *checking*, not changing, is that the secondary's own

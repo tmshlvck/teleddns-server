@@ -191,14 +191,19 @@ enabled. Loop shape:
 - **Phase 2**: bootstrap (§5), gated behind its own `mode`/opt-in as described
   throughout — ship once Phase 1 has some real mileage, since it's the half with
   the weaker guarantee.
-- This plan's migration (`cds_watch` table) should land *after*
-  `TODO-templates.md`'s `zone_template` one — sequence as `m0008_cds_watch`, or
-  bundle both into one release. Not a hard technical dependency, just avoids two
-  migration-numbering races if both are being worked on close together.
-  **Numbers have shifted since this was written:** `m0006_audit_ts_index` shipped
-  with the dashboard, so `zone_template` is now `m0007` and this one `m0008`.
-  Re-check `Migrator::migrations()` before picking a number — a shipped migration
-  is never renumbered, so the unshipped plans move instead.
+- This plan's migration (`cds_watch` table) is the next free number. **Read
+  `Migrator::migrations()` for it rather than trusting this line** — a shipped
+  migration is never renumbered, so an unshipped plan's number goes stale every
+  time anything else lands. At the time of writing the last applied step is
+  `m0007_zone_template`, so this is `m0008_cds_watch`.
+- Whatever number it gets, the step **must be guarded by `has_column` /
+  `has_table`**: `m0001_init` builds its tables from the *live* entity definitions,
+  so a fresh database already has the new table or column by the time the ALTER
+  runs. `m0003` and `m0007` are the worked examples; this was found the hard way.
+- **The per-zone Knot template prerequisite is done** (`zone.template`, shipped
+  with `m0007`), so a `dnssec-signing` template already exists to put a zone under —
+  see `DNSSEC.md` §§4–5. That plan's document has been removed now it is
+  implemented; the design lives in `PRD.md` §7.2 and the `AGENTS.md` invariants.
 
 ## 9. Testing
 
