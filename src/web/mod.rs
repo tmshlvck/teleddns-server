@@ -214,10 +214,15 @@ fn panel(engine: &Engine) -> Admin<'_> {
         .separator()
         .group("Audit")
         .entity_with("audit", |t| {
-            t.read_only(true).per_page(50).title("Audit log").description(
+            // The `source` vocabulary belongs in the *table's* description, not the column's: a
+            // field description renders under a form input, and this table is `read_only`, so it has
+            // no form and the help would never be seen. `source` is the column an operator reads the
+            // log by, and "cli" or "autocrud" mean nothing without the list.
+            t.read_only(true).per_page(50).title("Audit log").description(format!(
                 "Append-only record of every state-changing request (DDNS, API, CF facade, admin, \
-                 auth). Read-only.",
-            )
+                 auth). Read-only. The `source` column is one of: {}.",
+                crate::audit::SOURCES.join(", ")
+            ))
         })
 }
 
