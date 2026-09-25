@@ -114,8 +114,10 @@ impl KnotBackend {
     /// alone — but it is also never recognised, so an orphan under a forgotten template lingers
     /// forever. Populate `knot_templates` the day a second template exists.
     ///
-    /// Best-effort: an origin whose template can't be determined is left out rather than risking a
-    /// wrong deletion; a single per-origin `knotc` failure only skips that origin.
+    /// **Fail-safe by construction**: an origin whose template can't be determined — a failed
+    /// `conf-read`, or a zone declared with no template at all — is left out rather than risking a
+    /// wrong deletion, so a single per-origin `knotc` failure costs one skipped origin and never a
+    /// zone. The caller does the same at a coarser grain: an `Err` from here prunes nothing at all.
     async fn list_managed_zones(&self) -> Result<HashSet<String>, String> {
         let out = self.knotc(&["conf-read", "zone"]).await?;
         let mut result = HashSet::new();
@@ -124,7 +126,13 @@ impl KnotBackend {
                 .knotc(&["conf-read", &format!("zone[{origin}].template")])
                 .await
                 .unwrap_or_default();
-            if self.owned_templates.contains(parse_conf_value(&tmpl).as_str()) {
+            // An empty answer is either "declared with no template" or "that read failed", and
+            // neither is evidence the zone is ours. Checked explicitly rather than relying on `""`
+            // being absent from the set: this decides whether a zone may be **deleted**, and an
+            // operator who set `default_knot_template: ""` would otherwise turn every failed read
+            // into an orphan.
+            let tmpl = parse_conf_value(&tmpl);
+            if !tmpl.is_empty() && self.owned_templates.contains(tmpl.as_str()) {
                 result.insert(origin);
             }
         }
@@ -356,5 +364,24 @@ mod tests {
         // The default is always ours, even when the operator forgot to list it.
         cfg.knot_templates = vec!["signed".into()];
         assert!(KnotBackend::new(&cfg).owned_templates.contains("master"));
+    }
+
+    /// The ownership check decides whether a zone may be **deleted**, so "I could not read the
+    /// template" must never read as "it is mine". An empty answer covers both a failed `conf-read`
+    /// and a zone declared with no template; neither is evidence of ownership, and that must hold
+    /// even for an operator who blanked `default_knot_template` and so put `""` in the set.
+    #[test]
+    fn an_unreadable_template_is_never_ours() {
+        let cfg = crate::config::Config {
+            default_knot_template: String::new(),
+            knot_templates: vec![],
+            ..Default::default()
+        };
+        let b = KnotBackend::new(&cfg);
+        assert!(b.owned_templates.contains(""), "the blank default is in the set…");
+        // …and the guard in list_managed_zones is what stops that mattering.
+        for failed_read in ["", "\n", "zone[example.com.].template ="] {
+            assert!(parse_conf_value(failed_read).is_empty(), "{failed_read:?} must parse empty");
+        }
     }
 }
