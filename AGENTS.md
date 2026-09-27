@@ -169,9 +169,29 @@ password + 2FA), then exercise `/api/...`.
   input only — `admin reset-password` and the first-start seed must always be able to set a password.
 - **Every mutation bumps the serial + enqueues a push.** RR/zone create+update go
   through SeaORM `ActiveModel::insert/update`, whose `after_save` hooks call
-  `sync::*`. Bulk deletes bypass per-row hooks, so delete paths (native API, CF,
-  DDNS, zone-delete) enqueue **explicitly**. If you add a write path, keep this
-  contract.
+  `sync::*`. **Deletes fire no hook at all** — every delete path is a set-based
+  `DELETE … WHERE` — so each one enqueues explicitly: the native API and CF through
+  `record_view`, zone-delete in `api::zones`, and the console through
+  `sync::Deletion::capture` + `apply` in `web::admin_save`. If you add a write path,
+  keep this contract; a delete that skips it leaves the backend serving records the
+  console says are gone, with no serial change to make any secondary notice.
+- **Console deletes are handled by a write observer, not by the handler.** A delete
+  through the crud engine fires no SeaORM hook, so `sync::DeleteSync` reads
+  `WriteEvent::before_rows` — every row the delete removed, which relativelylight
+  **0.3.1** added for this — and bumps + enqueues the zones they belonged to. Two
+  details that fail **silently** if got wrong: the engine embeds a relation under its
+  own name (`"zone": {"id": 7, …}`, never `zone_id` — hence `sync::zone_id_of` and its
+  test), and the serial bump matters more than the push, because a re-push carrying an
+  unchanged serial leaves every secondary on the old copy.
+- **Two sinks, one hook.** `Crud::on_write` takes a single observer, so `web::entities`
+  fans out to `audit` (records the write) and `sync::DeleteSync` (reacts to it). Keep
+  them separate: recording and reacting are different jobs, and a failure in one must
+  not swallow the other.
+- **A delete audits one row per record.** `before_rows` is what makes that possible —
+  before it, "delete selected" and "delete all matching" wrote a single row naming the
+  *table* and nothing else, because a bulk delete has no `key` and no `before`. A log
+  that cannot say what was deleted is not an audit log, and a record removed by mistake
+  is exactly what someone comes to it to reconstruct.
 - **The published APIs are ours, and they are the only ones.** The native API, the CF facade and
   DDNS are hand-written (unified type-discriminated records, opaque ids), and `api/openapi.rs`
   describes exactly those three — it is the whole document. The console has **no** API behind it;
@@ -222,9 +242,6 @@ password + 2FA), then exercise `/api/...`.
   config→library group-rule mapping is a subset: username-claim rules become
   global regex/equals username rules; other claims become exact-value rules
   (regex on a non-username claim is ignored). See `src/sso.rs`.
-- **Admin-UI record/zone *deletes*** go through the library's bulk delete, which
-  bypasses the `after_save` hook — a UI delete does not auto-enqueue a push
-  (create/edit do). Delete via the API/DDNS, or re-save the zone, to force a push.
 - **Native list pagination** reads the zone's rows then paginates in memory
   (correct; a DB-level cross-table optimization is deferred).
 - **CORS** is still not added; the only network filter is the CIDR source-admission list

@@ -183,13 +183,36 @@ impl WriteObserver for Audit {
     async fn on_write(&self, ev: &WriteEvent<'_>) {
         let (uid, uname, auth_type) = self.session_actor(ev.headers).await;
         let ip = ev.client_ip.to_string(); // already resolved at the edge — see the module docs
+        // The event's `source` is stored verbatim: the library names its own emitters, and translating
+        // its vocabulary here would only hide which version wrote a row. `crud` → `autocrud` is
+        // relativelylight's own rename, which landed in 0.3.
+        //
+        // **A delete gets one row per record it removed.** `before_rows` carries them all (0.3.1),
+        // which matters because a bulk delete names no single row: `key` is `None` and `before` is
+        // `None`, so the honest audit of "delete all matching" used to be one line saying *something*
+        // had gone from `rr_a`. A log that cannot say what was deleted is not an audit log — and a
+        // record deleted by mistake is precisely the thing someone comes here to reconstruct.
+        if !ev.before_rows.is_empty() {
+            for row in ev.before_rows {
+                self.insert(
+                    ev.source,
+                    op_str(ev.op),
+                    target_of(ev.entity, row.get("id")),
+                    uid,
+                    uname.clone(),
+                    auth_type,
+                    ip.clone(),
+                    Some(row.clone()),
+                    None,
+                )
+                .await;
+            }
+            return;
+        }
         let target = match &ev.key {
             Some(k) => format!("{}/{}", ev.entity, k),
             None => ev.entity.to_string(),
         };
-        // The event's `source` is stored verbatim: the library names its own emitters, and translating
-        // its vocabulary here would only hide which version wrote a row. `crud` → `autocrud` is
-        // relativelylight's own rename, landing in its next release.
         self.insert(
             ev.source,
             op_str(ev.op),
@@ -202,6 +225,16 @@ impl WriteObserver for Audit {
             ev.after.clone(),
         )
         .await;
+    }
+}
+
+/// `entity/pk` for an audited row, or the bare entity when the row carries no usable key. Rendered
+/// without JSON quoting, so a string key reads as `zone/example.com.`, not `zone/"example.com."`.
+fn target_of(entity: &str, id: Option<&serde_json::Value>) -> String {
+    match id {
+        Some(serde_json::Value::String(s)) => format!("{entity}/{s}"),
+        Some(v) if !v.is_null() => format!("{entity}/{v}"),
+        _ => entity.to_string(),
     }
 }
 

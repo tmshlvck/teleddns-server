@@ -9,6 +9,20 @@ use relativelylight::crud::seaorm::{Crud, MetaModel};
 use sea_orm::DatabaseConnection;
 use std::sync::Arc;
 
+/// Hand each write event to several sinks. `Crud::on_write` takes one observer and this app has two
+/// — recording the write and reacting to it are different jobs, and keeping them apart means a
+/// failure in either cannot swallow the other.
+struct Observers(Vec<Arc<dyn relativelylight::observe::WriteObserver>>);
+
+#[async_trait::async_trait]
+impl relativelylight::observe::WriteObserver for Observers {
+    async fn on_write(&self, ev: &relativelylight::observe::WriteEvent<'_>) {
+        for o in &self.0 {
+            o.on_write(ev).await;
+        }
+    }
+}
+
 /// Canonicalize a name as it is written: DNS is case-insensitive but our lookups are exact string
 /// matches, so a label or origin typed `WWW` here would never meet the lower-cased `www` a DDNS or API
 /// request resolves to (`dns::normalize_label`). Applied to every record label, every zone origin, and
@@ -65,8 +79,11 @@ pub fn build_engine(
     let gate = Arc::new(GroupReadWrite::new(auth, [crate::app::ADMIN_GROUP]));
     // 0.3 dropped the mount path: every link the UI renders is query-only and relative, so the engine
     // never learns where the console is served from.
-    let mut crud = Crud::new(db);
-    crud.on_write(audit);
+    let mut crud = Crud::new(db.clone());
+    // Two sinks behind one hook: `audit` records what changed, `DeleteSync` keeps DNS in step with
+    // console deletes (which fire no SeaORM hook — see `sync::DeleteSync`). The engine takes one
+    // observer, so they are fanned out.
+    crud.on_write(Arc::new(Observers(vec![audit, Arc::new(crate::sync::DeleteSync::new(db.clone()))])));
     // The console's writes are cookie-authenticated, so every posted form must echo the double-submit
     // CSRF token (`auth.csrf()` shares one token cookie with the login/profile forms). The library
     // renders the hidden `_csrf` input itself and `Admin::submit` refuses a body without it.

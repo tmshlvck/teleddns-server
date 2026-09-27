@@ -312,6 +312,9 @@ pub async fn admin_save(
     };
     let mut state = ViewState::from_uri(&uri);
     state.entity = Some(entity);
+    // Deletes need no special handling here: they fire no SeaORM hook, but the engine hands every
+    // removed row to the write observers, where `audit` records them and `sync::DeleteSync` bumps
+    // the affected zones' serials and queues a push.
     match panel(&app.engine).submit(&headers, ip, &body, &state).await {
         Ok(Outcome::Done(to)) => Redirect::to(&to).into_response(),
         Ok(Outcome::Invalid(state)) => match panel(&app.engine).render_for(&headers, &state).await {
