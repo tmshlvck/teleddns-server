@@ -393,8 +393,8 @@ sso_providers:
 
 ## Monitoring
 
-**Logging.** teleddns logs to stderr (structured `tracing`; captured by the
-journal under systemd) — no standalone access.log. It emits **one INFO line per
+**Logging.** teleddns logs to **stdout** (structured `tracing`; captured by the
+journal under systemd) — no standalone access.log file. It emits **one INFO line per
 HTTP request** across every surface (DDNS, native API, CF facade, UI, `/metrics`,
 `/healthcheck`) with the method, path, status, the real client IP (proxy-aware),
 User-Agent, and latency; INFO lines for each zone-file write and `knotc`
@@ -403,6 +403,35 @@ reload but doesn't end up serving the pushed serial (a bad zone), which retries 
 then dead-letters. Set `debug: true` for verbose logs. (The in-DB **audit log** —
 who changed which record, visible in the admin UI — is separate and covers DNS
 changes; this is the operational log.)
+
+**Turning the request log off.** Behind a reverse proxy that already logs accesses
+(Caddy, nginx), teleddns's own request line is a duplicate. It is the only thing
+`teleddns_server::net` emits, so one environment variable silences it and nothing
+else:
+
+```sh
+RUST_LOG='info,teleddns_server::net=off'
+```
+
+Everything operational survives — startup, zone pushes, `knotc`, push failures and
+dead-letters, and the **lockout** warning when an account or address crosses its
+failed-credential threshold (that one comes from `teleddns_server::principal`).
+
+Know what you give up, though: an *individual* rejected credential is never logged on
+its own — it is counted, in `teleddns_auth_failures_total` and the lockout tables, and
+otherwise appears only as the `status=401` on its request line. Turn the request log
+off and a single bad token leaves no trace in the log at all, so the proxy's log and
+the metric become the only places to see one. That is usually the right trade behind a
+proxy that logs; it is worth making deliberately.
+
+`RUST_LOG` is a standard
+[`tracing` filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html),
+so it also does the opposite — `RUST_LOG='warn,teleddns_server::net=info'` keeps only
+the request log and the problems — and it overrides `debug:` in the config when set.
+
+One thing you lose by proxying the log: teleddns records the **resolved** client
+address (after `trust_proxy`) and the **full query string**, which for `/nic/update`
+*is* the request. Check your proxy logs both before relying on them alone.
 
 Restrict the operability endpoints with `ops_ip_src_allowed` — the source networks
 allowed to reach them, narrowing `ip_src_allowed` further (both must pass),
@@ -582,6 +611,9 @@ Wants=network-online.target
 User=knot
 Group=knot
 ExecStart=/usr/local/bin/teleddns-server -c /etc/teleddns/teleddns-server.yaml
+# Logs go to stdout → the journal. The default is fine; drop the per-request line if
+# the reverse proxy in front already logs accesses (see Monitoring → Logging):
+#Environment=RUST_LOG=info,teleddns_server::net=off
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true

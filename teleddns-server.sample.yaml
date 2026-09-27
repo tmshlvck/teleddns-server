@@ -55,6 +55,10 @@ trust_proxy: false
 #   - "10.9.0.0/24"
 
 # Verbose (debug-level) logging.   [false]
+# Logs are structured `tracing` on **stdout** (the journal, under systemd). To drop the
+# per-request line — a duplicate if a reverse proxy in front already logs accesses — set
+# the environment variable RUST_LOG='info,teleddns_server::net=off'; it overrides this key.
+# See README → Monitoring → Logging.
 debug: false
 
 # Brand shown in the web UI navbar (top-left).   ["TeleDDNS Server Manager"]

@@ -158,11 +158,15 @@ password + 2FA), then exercise `/api/...`.
   takes `RealIp(ip): RealIp` and gets an `IpAddr`, never an `Option` — a request whose source cannot be
   established is a `500` at the edge, not a guess downstream. A stranger topology (a CDN header) means
   writing a middleware that inserts `RealIp` itself, not a config knob.
-- **Logging is ours, all of it.** relativelylight writes nothing to stdout or stderr and ships no access
-  log — deliberately, so the app picks the shape. `net.rs` owns the request line: a `tracing` event, so it
-  carries the query string (for `/nic/update` the query *is* the request), the User-Agent, and a level
-  `config.debug` can move. Upstream's `examples/access_log` is the same fifteen lines if you need a
-  reference. Don't reach for a library layer that isn't there.
+- **Logging is ours, all of it, and it goes to stdout.** relativelylight writes nothing to stdout or
+  stderr and ships no access log — deliberately, so the app picks the shape. `net.rs` owns the request
+  line: a `tracing` event, so it carries the query string (for `/nic/update` the query *is* the
+  request), the User-Agent, and a level `config.debug` can move. Don't reach for a library layer that
+  isn't there.
+  **Keep the request line the only thing `net.rs` emits.** That module boundary *is* the access-log
+  switch: `RUST_LOG='info,teleddns_server::net=off'` silences the request log and nothing else, which
+  is what a deployment behind a logging proxy uses (README → Monitoring). Put an operational event in
+  `net.rs` and you have quietly made that switch lossy.
 - **Both password surfaces or neither.** `config.password_level` feeds `Auth::password_policy` (the
   profile + manager pages) **and** the `password_hash` field validator on the admin user form
   (`web/entities.rs`). Wire a new one and you have created the documented way around the other. It governs typed
