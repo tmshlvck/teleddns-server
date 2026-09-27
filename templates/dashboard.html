@@ -136,7 +136,7 @@
         <div class="alert alert-danger small py-2 mb-2">{{ error }}</div>
         {% endif %}
         <dl class="row mb-0 small">
-          <dt class="col-5 fw-normal">Last successful push</dt>
+          <dt class="col-5 fw-normal">Last push <span class="text-muted">(this process)</span></dt>
           <dd class="col-7 text-end mb-1">
             {{ last_push.absolute }}
             {% if !last_push.relative.is_empty() %}<span class="text-muted">({{ last_push.relative }})</span>{% endif %}
@@ -158,9 +158,11 @@
         <h2 class="h5">Sync process</h2>
         <p class="text-muted small mb-2">Every change appends a push; the worker coalesces them per
           zone and retries with backoff. A <em>failed</em> row is one it gave up on — the one state
-          worth acting on.</p>
+          worth acting on. The queue itself is in the database and survives a restart, backoff
+          included; the two <em>this process</em> timers do not, so after a restart they read
+          <em>none since restart</em> until the worker acts again.</p>
         <dl class="row mb-0 small">
-          <dt class="col-5 fw-normal">Last worker tick</dt>
+          <dt class="col-5 fw-normal">Last tick <span class="text-muted">(this process)</span></dt>
           <dd class="col-7 text-end mb-1">
             {{ last_tick.absolute }}
             {% if !last_tick.relative.is_empty() %}<span class="text-muted">({{ last_tick.relative }})</span>{% endif %}

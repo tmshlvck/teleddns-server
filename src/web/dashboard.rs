@@ -30,6 +30,12 @@ const REFRESH_SECS: u32 = 30;
 
 /// A timestamp rendered both ways: absolute (in the viewer's zone, for correlating with Knot's logs
 /// or syslog) and relative (for "is this fresh?"). Neither answers the other's question.
+///
+/// The timers this renders live in [`crate::backend::worker::WorkerHandle`] — three atomics, held
+/// in memory and reset on every start. The *work* is durable (the `sync_task` journal survives a
+/// restart, retry schedule and all); these are observation only. So a zero means "not since this
+/// process started", **not** "never happened", and it says so rather than implying a history it
+/// cannot see.
 struct Stamp {
     absolute: String,
     relative: String,
@@ -38,7 +44,7 @@ struct Stamp {
 impl Stamp {
     fn new(epoch: i64, tz: &Tz) -> Stamp {
         if epoch <= 0 {
-            return Stamp { absolute: "never".into(), relative: String::new() };
+            return Stamp { absolute: "none since restart".into(), relative: String::new() };
         }
         // `Tz::format` stops at minutes; every IANA offset is a whole number of minutes, so the
         // seconds are the same in any zone and can be appended from the epoch directly.
