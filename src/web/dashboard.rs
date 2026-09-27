@@ -76,13 +76,36 @@ struct TypeCount {
     count: u64,
 }
 
-/// One line of the activity chart.
+/// One row of the activity chart — its **own** small multiple, with its own y-scale.
+///
+/// One shared axis was the mistake in the first version: a burst of console edits set the scale for
+/// everything, and a DDNS fleet ticking along at two updates per bucket became a flat line at the
+/// bottom. Comparing surfaces against each other is not what this chart is for; seeing whether each
+/// one is still moving is. So each gets its own scale, and its own peak is printed beside it so the
+/// heights are never mistaken for comparable.
 struct Series {
     name: &'static str,
     colour: &'static str,
-    /// `x,y` pairs for an SVG `<polyline points=…>`, already scaled.
-    points: String,
+    /// `x,y` pairs for the `<polyline>`.
+    line: String,
+    /// The same points closed down to the baseline, for a filled `<polygon>` — a count reads better
+    /// as an area than as a thread.
+    area: String,
     total: u64,
+    /// This row's y-scale: the largest bucket in *this* series.
+    peak: u64,
+}
+
+/// A vertical gridline on the chart, with the wall-clock time it marks.
+struct Tick {
+    /// Position in the SVG's user units, for the `<line>`.
+    x: String,
+    /// The same position as a percentage, for placing the label in HTML beneath it. Both are needed
+    /// because the line lives inside a `viewBox` and the label does not: spacing the labels evenly
+    /// instead would have them point at gridlines that aren't there, since the marks are anchored to
+    /// "now" on the right and so do not start at x=0.
+    pct: String,
+    label: String,
 }
 
 struct Window {
@@ -98,9 +121,9 @@ struct Dashboard {
     warnings: Vec<String>,
     // --- update activity ---
     series: Vec<Series>,
+    ticks: Vec<Tick>,
     chart_h: u32,
     chart_w: u32,
-    chart_peak: u64,
     chart_span_hours: i64,
     surfaces: Vec<&'static str>,
     windows: Vec<Window>,
@@ -140,15 +163,15 @@ pub async fn page(headers: HeaderMap, uri: Uri, State(app): State<AppState>) -> 
     let s = Stats::gather(&app).await;
     let journal = Journal::load(&app).await;
     let (zones, zone_total, served) = zone_rows(&app, &s, &journal).await;
-    let (series, chart_peak) = chart(&app).await;
+    let (series, ticks) = chart(&app, &tz).await;
 
     let page = Dashboard {
         refresh: REFRESH_SECS,
         warnings: s.warnings(&app.cfg),
         series,
-        chart_h: CHART_H,
+        ticks,
+        chart_h: ROW_H,
         chart_w: CHART_W,
-        chart_peak,
         chart_span_hours: crate::stats::CHART_SPAN / 3600,
         surfaces: crate::stats::SURFACES.iter().map(|(n, _)| *n).chain(["Console"]).collect(),
         windows: crate::stats::activity(&app)
@@ -330,42 +353,73 @@ async fn zone_rows(
 
 // ===================== the activity chart =====================
 
-/// The SVG's user-space size. The element scales to its container via `viewBox`, so these are
-/// proportions rather than pixels.
+/// The chart's user-space geometry. Each surface gets its own short row; the element scales to the
+/// card through `viewBox`, so these are proportions rather than pixels.
 const CHART_W: u32 = 720;
-const CHART_H: u32 = 160;
+const ROW_H: u32 = 40;
 
-/// One colour per surface, in `SURFACES` order then Console. Chosen to stay distinguishable in both
-/// Bootstrap themes rather than pulled from the palette, which flips with the colour mode.
+/// Buckets between gridlines — twelve five-minute buckets is one hour.
+const TICK_EVERY: usize = 12;
+
+/// One colour per surface, in `SURFACES` order then Console. Fixed hex rather than Bootstrap's
+/// variables, which flip with the colour mode; these stay legible in both.
 const COLOURS: [&str; 4] = ["#0d6efd", "#198754", "#fd7e14", "#6f42c1"];
 
-/// Turn the bucketed counts into polylines, and report the peak the y-axis is scaled to.
-async fn chart(app: &AppState) -> (Vec<Series>, u64) {
-    let raw = crate::stats::activity_series(app).await;
-    let peak = raw.iter().flat_map(|(_, v)| v.iter()).copied().max().unwrap_or(0).max(1);
+/// Turn the bucketed counts into one small multiple per surface, plus the hourly gridlines.
+async fn chart(app: &AppState, tz: &Tz) -> (Vec<Series>, Vec<Tick>) {
+    let (raw, first_bucket) = crate::stats::activity_series(app).await;
     let n = crate::stats::CHART_POINTS.max(2) as f64;
+    let x_of = |i: usize| i as f64 / (n - 1.0) * CHART_W as f64;
+
     let series = raw
         .iter()
         .enumerate()
         .map(|(i, (name, values))| {
-            let points = values
+            // Each row scales to its own peak, so a quiet surface is still readable beside a busy
+            // one. `max(1)` keeps an all-zero series flat on the baseline instead of dividing by 0.
+            let peak = values.iter().copied().max().unwrap_or(0);
+            let scale = peak.max(1) as f64;
+            let line = values
                 .iter()
                 .enumerate()
                 .map(|(x, v)| {
-                    let px = x as f64 / (n - 1.0) * CHART_W as f64;
                     // SVG y grows downward, so a bigger count sits nearer the top.
-                    let py = CHART_H as f64 - (*v as f64 / peak as f64) * CHART_H as f64;
-                    format!("{px:.1},{py:.1}")
+                    let py = ROW_H as f64 - (*v as f64 / scale) * ROW_H as f64;
+                    format!("{:.1},{py:.1}", x_of(x))
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
             Series {
                 name,
                 colour: COLOURS[i % COLOURS.len()],
-                points,
+                // Close the line down to the baseline at both ends to make a fillable shape.
+                area: format!("0,{ROW_H} {line} {CHART_W},{ROW_H}"),
+                line,
                 total: values.iter().sum(),
+                peak,
             }
         })
         .collect();
-    (series, peak)
+
+    // Hourly marks, anchored to the *right* edge so "now" is always the last one — an operator
+    // reads this chart from now backwards. Labelled in the zone the picker chose, like every other
+    // time on the page.
+    let mut ticks = Vec::new();
+    let mut i = crate::stats::CHART_POINTS - 1;
+    loop {
+        let at = first_bucket + i as i64 * crate::stats::CHART_BUCKET;
+        // `Tz::format` is "YYYY-MM-DD HH:MM"; an axis wants only the clock.
+        let stamp = tz.format(at);
+        ticks.push(Tick {
+            x: format!("{:.1}", x_of(i)),
+            pct: format!("{:.2}", x_of(i) / CHART_W as f64 * 100.0),
+            label: stamp.split_once(' ').map(|(_, t)| t.to_string()).unwrap_or(stamp),
+        });
+        if i < TICK_EVERY {
+            break;
+        }
+        i -= TICK_EVERY;
+    }
+    ticks.reverse();
+    (series, ticks)
 }

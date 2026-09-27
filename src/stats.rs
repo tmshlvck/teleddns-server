@@ -248,12 +248,14 @@ pub const CHART_BUCKET: i64 = 300;
 pub const CHART_POINTS: usize = (CHART_SPAN / CHART_BUCKET) as usize;
 
 /// Writes per surface per five-minute bucket over the last six hours: one series per [`SURFACES`]
-/// entry plus Console, each `CHART_POINTS` long and oldest-first.
+/// entry plus Console, each `CHART_POINTS` long and oldest-first, plus **the Unix time of the first
+/// bucket** — the caller needs it to put a clock on the x-axis, and deriving it from a second
+/// `now()` would risk landing a tick one bucket out.
 ///
 /// **One query.** `ts / 300` is integer division on both SQLite and PostgreSQL, so the grouping is
 /// the database's work rather than a day of rows dragged into memory, and `WHERE ts >= ?` is served
 /// by `ix_audit_ts_source` (migration `m0006`) — the same index the window totals use.
-pub async fn activity_series(app: &AppState) -> Vec<(&'static str, Vec<u64>)> {
+pub async fn activity_series(app: &AppState) -> (Vec<(&'static str, Vec<u64>)>, i64) {
     let now = now();
     // Align to the bucket so the rightmost point is the one in progress, not a sliver.
     let newest = now / CHART_BUCKET;
@@ -290,7 +292,7 @@ pub async fn activity_series(app: &AppState) -> Vec<(&'static str, Vec<u64>)> {
             .unwrap_or(SURFACES.len());
         series[slot].1[idx] += n.max(0) as u64;
     }
-    series
+    (series, oldest * CHART_BUCKET)
 }
 
 /// How long ago, as a phrase with no "ago" — `"21 seconds"`, `"2 hours"`. For sentences that supply
