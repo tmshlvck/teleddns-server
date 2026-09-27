@@ -2,67 +2,31 @@
     live? Is the machinery healthy? Everything here is read-only — the console at /admin is where
     things change — and the page reloads itself on a <meta> timer, with no JavaScript. -#}
 
-{% if !warnings.is_empty() %}
-<div class="alert alert-warning">
-  <strong>Needs attention</strong>
-  <ul class="mb-0 mt-1">{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+<div id="warnings">
+  {% if !warnings.is_empty() %}
+  <div class="alert alert-warning">
+    <strong>Needs attention</strong>
+    <ul class="mb-0 mt-1">{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
 </div>
-{% endif %}
 
 {#- ===================== 1. update activity ===================== -#}
 <div class="card shadow-sm mb-3">
   <div class="card-body">
-    <div class="d-flex flex-wrap align-items-baseline gap-3 mb-1">
-      <h2 class="h5 mb-0">Update activity</h2>
-      <span class="text-muted small">last {{ chart_span_hours }} hours, 5-minute buckets</span>
-    </div>
-    <p class="text-muted small">Every state-changing request, by the surface it arrived on. A DDNS
-      fleet updates continuously, so a flat line on the left is a symptom, not calm.
-      <strong>Each row has its own scale</strong> — the heights compare a surface with itself over
-      time, never one surface with another.</p>
+    <h2 class="h5 mb-0">Update activity</h2>
+    <p class="text-muted small">Every state-changing request, by the surface it arrived on, over the
+      last {{ chart_span_hours }} hours in 5-minute buckets. A DDNS fleet updates continuously, so a
+      flat line on the left is a symptom, not calm. <strong>Click a name in the legend</strong> to
+      hide that series — the axis rescales to what is left, which is how to read a quiet surface
+      beside a busy one.</p>
 
-    {#- One small multiple per surface: a filled area on its own y-scale. Server-rendered SVG, no
-        script and no chart library; `viewBox` does the scaling, `non-scaling-stroke` keeps the
-        outline even after the browser stretches it to the card. -#}
-    {% for s in series %}
-    <div class="d-flex align-items-center gap-2 mb-1">
-      <div class="text-nowrap small" style="width:9rem">
-        <span style="display:inline-block;width:.6rem;height:.6rem;border-radius:.15rem;background:{{ s.colour }}"></span>
-        {{ s.name }}
-        <span class="text-muted">{{ s.total }}</span>
-      </div>
-      <svg viewBox="0 0 {{ chart_w }} {{ chart_h }}" width="100%" height="{{ chart_h }}"
-           preserveAspectRatio="none" role="img"
-           aria-label="{{ s.name }}: {{ s.total }} writes in the window, peak {{ s.peak }} per 5 minutes">
-        {% for t in ticks %}
-        <line x1="{{ t.x }}" y1="0" x2="{{ t.x }}" y2="{{ chart_h }}" stroke="currentColor"
-              stroke-opacity=".12" stroke-width="1" vector-effect="non-scaling-stroke"/>
-        {% endfor %}
-        <polygon points="{{ s.area }}" fill="{{ s.colour }}" fill-opacity=".18"/>
-        <polyline points="{{ s.line }}" fill="none" stroke="{{ s.colour }}" stroke-width="1.5"
-                  stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
-        <line x1="0" y1="{{ chart_h }}" x2="{{ chart_w }}" y2="{{ chart_h }}" stroke="currentColor"
-              stroke-opacity=".25" stroke-width="1" vector-effect="non-scaling-stroke"/>
-      </svg>
-      <div class="text-nowrap text-muted small text-end" style="width:5.5rem">peak {{ s.peak }}</div>
-    </div>
-    {% endfor %}
+    {#- The data is baked into the page, not fetched: the server already has it, and an endpoint
+        existing only to hand it back to the browser is the JSON API 0.3 removed. -#}
+    <script type="application/json" id="chart-data">{{ chart_json|safe }}</script>
+    <div style="height:220px"><canvas id="activity"></canvas></div>
 
-    {#- One shared x-axis under the stack. The labels are positioned at the gridlines' own
-        percentages rather than spread evenly: the marks are anchored to "now" at the right edge, so
-        they do not begin at x=0 and an even spread would point at lines that aren't there. -#}
-    <div class="d-flex align-items-start gap-2">
-      <div style="width:9rem"></div>
-      <div class="flex-grow-1 position-relative small text-muted" style="height:1.25rem">
-        {% for t in ticks %}
-        <span class="position-absolute text-nowrap"
-              style="left:{{ t.pct }}%;transform:translateX(-50%)">{{ t.label }}</span>
-        {% endfor %}
-      </div>
-      <div style="width:5.5rem"></div>
-    </div>
-
-    <table class="table table-sm align-middle mt-3 mb-0">
+    <table id="windows" class="table table-sm align-middle mt-3 mb-0">
       <thead><tr>
         <th>Last</th>
         {% for s in surfaces %}<th class="text-end">{{ s }}</th>{% endfor %}
@@ -84,6 +48,7 @@
 </div>
 
 {#- ===================== 2. zones ===================== -#}
+<div id="panels">
 <div class="card shadow-sm mb-3">
   <div class="card-body">
     <div class="d-flex flex-wrap align-items-baseline gap-3">
@@ -202,4 +167,53 @@
   </div>
 </div>
 
-<p class="text-muted small text-center mt-3 mb-0">This page reloads every {{ refresh }} seconds.</p>
+</div>{#- /#panels -#}
+
+<p class="text-muted small text-center mt-3 mb-0">
+  Updates every {{ refresh }} seconds<noscript> (by reloading the page — this needs no JavaScript)</noscript>.
+</p>
+
+{#- Chart.js, pinned and integrity-checked: this page carries a Superadmin session, so a substituted
+    script would run with it. A failed check means no chart; the table above still has the numbers. -#}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"
+        integrity="sha384-Sse/HDqcypGpyTDpvZOJNnG0TT3feGQUkF9H+mnRvic+LjR+K1NhTt8f51KIQ3v3"
+        crossorigin="anonymous"></script>
+<script>
+(function () {
+  var el = document.getElementById('activity');
+  if (!el || typeof Chart === 'undefined') return;   // CDN blocked: the table still works
+  var chart = new Chart(el, {
+    type: 'line',
+    data: JSON.parse(document.getElementById('chart-data').textContent),
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { ticks: { maxTicksLimit: 7, autoSkip: true }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { precision: 0 } }
+      },
+      plugins: { legend: { position: 'top', align: 'end' } }
+    }
+  });
+
+  {#- The refresh. A full page reload would replay Chart.js's entry animation every 30 seconds and
+      flash the page white; instead re-fetch *this same page* and move the parts that changed. No
+      endpoint, no framework, no client-side state beyond the chart object — and `update('none')`
+      redraws without animating, so a refresh is invisible unless a number moved. -#}
+  var swap = function (doc, id) {
+    var next = doc.getElementById(id), cur = document.getElementById(id);
+    if (next && cur) cur.replaceWith(next);
+  };
+  setInterval(function () {
+    fetch(location.href, { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var data = doc.getElementById('chart-data');
+        if (data) { chart.data = JSON.parse(data.textContent); chart.update('none'); }
+        swap(doc, 'warnings'); swap(doc, 'windows'); swap(doc, 'panels');
+      })
+      .catch(function () { /* a blip: leave the last good render on screen */ });
+  }, {{ refresh }} * 1000);
+})();
+</script>

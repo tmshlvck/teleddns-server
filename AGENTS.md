@@ -126,6 +126,16 @@ password + 2FA), then exercise `/api/...`.
   `Retry-After`, `abuse` on DDNS). A request with no credential at all is *not* counted, and an
   *authenticated* check (the profile password) is not limited at all. If you add a credential
   source, route it through here.
+- **The dashboard is the one page with a client runtime, and it stays contained.** It loads Chart.js
+  from a CDN — **pinned and SRI-checked**, because that page carries a Superadmin session and a
+  substituted script would run with it — and refreshes itself by re-fetching *its own URL*, parsing
+  the HTML, and swapping three elements (`#warnings`, `#windows`, `#panels`) plus the chart's data.
+  So: **no JSON endpoint** (the data is baked into a `<script type="application/json">` the server
+  renders), no HTMX, no Alpine, and no client-side state beyond the `Chart` object. A full reload
+  would replay Chart.js's entry animation every 30 seconds; `update('none')` does not. Without
+  JavaScript the `<noscript>` meta-refresh still reloads the page and every number is still there —
+  keep that true. This is a *viewer* on one read-only page, like Swagger UI on `/docs`; it is not
+  licence for the console to grow one.
 - **The console is a multi-page app; keep it that way.** One `get` renders (`render_for`), one
   `post` on the *same path* writes (`submit`), and a write answers `303`. The view — page, sort,
   filters, search, which entity, which dialog is open — lives in the **query string** and nowhere
