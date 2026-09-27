@@ -163,10 +163,9 @@ password + 2FA), then exercise `/api/...`.
   line: a `tracing` event, so it carries the query string (for `/nic/update` the query *is* the
   request), the User-Agent, and a level `config.debug` can move. Don't reach for a library layer that
   isn't there.
-  **Keep the request line the only thing `net.rs` emits.** That module boundary *is* the access-log
-  switch: `RUST_LOG='info,teleddns_server::net=off'` silences the request log and nothing else, which
-  is what a deployment behind a logging proxy uses (README → Monitoring). Put an operational event in
-  `net.rs` and you have quietly made that switch lossy.
+  **`config.log_access` decides whether that layer is installed at all** (`app.rs`), rather than
+  having the middleware check a flag and return early — off should cost nothing per request. It is
+  the only log with a switch, because it is the only one a reverse proxy duplicates.
 - **Both password surfaces or neither.** `config.password_level` feeds `Auth::password_policy` (the
   profile + manager pages) **and** the `password_hash` field validator on the admin user form
   (`web/entities.rs`). Wire a new one and you have created the documented way around the other. It governs typed

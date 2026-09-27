@@ -230,8 +230,14 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     };
     let app =
         app.layer(axum::middleware::from_fn_with_state(state.clone(), crate::net::allow_from));
-    // One access-log line per request (denials from the admission list included), so it wraps it.
-    let app = app.layer(axum::middleware::from_fn(crate::net::access_log));
+    // One access-log line per request (denials from the admission list included), so it wraps the
+    // admission layer. `log_access: false` leaves it out of the stack entirely rather than making it
+    // return early — a deployment behind a proxy that already logs accesses should pay nothing for a
+    // line it doesn't want. Nothing else moves: every other log, and the audit table, are untouched.
+    let app = match state.cfg.log_access {
+        true => app.layer(axum::middleware::from_fn(crate::net::access_log)),
+        false => app,
+    };
     // **Outermost, and mandatory**: resolve who is calling, once, into a `RealIp` extension. Everything
     // downstream reads that one value — the admission list, the access log, relativelylight's login
     // lockout, our own credential checks, the audit rows — so a log line and the event it describes can

@@ -27,6 +27,11 @@ pub struct Config {
     pub trust_proxy: bool,
     /// Verbose (debug-level) logging.
     pub debug: bool,
+    /// Log one line per HTTP request (method, path+query, status, client address, User-Agent,
+    /// latency). Default on. Turn it **off** behind a reverse proxy that already logs accesses —
+    /// the middleware is then not installed at all, so it costs nothing per request, and every other
+    /// log is untouched.
+    pub log_access: bool,
     /// Brand shown in the web UI navbar (top-left). Default "TeleDDNS Server Manager".
     pub ui_title: String,
     /// IANA zone names the console's timezone picker offers (the chosen one rides in a cookie and
@@ -177,6 +182,7 @@ impl Default for Config {
             ops_ip_src_allowed: vec![],
             trust_proxy: false,
             debug: false,
+            log_access: true,
             ui_title: "TeleDDNS Server Manager".into(),
             timezones: vec![],
             default_ttl: 3600,
@@ -388,6 +394,16 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.default_knot_template, "signed");
         assert_eq!(cfg.knot_templates, vec!["master".to_string(), "signed".to_string()]);
+    }
+
+    /// `log_access` defaults **on**: an upgrade must not silently stop logging requests. It is a
+    /// plain bool rather than a level or a path because the only question a deployment has is
+    /// whether the reverse proxy in front is already logging accesses.
+    #[test]
+    fn the_request_log_is_on_unless_turned_off() {
+        assert!(Config::default().log_access);
+        assert!(serde_yaml::from_str::<Config>("debug: true\n").unwrap().log_access, "absent = on");
+        assert!(!serde_yaml::from_str::<Config>("log_access: false\n").unwrap().log_access);
     }
 
     #[test]
