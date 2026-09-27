@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-const MAX_ATTEMPTS: i32 = 20;
+pub const MAX_ATTEMPTS: i32 = 20;
 const BACKOFF_CAP_SECS: i64 = 3600;
 
 /// Liveness handles the healthcheck reads.

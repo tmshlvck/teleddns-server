@@ -38,7 +38,7 @@ pub async fn metrics(State(app): State<AppState>) -> Response {
     let s = Stats::gather(&app).await;
     let m = &app.metrics;
     m.zones.set(s.zones as i64);
-    for (typ, n) in &s.by_type {
+    for (typ, n) in &s.type_totals() {
         m.records_by_type.with_label_values(&[typ]).set(*n as i64);
     }
     m.records.set(s.records() as i64);

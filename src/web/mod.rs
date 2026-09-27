@@ -84,6 +84,10 @@ struct Shell {
     css: &'static str,
     version: &'static str,
     repo: &'static str,
+    /// Seconds between automatic reloads, or `0` for none. A `<meta http-equiv="refresh">` rather
+    /// than a timer in script: the dashboard is meant to be left open on a screen, and this is the
+    /// one way to do that without the page becoming an application.
+    refresh: u32,
 }
 
 impl Shell {
@@ -105,7 +109,15 @@ impl Shell {
             css: CSS,
             version: VERSION,
             repo: REPO_URL,
+            refresh: 0,
         }
+    }
+
+    /// Reload this page every `secs` seconds. Only the dashboard asks: a reload on a page with a
+    /// form open would throw away what the operator was typing.
+    fn refresh_every(mut self, secs: u32) -> Shell {
+        self.refresh = secs;
+        self
     }
 
     /// A page rendered *for* us by the library — the login form, the profile page, the CSRF
@@ -122,6 +134,7 @@ impl Shell {
             css: CSS,
             version: VERSION,
             repo: REPO_URL,
+            refresh: 0,
         }
     }
 

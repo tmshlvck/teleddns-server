@@ -1,98 +1,128 @@
-//! The landing page: what this server is currently doing, for a person. It renders the numbers
-//! `/healthcheck` and `/metrics` publish ([`crate::stats`]) plus the one thing neither can show in a
-//! line of text — the serial each zone is *actually* being answered with, beside the serial in the
-//! database.
+//! The landing page: what this server is currently doing, for a person. Three panels, each a
+//! question an operator actually asks — *is anything changing?* (update activity), *is every zone
+//! live?* (zones), *is the machinery healthy?* (backend & sync) — over the numbers `/healthcheck`
+//! and `/metrics` publish ([`crate::stats`]) plus the serial each zone is really answered with.
 //!
 //! Read-only by construction: nothing here posts. Changes happen in the console at `/admin`, and
-//! every number on this page links to the table it came from.
+//! every number links to the table it came from. The page refreshes itself on a `<meta>` timer, so
+//! it can be left open on a wall display without a line of JavaScript.
 
 use crate::app::AppState;
-use crate::model::{sync_task, zone};
-use crate::stats::{ago, Stats, Window, SURFACES};
+use crate::model::{now, sync_task, zone};
+use crate::stats::{ago, Stats};
 use askama::Template;
 use axum::extract::State;
 use axum::http::{HeaderMap, Uri};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
-use std::collections::{HashMap, HashSet};
+use relativelylight::time::Tz;
+use sea_orm::{EntityTrait, QueryOrder};
+use std::collections::HashMap;
 
-/// How many zones the sync table lists before deferring to the console. Drifted zones sort first,
-/// so the cap hides in-sync rows, never a problem.
-const ZONE_ROWS: usize = 20;
+/// How many zones the sync table lists before deferring to the console. Anything needing attention
+/// sorts first, so the cap only ever hides healthy rows.
+const ZONE_ROWS: usize = 25;
 
 /// Dead-lettered origins named individually before it becomes a number.
 const DEAD_LETTERS: usize = 5;
 
-struct Card {
-    label: &'static str,
-    value: String,
-    note: String,
-    /// A Bootstrap text colour, or empty for the default.
-    tone: &'static str,
+/// How often the page reloads itself, in seconds.
+const REFRESH_SECS: u32 = 30;
+
+/// A timestamp rendered both ways: absolute (in the viewer's zone, for correlating with Knot's logs
+/// or syslog) and relative (for "is this fresh?"). Neither answers the other's question.
+struct Stamp {
+    absolute: String,
+    relative: String,
+}
+
+impl Stamp {
+    fn new(epoch: i64, tz: &Tz) -> Stamp {
+        if epoch <= 0 {
+            return Stamp { absolute: "never".into(), relative: String::new() };
+        }
+        // `Tz::format` stops at minutes; every IANA offset is a whole number of minutes, so the
+        // seconds are the same in any zone and can be appended from the epoch directly.
+        Stamp {
+            absolute: format!("{}:{:02} {}", tz.format(epoch), epoch.rem_euclid(60), tz.name()),
+            relative: ago(epoch),
+        }
+    }
 }
 
 struct ZoneRow {
+    id: i32,
     origin: String,
     db_serial: i64,
-    /// The serial the backend answers with, or `—` when it has none / can't report.
     live_serial: String,
+    records: u64,
+    queued: u64,
     badge: &'static str,
     badge_class: &'static str,
-    /// Drifted rows sort to the top; not rendered.
+    /// Why it is in that state, when there is more to say (attempts, when it retries).
+    note: String,
+    /// Trouble first; not rendered.
     rank: u8,
-}
-
-/// What the DNS backend says about itself, for its own panel.
-struct BackendPanel {
-    name: &'static str,
-    state: &'static str,
-    state_class: &'static str,
-    /// The backend's own status line (`knotc status`), when it has one.
-    detail: Option<String>,
-    /// Why the probe failed, when it did.
-    error: Option<String>,
-    last_push: String,
-    zones_db: u64,
-    /// Zones the backend is actually serving — `None` when it can't report (the `log` backend) or
-    /// the ask failed. Not the same number as `zones_db`, and the difference is the point.
-    zones_served: Option<usize>,
-}
-
-/// The zone-sync table plus the two numbers derived from the same backend answer.
-struct ZoneSync {
-    rows: Vec<ZoneRow>,
-    hidden: usize,
-    served: Option<usize>,
 }
 
 struct TypeCount {
     name: &'static str,
-    /// The entity slug, so the count links to its table: `A` → `/admin/rr_a`.
     slug: String,
     count: u64,
+}
+
+/// One line of the activity chart.
+struct Series {
+    name: &'static str,
+    colour: &'static str,
+    /// `x,y` pairs for an SVG `<polyline points=…>`, already scaled.
+    points: String,
+    total: u64,
+}
+
+struct Window {
+    label: &'static str,
+    counts: Vec<u64>,
+    total: u64,
 }
 
 #[derive(Template)]
 #[template(path = "dashboard.html")]
 struct Dashboard {
+    refresh: u32,
     warnings: Vec<String>,
-    cards: Vec<Card>,
-    backend: BackendPanel,
-    /// Column headings for the activity table: the named surfaces, then "Console".
+    // --- update activity ---
+    series: Vec<Series>,
+    chart_h: u32,
+    chart_w: u32,
+    chart_peak: u64,
+    chart_span_hours: i64,
     surfaces: Vec<&'static str>,
     windows: Vec<Window>,
+    // --- zones ---
     zones: Vec<ZoneRow>,
+    zone_total: usize,
     more_zones: usize,
+    records: u64,
+    by_type: Vec<TypeCount>,
+    // --- backend & sync ---
+    backend_name: &'static str,
+    backend_state: &'static str,
+    backend_class: &'static str,
+    backend_detail: Option<String>,
+    backend_error: Option<String>,
+    zones_served: Option<usize>,
+    last_push: Stamp,
+    last_tick: Stamp,
     pending: u64,
     in_flight: u64,
     failed: u64,
+    retrying: u64,
     dead_letters: Vec<String>,
-    by_type: Vec<TypeCount>,
 }
 
-/// `GET /` — the dashboard, for a Superadmin. Everyone else is sent to their profile: the console
-/// and this page are both Superadmin-only, and `/profile` (password, 2FA, API keys) is what a
-/// device owner actually came for.
+/// `GET /` — the dashboard, for a Superadmin. Everyone else is sent to their profile: this page and
+/// the console are both Superadmin-only, and `/profile` (password, 2FA, API keys) is what a device
+/// owner actually came for.
 pub async fn page(headers: HeaderMap, uri: Uri, State(app): State<AppState>) -> Response {
     let Some(who) = app.auth.identify(&headers).await else {
         return Redirect::to(app.auth.login_path()).into_response();
@@ -100,164 +130,236 @@ pub async fn page(headers: HeaderMap, uri: Uri, State(app): State<AppState>) -> 
     if !app.auth.can_manage_others(&who) {
         return Redirect::to("/profile").into_response();
     }
-
+    let tz = Tz::from_headers(&headers);
     let s = Stats::gather(&app).await;
-    let sync = zone_rows(&app).await;
+    let journal = Journal::load(&app).await;
+    let (zones, zone_total, served) = zone_rows(&app, &s, &journal).await;
+    let (series, chart_peak) = chart(&app).await;
+
     let page = Dashboard {
+        refresh: REFRESH_SECS,
         warnings: s.warnings(&app.cfg),
-        cards: cards(&app, &s),
-        backend: backend_panel(&app, &s, sync.served),
-        surfaces: SURFACES.iter().map(|(name, _)| *name).chain(["Console"]).collect(),
-        windows: crate::stats::activity(&app).await,
-        zones: sync.rows,
-        more_zones: sync.hidden,
+        series,
+        chart_h: CHART_H,
+        chart_w: CHART_W,
+        chart_peak,
+        chart_span_hours: crate::stats::CHART_SPAN / 3600,
+        surfaces: crate::stats::SURFACES.iter().map(|(n, _)| *n).chain(["Console"]).collect(),
+        windows: crate::stats::activity(&app)
+            .await
+            .into_iter()
+            .map(|w| Window { label: w.label, counts: w.counts, total: w.total })
+            .collect(),
+        more_zones: zone_total.saturating_sub(zones.len()),
+        zones,
+        zone_total,
+        records: s.records(),
+        by_type: s
+            .type_totals()
+            .into_iter()
+            .map(|(name, count)| TypeCount { name, slug: name.to_lowercase(), count })
+            .collect(),
+        backend_name: app.backend.name(),
+        backend_state: match s.status.probe {
+            crate::backend::Probe::Up => "up",
+            crate::backend::Probe::Down => "down",
+            crate::backend::Probe::Na => "n/a",
+        },
+        backend_class: match s.status.probe {
+            crate::backend::Probe::Up => "text-bg-success",
+            crate::backend::Probe::Down => "text-bg-danger",
+            crate::backend::Probe::Na => "text-bg-secondary",
+        },
+        backend_detail: s.status.detail.clone(),
+        backend_error: s.status.error.clone(),
+        zones_served: served,
+        last_push: Stamp::new(s.last_push, &tz),
+        last_tick: Stamp::new(s.last_tick, &tz),
         pending: s.pending,
         in_flight: s.in_flight,
         failed: s.failed,
-        dead_letters: dead_letters(&app).await,
-        by_type: s
-            .by_type
-            .iter()
-            .map(|(name, count)| TypeCount { name, slug: name.to_lowercase(), count: *count })
-            .collect(),
+        retrying: journal.retrying,
+        dead_letters: journal.dead_letters.clone(),
     };
     match page.render() {
-        Ok(body) => Html(super::Shell::page("Dashboard — teleddns", &who, &uri, &headers, body).html())
-            .into_response(),
+        Ok(body) => Html(
+            super::Shell::page("Dashboard — teleddns", &who, &uri, &headers, body)
+                .refresh_every(REFRESH_SECS)
+                .html(),
+        )
+        .into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
-/// The DNS backend's own panel: is it answering, what does it say about itself, and is it serving
-/// the zones we think it is. `served` comes from the [`zone_rows`] call so the backend is asked for
-/// its serials once, not twice.
-fn backend_panel(app: &AppState, s: &Stats, served: Option<usize>) -> BackendPanel {
-    use crate::backend::Probe;
-    let (state, state_class) = match s.status.probe {
-        Probe::Up => ("up", "text-bg-success"),
-        Probe::Down => ("down", "text-bg-danger"),
-        Probe::Na => ("n/a", "text-bg-secondary"),
-    };
-    BackendPanel {
-        name: app.backend.name(),
-        state,
-        state_class,
-        detail: s.status.detail.clone(),
-        error: s.status.error.clone(),
-        last_push: ago(s.last_push),
-        zones_db: s.zones,
-        zones_served: served,
+// ===================== the push journal, read once =====================
+
+/// The state of every outstanding push, keyed by origin — so the zones panel can say *why* a zone
+/// is behind instead of only that it is. One query, not one per zone.
+struct Journal {
+    by_origin: HashMap<String, Vec<sync_task::Model>>,
+    retrying: u64,
+    dead_letters: Vec<String>,
+}
+
+impl Journal {
+    async fn load(app: &AppState) -> Journal {
+        let tasks = sync_task::Entity::find()
+            .order_by_asc(sync_task::Column::CreatedAt)
+            .all(&app.db)
+            .await
+            .unwrap_or_default();
+        let mut by_origin: HashMap<String, Vec<sync_task::Model>> = HashMap::new();
+        let mut retrying = 0;
+        let mut dead_letters = Vec::new();
+        for t in tasks {
+            // "Retrying" is a pending row that has already failed at least once and is waiting out
+            // its backoff — worth separating from a fresh enqueue, which is waiting out the debounce.
+            if t.state == sync_task::STATE_PENDING && t.attempts > 0 {
+                retrying += 1;
+            }
+            if t.state == sync_task::STATE_FAILED && dead_letters.len() < DEAD_LETTERS {
+                dead_letters.push(t.origin.clone());
+            }
+            by_origin.entry(t.origin.clone()).or_default().push(t);
+        }
+        Journal { by_origin, retrying, dead_letters }
+    }
+
+    /// The most alarming thing outstanding for this origin.
+    fn status_of(&self, origin: &str) -> Option<(&'static str, &'static str, String, u8)> {
+        let tasks = self.by_origin.get(origin)?;
+        if let Some(t) = tasks.iter().find(|t| t.state == sync_task::STATE_FAILED) {
+            return Some((
+                "failed",
+                "text-bg-danger",
+                format!("gave up after {} attempts", t.attempts),
+                0,
+            ));
+        }
+        if tasks.iter().any(|t| t.state == sync_task::STATE_IN_FLIGHT) {
+            return Some(("pushing", "text-bg-info", "being pushed now".into(), 1));
+        }
+        let pending = tasks.iter().find(|t| t.state == sync_task::STATE_PENDING)?;
+        let wait = pending.available_at - now();
+        Some(if pending.attempts > 0 {
+            (
+                "retrying",
+                "text-bg-warning",
+                format!(
+                    "attempt {} of {}{}",
+                    pending.attempts + 1,
+                    crate::backend::worker::MAX_ATTEMPTS,
+                    if wait > 0 { format!(", in {wait}s") } else { String::new() }
+                ),
+                1,
+            )
+        } else if wait > 0 {
+            ("queued", "text-bg-info", format!("debouncing, due in {wait}s"), 2)
+        } else {
+            ("queued", "text-bg-info", "due now".into(), 2)
+        })
     }
 }
 
-/// The five numbers at the top. Each is one of the healthcheck's fields, worded for a reader.
-fn cards(app: &AppState, s: &Stats) -> Vec<Card> {
-    use crate::backend::Probe;
-    let (backend, backend_tone) = match s.status.probe {
-        Probe::Up => ("up".to_string(), "text-success"),
-        Probe::Down => ("down".to_string(), "text-danger"),
-        // The `log` backend pushes nowhere, so there is nothing to be up or down.
-        Probe::Na => ("n/a".to_string(), "text-muted"),
-    };
-    let (drift, drift_tone) = match s.out_of_sync {
-        -1 => ("—".to_string(), "text-muted"),
-        0 => ("0".to_string(), "text-success"),
-        n => (n.to_string(), "text-danger"),
-    };
-    vec![
-        Card { label: "Zones", value: s.zones.to_string(), note: "served from this database".into(), tone: "" },
-        Card {
-            label: "Records",
-            value: s.records().to_string(),
-            note: format!("across {} types", s.by_type.iter().filter(|(_, n)| *n > 0).count()),
-            tone: "",
-        },
-        Card {
-            label: "Backend",
-            value: backend,
-            note: format!("{}, last push {}", app.backend.name(), ago(s.last_push)),
-            tone: backend_tone,
-        },
-        Card {
-            label: "Sync worker",
-            value: ago(s.last_tick),
-            note: format!("{} push(es) queued", s.unfinished()),
-            tone: if s.last_tick == 0 { "text-muted" } else { "" },
-        },
-        Card {
-            label: "Out of sync",
-            value: drift,
-            note: "zones behind their serial".into(),
-            tone: drift_tone,
-        },
-    ]
-}
+// ===================== zones =====================
 
-/// One row per zone: the database serial beside the one the backend is answering with.
-async fn zone_rows(app: &AppState) -> ZoneSync {
+/// One row per zone: its serial against the backend's, what it holds, and what it is waiting on.
+async fn zone_rows(
+    app: &AppState,
+    s: &Stats,
+    journal: &Journal,
+) -> (Vec<ZoneRow>, usize, Option<usize>) {
     let zones = zone::Entity::find()
         .order_by_asc(zone::Column::Origin)
         .all(&app.db)
         .await
         .unwrap_or_default();
-    // `Ok(None)` = a backend that can't report serials (the `log` one); an `Err` is a backend that
-    // is down, which the Backend card already says. Both render as "unknown", not as a drift.
+    // `Ok(None)` = a backend that cannot report serials (the `log` one); an `Err` is a backend that
+    // is down, which the backend panel already says. Both render as "unknown", never as a drift.
     let served: Option<HashMap<String, i64>> = app.backend.zone_serials().await.ok().flatten();
-    let queued = unfinished_origins(app).await;
+    let per_zone = s.per_zone();
 
     let mut rows: Vec<ZoneRow> = zones
         .into_iter()
         .map(|z| {
             let live = served.as_ref().map(|m| m.get(&z.origin).copied());
-            // rank orders the table: trouble first, then the merely pending, then the quiet ones.
-            let (badge, badge_class, rank) = match (live, queued.contains(&z.origin)) {
-                (None, _) => ("unknown", "text-bg-secondary", 2),
-                (Some(None), _) => ("not served", "text-bg-danger", 0),
-                (Some(Some(n)), _) if n == z.serial => ("in sync", "text-bg-success", 3),
-                // Behind with a push still owed is the normal state a second after an edit.
-                (Some(Some(_)), true) => ("syncing", "text-bg-info", 1),
-                (Some(Some(n)), false) if n < z.serial => ("behind", "text-bg-warning", 0),
-                (Some(Some(_)), false) => ("ahead", "text-bg-secondary", 0),
-            };
+            let queued = journal.by_origin.get(&z.origin).map(|v| v.len()).unwrap_or(0) as u64;
+            // What the journal is doing wins: a zone with a push outstanding is not "behind", it is
+            // mid-flight, and saying so is the difference between "normal" and "go and look".
+            let (badge, badge_class, note, rank) = journal.status_of(&z.origin).unwrap_or_else(|| {
+                match live {
+                    None => ("unknown", "text-bg-secondary", "backend cannot report".into(), 3),
+                    Some(None) => ("not served", "text-bg-danger", "missing from the backend".into(), 0),
+                    Some(Some(n)) if n == z.serial => ("in sync", "text-bg-success", String::new(), 4),
+                    Some(Some(n)) if n < z.serial => (
+                        "behind",
+                        "text-bg-warning",
+                        "no push queued — re-save the zone".into(),
+                        0,
+                    ),
+                    Some(Some(_)) => ("ahead", "text-bg-secondary", "backend is newer".into(), 0),
+                }
+            });
             ZoneRow {
+                id: z.id,
                 origin: z.origin,
                 db_serial: z.serial,
                 live_serial: live.flatten().map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+                records: per_zone.get(&z.id).copied().unwrap_or(0),
+                queued,
                 badge,
                 badge_class,
+                note,
                 rank,
             }
         })
         .collect();
     rows.sort_by_key(|r| r.rank); // stable: origin order survives inside a rank
 
-    let hidden = rows.len().saturating_sub(ZONE_ROWS);
+    let total = rows.len();
     rows.truncate(ZONE_ROWS);
-    ZoneSync { rows, hidden, served: served.map(|m| m.len()) }
+    (rows, total, served.map(|m| m.len()))
 }
 
-/// Origins with a push still owed (pending or in flight) — what turns "behind" into "syncing".
-async fn unfinished_origins(app: &AppState) -> HashSet<String> {
-    sync_task::Entity::find()
-        .filter(sync_task::Column::State.is_in([sync_task::STATE_PENDING, sync_task::STATE_IN_FLIGHT]))
-        .all(&app.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| t.origin)
-        .collect()
-}
+// ===================== the activity chart =====================
 
-/// Origins the worker gave up on — the one queue state an operator has to act on.
-async fn dead_letters(app: &AppState) -> Vec<String> {
-    sync_task::Entity::find()
-        .filter(sync_task::Column::State.eq(sync_task::STATE_FAILED))
-        .order_by_asc(sync_task::Column::CreatedAt)
-        .limit(DEAD_LETTERS as u64)
-        .all(&app.db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| t.origin)
-        .collect()
+/// The SVG's user-space size. The element scales to its container via `viewBox`, so these are
+/// proportions rather than pixels.
+const CHART_W: u32 = 720;
+const CHART_H: u32 = 160;
+
+/// One colour per surface, in `SURFACES` order then Console. Chosen to stay distinguishable in both
+/// Bootstrap themes rather than pulled from the palette, which flips with the colour mode.
+const COLOURS: [&str; 4] = ["#0d6efd", "#198754", "#fd7e14", "#6f42c1"];
+
+/// Turn the bucketed counts into polylines, and report the peak the y-axis is scaled to.
+async fn chart(app: &AppState) -> (Vec<Series>, u64) {
+    let raw = crate::stats::activity_series(app).await;
+    let peak = raw.iter().flat_map(|(_, v)| v.iter()).copied().max().unwrap_or(0).max(1);
+    let n = crate::stats::CHART_POINTS.max(2) as f64;
+    let series = raw
+        .iter()
+        .enumerate()
+        .map(|(i, (name, values))| {
+            let points = values
+                .iter()
+                .enumerate()
+                .map(|(x, v)| {
+                    let px = x as f64 / (n - 1.0) * CHART_W as f64;
+                    // SVG y grows downward, so a bigger count sits nearer the top.
+                    let py = CHART_H as f64 - (*v as f64 / peak as f64) * CHART_H as f64;
+                    format!("{px:.1},{py:.1}")
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            Series {
+                name,
+                colour: COLOURS[i % COLOURS.len()],
+                points,
+                total: values.iter().sum(),
+            }
+        })
+        .collect();
+    (series, peak)
 }
