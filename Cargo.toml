@@ -17,7 +17,7 @@ path = "src/main.rs"
 # /metadata/OpenAPI surface is gone (there is no `openapi` feature any more), so the console is plain
 # MPA and the only documented API is the one this app writes itself (`api/openapi.rs`).
 # `validate-base64` enables validate::base64 (used for the DNSKEY public-key field check).
-relativelylight = { version = "0.3.1", features = ["crud", "axum", "ui", "csv", "auth", "sso", "validate-base64"] }
+relativelylight = { version = "0.3.2", features = ["crud", "axum", "ui", "csv", "auth", "sso", "validate-base64"] }
 
 sea-orm = { version = "1.1", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
