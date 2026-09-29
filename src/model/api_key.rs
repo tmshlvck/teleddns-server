@@ -29,10 +29,16 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
+    // **Cascade.** A key *is* its owner (`authz`) — it carries no rights of its own — so an account
+    // that goes must take its keys with it. Without this the key would outlive the user as a live
+    // secret nothing owns, and, more immediately, deleting a user who holds any key would fail
+    // outright on the constraint: the `409` with no way forward that relativelylight 0.3.2 fixed for
+    // group memberships, in our own table.
     #[sea_orm(
         belongs_to = "relativelylight::auth::user::Entity",
         from = "Column::UserId",
-        to = "relativelylight::auth::user::Column::Id"
+        to = "relativelylight::auth::user::Column::Id",
+        on_delete = "Cascade"
     )]
     User,
 }

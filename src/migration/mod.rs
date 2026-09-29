@@ -25,6 +25,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0005_session_clocks_and_recovery::Migration),
             Box::new(m0006_audit_ts_index::Migration),
             Box::new(m0007_zone_template::Migration),
+            Box::new(m0008_auth_cascades::Migration),
         ]
     }
 }
@@ -482,5 +483,314 @@ mod m0007_zone_template {
             )
             .await
         }
+    }
+}
+
+/// Give the auth foreign keys `ON DELETE CASCADE`, so deleting a user takes their sessions,
+/// recovery codes and group memberships with them.
+///
+/// **And teleddns's own tables have the same defect**, which the library release does not touch:
+/// `api_key.user_id`, and the `group_id` / `zone_id` of both grant tables, were all `NO ACTION`. An
+/// API key is its owner and must die with them; a grant naming a deleted group or zone grants
+/// nothing. In every case the rows also *blocked* the deletion, so this is one fix, not two.
+///
+/// relativelylight 0.3.2 fixed the schema: `auth_session.user_id` and `auth_totp_recovery.user_id`
+/// had **no foreign key at all**, so a deleted account left credential-shaped rows owned by nobody,
+/// and `auth_user_group` declared its keys with no `ON DELETE` action, so deleting a user who
+/// belonged to any group failed outright — surfacing in the console as a `409` with no way forward.
+///
+/// **Guarded, and it must be** (see `m0007`'s note): `m0001_init` builds the auth tables from the
+/// *live* `auth::table_create_statements`, so a database created on 0.3.2 already has the cascades
+/// and this step must do nothing. Only one upgraded from an earlier release needs the work.
+///
+/// **SQLite cannot add a constraint in place** — `ALTER TABLE` only renames and adds columns — so
+/// each table is rebuilt: create the new shape under a temporary name, copy every row by explicit
+/// column name, drop the original, rename the new one in
+/// ([SQLite's own procedure](https://sqlite.org/lang_altertable.html#otheralter)). Two details make
+/// that safe here. `sea-orm-migration` runs SQLite migrations **outside** a transaction — it opens
+/// one only for PostgreSQL — so `PRAGMA foreign_keys=OFF` actually takes effect, and this step can
+/// open a transaction of its own. And the whole thing is one `execute_unprepared` because the pool
+/// hands out any connection it likes: `BEGIN` and `COMMIT` issued as separate calls could land on
+/// different connections.
+///
+/// PostgreSQL needs no rebuild, just `ALTER TABLE`, and gets the migrator's own transaction.
+mod m0008_auth_cascades {
+    use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0008_auth_cascades"
+        }
+    }
+
+    /// One table's worth of the change.
+    struct Table {
+        name: &'static str,
+        /// How many of its foreign keys cascade once it is correct — the guard compares against this.
+        cascades: i64,
+        /// The target shape, as a fresh install gets it. Taken verbatim from a database created by
+        /// `auth::table_create_statements` on 0.3.2, with the table renamed; regenerate after a
+        /// library upgrade with `sqlite3 fresh.sqlite '.schema auth_session'`.
+        sqlite_ddl: &'static str,
+        /// Copied by **name**, never `SELECT *`: a difference in column order between the old table
+        /// and the new one would otherwise shift values quietly into the wrong columns.
+        columns: &'static str,
+        /// A row that cannot satisfy the new key — its owner was deleted before the upgrade, when
+        /// nothing stopped that. It must go first or the copy fails.
+        orphans: &'static str,
+        /// `(column, referenced table)` per foreign key, for the PostgreSQL path.
+        keys: &'static [(&'static str, &'static str)],
+        /// Explicit indexes to recreate: `DROP TABLE` takes them with it, and losing a **unique**
+        /// index would quietly re-permit the duplicate grants it exists to forbid. Indexes SQLite
+        /// creates itself for `PRIMARY KEY` / `UNIQUE` columns come back with the new DDL and are
+        /// not listed here.
+        indexes: &'static [&'static str],
+    }
+
+    const TABLES: [Table; 6] = [
+        Table {
+            name: "auth_session",
+            cascades: 1,
+            sqlite_ddl: r#"CREATE TABLE "auth_session__new" ( "id" varchar NOT NULL PRIMARY KEY, "user_id" integer NOT NULL, "expires_at" bigint NOT NULL, "last_seen_at" bigint NOT NULL, "awaiting_totp" boolean NOT NULL, FOREIGN KEY ("user_id") REFERENCES "auth_user" ("id") ON DELETE CASCADE )"#,
+            columns: r#""id", "user_id", "expires_at", "last_seen_at", "awaiting_totp""#,
+            orphans: "user_id NOT IN (SELECT id FROM auth_user)",
+            keys: &[("user_id", "auth_user")],
+            indexes: &[],
+        },
+        Table {
+            name: "auth_totp_recovery",
+            cascades: 1,
+            sqlite_ddl: r#"CREATE TABLE "auth_totp_recovery__new" ( "id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "user_id" integer NOT NULL, "code_hash" varchar NOT NULL, "created_at" bigint NOT NULL, "used_at" bigint, FOREIGN KEY ("user_id") REFERENCES "auth_user" ("id") ON DELETE CASCADE )"#,
+            columns: r#""id", "user_id", "code_hash", "created_at", "used_at""#,
+            orphans: "user_id NOT IN (SELECT id FROM auth_user)",
+            keys: &[("user_id", "auth_user")],
+            indexes: &[],
+        },
+        Table {
+            name: "auth_user_group",
+            cascades: 2,
+            sqlite_ddl: r#"CREATE TABLE "auth_user_group__new" ( "user_id" integer NOT NULL, "group_id" integer NOT NULL, CONSTRAINT "pk-auth_user_group" PRIMARY KEY ("user_id", "group_id"), FOREIGN KEY ("user_id") REFERENCES "auth_user" ("id") ON DELETE CASCADE, FOREIGN KEY ("group_id") REFERENCES "auth_group" ("id") ON DELETE CASCADE )"#,
+            columns: r#""user_id", "group_id""#,
+            orphans: "user_id NOT IN (SELECT id FROM auth_user) OR group_id NOT IN (SELECT id FROM auth_group)",
+            keys: &[("user_id", "auth_user"), ("group_id", "auth_group")],
+            indexes: &[],
+        },
+        // --- teleddns's own tables, the same defect in our schema ---
+        Table {
+            name: "api_key",
+            cascades: 1,
+            sqlite_ddl: r#"CREATE TABLE "api_key__new" ( "id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "user_id" integer NOT NULL, "name" varchar NOT NULL, "hashed_key" varchar NOT NULL UNIQUE, "prefix" varchar NOT NULL, "expires_at" bigint, "last_used_at" bigint, "disabled" boolean NOT NULL, FOREIGN KEY ("user_id") REFERENCES "auth_user" ("id") ON DELETE CASCADE )"#,
+            columns: r#""id", "user_id", "name", "hashed_key", "prefix", "expires_at", "last_used_at", "disabled""#,
+            orphans: "user_id NOT IN (SELECT id FROM auth_user)",
+            keys: &[("user_id", "auth_user")],
+            indexes: &[],
+        },
+        Table {
+            name: "zone_role",
+            cascades: 2,
+            sqlite_ddl: r#"CREATE TABLE "zone_role__new" ( "id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "group_id" integer NOT NULL, "zone_id" integer NOT NULL, FOREIGN KEY ("group_id") REFERENCES "auth_group" ("id") ON DELETE CASCADE, FOREIGN KEY ("zone_id") REFERENCES "zone" ("id") ON DELETE CASCADE )"#,
+            columns: r#""id", "group_id", "zone_id""#,
+            orphans: "group_id NOT IN (SELECT id FROM auth_group) OR zone_id NOT IN (SELECT id FROM zone)",
+            keys: &[("group_id", "auth_group"), ("zone_id", "zone")],
+            indexes: &[
+                r#"CREATE UNIQUE INDEX "ux_zone_role_group_zone" ON "zone_role" ("group_id", "zone_id")"#,
+            ],
+        },
+        Table {
+            name: "rr_role",
+            cascades: 2,
+            sqlite_ddl: r#"CREATE TABLE "rr_role__new" ( "id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "group_id" integer NOT NULL, "zone_id" integer NOT NULL, "label" varchar NOT NULL, FOREIGN KEY ("group_id") REFERENCES "auth_group" ("id") ON DELETE CASCADE, FOREIGN KEY ("zone_id") REFERENCES "zone" ("id") ON DELETE CASCADE )"#,
+            columns: r#""id", "group_id", "zone_id", "label""#,
+            orphans: "group_id NOT IN (SELECT id FROM auth_group) OR zone_id NOT IN (SELECT id FROM zone)",
+            keys: &[("group_id", "auth_group"), ("zone_id", "zone")],
+            indexes: &[
+                r#"CREATE UNIQUE INDEX "ux_rr_role_group_zone_label" ON "rr_role" ("group_id", "zone_id", "label")"#,
+            ],
+        },
+    ];
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            match m.get_database_backend() {
+                DatabaseBackend::Sqlite => sqlite_up(m).await,
+                DatabaseBackend::Postgres => postgres_up(m).await,
+                // The app builds with sqlx-sqlite + sqlx-postgres only; nothing else can get here.
+                DatabaseBackend::MySql => Ok(()),
+            }
+        }
+
+        /// **Deliberately empty.** Reversing this would put back foreign keys that permit
+        /// credential-shaped rows to outlive their owner, and the orphans the `up` deleted are gone
+        /// either way — a `down` that restored the constraint but not the data would be a worse lie
+        /// than no `down` at all. `m0004` (lower-casing names) is irreversible for the same reason.
+        async fn down(&self, _m: &SchemaManager) -> Result<(), DbErr> {
+            Ok(())
+        }
+    }
+
+    /// How many of `table`'s foreign keys already cascade on delete.
+    async fn cascading(m: &SchemaManager<'_>, table: &str) -> Result<i64, DbErr> {
+        let db = m.get_connection();
+        let sql = match m.get_database_backend() {
+            DatabaseBackend::Sqlite => format!(
+                r#"SELECT count(*) AS n FROM pragma_foreign_key_list('{table}') WHERE "on_delete" = 'CASCADE'"#
+            ),
+            // confdeltype 'c' is ON DELETE CASCADE.
+            _ => format!(
+                "SELECT count(*)::bigint AS n FROM pg_constraint \
+                 WHERE conrelid = '{table}'::regclass AND contype = 'f' AND confdeltype = 'c'"
+            ),
+        };
+        let row = db
+            .query_one(Statement::from_string(m.get_database_backend(), sql))
+            .await?
+            .ok_or_else(|| DbErr::Custom(format!("{table}: could not read its foreign keys")))?;
+        row.try_get("", "n")
+    }
+
+    /// Rows that would violate the new key — counted so the deletion is announced, not silent.
+    async fn orphan_count(m: &SchemaManager<'_>, t: &Table) -> Result<i64, DbErr> {
+        let db = m.get_connection();
+        let sql = format!(
+            r#"SELECT count(*) AS n FROM "{}" WHERE {}"#,
+            t.name, t.orphans
+        );
+        let row = db
+            .query_one(Statement::from_string(m.get_database_backend(), sql))
+            .await?
+            .ok_or_else(|| DbErr::Custom(format!("{}: could not count orphans", t.name)))?;
+        row.try_get::<i64>("", "n")
+    }
+
+    /// Which tables still need the work, skipping any this database already has right.
+    async fn todo(m: &SchemaManager<'_>) -> Result<Vec<&'static Table>, DbErr> {
+        let mut out = Vec::new();
+        for t in TABLES.iter() {
+            if !m.has_table(t.name).await? {
+                continue; // an earlier migration creates them all; belt and braces
+            }
+            if cascading(m, t.name).await? != t.cascades {
+                out.push(t);
+            }
+        }
+        Ok(out)
+    }
+
+    async fn sqlite_up(m: &SchemaManager<'_>) -> Result<(), DbErr> {
+        let work = todo(m).await?;
+        if work.is_empty() {
+            return Ok(()); // a fresh database: m0001_init already built the cascading shape
+        }
+
+        // One string, one `execute_unprepared`, therefore one connection: the pool would happily
+        // hand `BEGIN` and `COMMIT` to different ones. `PRAGMA foreign_keys` is a no-op inside a
+        // transaction, so it sits outside — which only works because sea-orm-migration does not
+        // wrap SQLite migrations in one.
+        let mut sql = String::from("PRAGMA foreign_keys=OFF;\nBEGIN;\n");
+        for t in &work {
+            let n = orphan_count(m, t).await?;
+            if n > 0 {
+                tracing::warn!(
+                    table = t.name,
+                    rows = n,
+                    "m0008: deleting rows whose owner was deleted before the upgrade — they cannot \
+                     satisfy the new foreign key"
+                );
+                sql.push_str(&format!("DELETE FROM \"{}\" WHERE {};\n", t.name, t.orphans));
+            }
+            sql.push_str(&format!("DROP TABLE IF EXISTS \"{}__new\";\n", t.name));
+            sql.push_str(t.sqlite_ddl);
+            sql.push_str(";\n");
+            sql.push_str(&format!(
+                "INSERT INTO \"{0}__new\" ({1}) SELECT {1} FROM \"{0}\";\n",
+                t.name, t.columns
+            ));
+            sql.push_str(&format!("DROP TABLE \"{0}\";\n", t.name));
+            sql.push_str(&format!("ALTER TABLE \"{0}__new\" RENAME TO \"{0}\";\n", t.name));
+            // The DROP took the table's explicit indexes with it. A missing unique index would not
+            // fail anything here — it would quietly start permitting the duplicates it forbids.
+            for idx in t.indexes {
+                sql.push_str(idx);
+                sql.push_str(";\n");
+            }
+        }
+        sql.push_str("COMMIT;\nPRAGMA foreign_keys=ON;\n");
+
+        m.get_connection().execute_unprepared(&sql).await?;
+
+        // Prove it, rather than assume the DDL said what was meant.
+        for t in &work {
+            let got = cascading(m, t.name).await?;
+            if got != t.cascades {
+                return Err(DbErr::Custom(format!(
+                    "{}: rebuilt but has {got} cascading foreign keys, expected {}",
+                    t.name, t.cascades
+                )));
+            }
+            for idx in t.indexes {
+                // `CREATE UNIQUE INDEX "name" ON …` — the name is the second quoted token.
+                let name = idx.split('"').nth(1).unwrap_or_default();
+                if !m.has_index(t.name, name).await? {
+                    return Err(DbErr::Custom(format!(
+                        "{}: index {name} did not survive the rebuild",
+                        t.name
+                    )));
+                }
+            }
+            tracing::info!(table = t.name, cascades = got, "m0008: rebuilt with cascading keys");
+        }
+        Ok(())
+    }
+
+    async fn postgres_up(m: &SchemaManager<'_>) -> Result<(), DbErr> {
+        let work = todo(m).await?;
+        if work.is_empty() {
+            return Ok(());
+        }
+        let db = m.get_connection();
+        let backend = m.get_database_backend();
+        for t in &work {
+            let n = orphan_count(m, t).await?;
+            if n > 0 {
+                tracing::warn!(table = t.name, rows = n, "m0008: deleting pre-upgrade orphans");
+                db.execute_unprepared(&format!("DELETE FROM \"{}\" WHERE {}", t.name, t.orphans))
+                    .await?;
+            }
+            // Drop whatever foreign keys the table has — 0.3.1 gave `auth_user_group` two without
+            // an ON DELETE action and the other two tables none — then add them back cascading.
+            // Dropping by looked-up name rather than a guessed one: the originals are generated.
+            let existing = db
+                .query_all(Statement::from_string(
+                    backend,
+                    format!(
+                        "SELECT conname FROM pg_constraint \
+                         WHERE conrelid = '{}'::regclass AND contype = 'f'",
+                        t.name
+                    ),
+                ))
+                .await?;
+            for row in existing {
+                let name: String = row.try_get("", "conname")?;
+                db.execute_unprepared(&format!(
+                    "ALTER TABLE \"{}\" DROP CONSTRAINT \"{name}\"",
+                    t.name
+                ))
+                .await?;
+            }
+            for (column, target) in t.keys {
+                db.execute_unprepared(&format!(
+                    "ALTER TABLE \"{0}\" ADD CONSTRAINT \"fk-{0}-{column}\" \
+                     FOREIGN KEY (\"{column}\") REFERENCES \"{target}\" (\"id\") ON DELETE CASCADE",
+                    t.name
+                ))
+                .await?;
+            }
+            tracing::info!(table = t.name, "m0008: foreign keys replaced with cascading ones");
+        }
+        Ok(())
     }
 }

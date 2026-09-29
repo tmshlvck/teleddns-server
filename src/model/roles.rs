@@ -19,16 +19,21 @@ pub mod zone_role {
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
     pub enum Relation {
+        // **Cascade both ways.** A grant is meaningless once either end is gone — it names a group
+        // that no longer exists, or a zone that does not. Leaving it would also block the deletion
+        // itself: removing a group or a zone that is named in any grant fails on the constraint.
         #[sea_orm(
             belongs_to = "relativelylight::auth::group::Entity",
             from = "Column::GroupId",
-            to = "relativelylight::auth::group::Column::Id"
+            to = "relativelylight::auth::group::Column::Id",
+            on_delete = "Cascade"
         )]
         Group,
         #[sea_orm(
             belongs_to = "crate::model::zone::Entity",
             from = "Column::ZoneId",
-            to = "crate::model::zone::Column::Id"
+            to = "crate::model::zone::Column::Id",
+            on_delete = "Cascade"
         )]
         Zone,
     }
@@ -65,16 +70,21 @@ pub mod rr_role {
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
     pub enum Relation {
+        // **Cascade both ways.** A grant is meaningless once either end is gone — it names a group
+        // that no longer exists, or a zone that does not. Leaving it would also block the deletion
+        // itself: removing a group or a zone that is named in any grant fails on the constraint.
         #[sea_orm(
             belongs_to = "relativelylight::auth::group::Entity",
             from = "Column::GroupId",
-            to = "relativelylight::auth::group::Column::Id"
+            to = "relativelylight::auth::group::Column::Id",
+            on_delete = "Cascade"
         )]
         Group,
         #[sea_orm(
             belongs_to = "crate::model::zone::Entity",
             from = "Column::ZoneId",
-            to = "crate::model::zone::Column::Id"
+            to = "crate::model::zone::Column::Id",
+            on_delete = "Cascade"
         )]
         Zone,
     }
