@@ -325,11 +325,22 @@ pub async fn admin_save(
     };
     let mut state = ViewState::from_uri(&uri);
     state.entity = Some(entity);
-    // Deletes need no special handling here: they fire no SeaORM hook, but the engine hands every
-    // removed row to the write observers, where `audit` records them and `sync::DeleteSync` bumps
-    // the affected zones' serials and queues a push.
+
+    // Deletes normally need nothing here: the engine hands every removed row to the write
+    // observers, where `audit` records it and `sync::DeleteSync` bumps and enqueues.
+    //
+    // **A zone is the exception.** Its records are removed by the database's own `ON DELETE
+    // CASCADE` (migration `m0009`), so no application code sees them and no event is fired for
+    // them — by the time the observer runs they are gone. A zone deletion that audited only
+    // `zone/7` could not be used to reconstruct what was in it, so the records are read here, while
+    // they still exist, and audited once the delete is confirmed.
+    let records = zone_records_about_to_go(&app, &state, &body).await;
+
     match panel(&app.engine).submit(&headers, ip, &body, &state).await {
-        Ok(Outcome::Done(to)) => Redirect::to(&to).into_response(),
+        Ok(Outcome::Done(to)) => {
+            app.audit.record_cascaded("autocrud", &headers, ip, &records).await;
+            Redirect::to(&to).into_response()
+        }
         Ok(Outcome::Invalid(state)) => match panel(&app.engine).render_for(&headers, &state).await {
             Ok(body) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -341,6 +352,57 @@ pub async fn admin_save(
         Err(e) => e.into_response(),
     }
 }
+
+/// The records a console zone-delete is about to cascade away, read before it happens. Empty for
+/// every other write, including a delete of anything that is not a zone.
+///
+/// The posted body decides which zones, exactly as the library's own delete will read it: `_del` for
+/// the per-row button, `ids` for "delete selected", and for "delete all matching" the view's own
+/// filters. Reconstructing that here is the price of the records being removed by the database
+/// rather than by us — [`crate::audit::snapshot_zone_records`] says why there is no alternative.
+async fn zone_records_about_to_go(
+    app: &AppState,
+    state: &ViewState,
+    body: &Bytes,
+) -> Vec<serde_json::Value> {
+    if state.entity.as_deref() != Some("zone") {
+        return Vec::new();
+    }
+    let posted: Vec<(String, String)> =
+        form_urlencoded::parse(body).map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+    let op = posted.iter().find(|(k, _)| k == "_op").map(|(_, v)| v.as_str());
+    let mut q = state.to_list_query(MAX_ZONES_PER_DELETE);
+    match op {
+        Some("delete_all") => q.all = true,
+        Some("delete_selected") => {
+            q.pk_in = posted.iter().filter(|(k, _)| k == "ids").map(|(_, v)| v.clone()).collect();
+            if q.pk_in.is_empty() {
+                return Vec::new();
+            }
+        }
+        None => match posted.iter().find(|(k, _)| k == "_del") {
+            Some((_, pk)) => q.pk_in = vec![pk.clone()],
+            None => return Vec::new(), // not a delete
+        },
+        Some(_) => return Vec::new(), // create, update, import: nothing is being removed
+    }
+    let Ok(page) = app.engine.list("zone", &q, false).await else {
+        tracing::warn!("could not read the zones a console delete will remove; their records will \
+                        not be enumerated in the audit log");
+        return Vec::new();
+    };
+    let ids: Vec<i32> = page
+        .data
+        .iter()
+        .filter_map(|it| it.row.as_ref()?["id"].as_i64())
+        .map(|n| n as i32)
+        .collect();
+    crate::audit::snapshot_zone_records(&app.db, &ids).await
+}
+
+/// A bound on how many zones one console delete will be resolved across — this reads every record
+/// of every one of them into memory to audit it.
+const MAX_ZONES_PER_DELETE: u64 = 10_000;
 
 /// `POST /tz` — the timezone picker's four lines. Set the cookie, come back to the page it was set
 /// from; every timestamp the server renders after that is in the chosen zone.

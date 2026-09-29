@@ -241,7 +241,13 @@ pub async fn delete(
     let Some(z) = load_zone(&app, id).await else {
         return err(StatusCode::NOT_FOUND, "zone not found");
     };
-    // Delete all RRs of the zone across types, then the zone, then enqueue a removal.
+    // What the deletion is about to destroy, read while it still exists — a zone delete that says
+    // only "zone/7 deleted" cannot be used to reconstruct what was in it, which is the one thing
+    // someone comes to the audit log for. See `audit::snapshot_zone_records`.
+    let records = crate::audit::snapshot_zone_records(&app.db, &[id]).await;
+    // Delete all RRs of the zone across types, then the zone, then enqueue a removal. The schema
+    // cascades too (migration `m0009`), so this is belt and braces — but it is also what gives each
+    // record its own audit row below, which a cascade cannot.
     if let Err(e) = delete_all_rrs(&app, id).await {
         return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}"));
     }
@@ -253,6 +259,7 @@ pub async fn delete(
         .record("api", "delete", format!("zone/{id}"), &who, "bearer",
                 ip, Some(view.clone()), None)
         .await;
+    app.audit.record_cascaded_as("api", &who, "bearer", ip, &records).await;
     Json(view).into_response()
 }
 

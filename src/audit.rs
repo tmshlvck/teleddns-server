@@ -116,6 +116,51 @@ impl Audit {
         .await;
     }
 
+    /// Write one audit row per record that a zone deletion cascaded away, attributed to the session
+    /// that asked for it. Takes the rows [`snapshot_zone_records`] captured beforehand, since they no
+    /// longer exist to be read.
+    pub async fn record_cascaded(
+        &self,
+        source: &str,
+        headers: &axum::http::HeaderMap,
+        ip: IpAddr,
+        records: &[Value],
+    ) {
+        if records.is_empty() {
+            return;
+        }
+        let (uid, uname, auth_type) = self.session_actor(headers).await;
+        let ip = ip.to_string();
+        for r in records {
+            let target = match r.get("id").and_then(Value::as_str) {
+                Some(id) => format!("rr/{id}"),
+                None => "rr".to_string(),
+            };
+            self.insert(source, "delete", target, uid, uname.clone(), auth_type, ip.clone(),
+                        Some(r.clone()), None)
+                .await;
+        }
+    }
+
+    /// The same, for a surface that has already resolved its principal (the native API).
+    pub async fn record_cascaded_as(
+        &self,
+        source: &str,
+        principal: &Principal,
+        auth_type: &str,
+        ip: IpAddr,
+        records: &[Value],
+    ) {
+        for r in records {
+            let target = match r.get("id").and_then(Value::as_str) {
+                Some(id) => format!("rr/{id}"),
+                None => "rr".to_string(),
+            };
+            self.record(source, "delete", target, principal, auth_type, ip, Some(r.clone()), None)
+                .await;
+        }
+    }
+
     /// Record an event with **no request behind it**: an `admin` CLI subcommand, or the first-start
     /// seed. There is no session to resolve and no client to name, so the actor is the operator at the
     /// shell — read from the environment — and the address is the literal `local`.
@@ -226,6 +271,24 @@ impl WriteObserver for Audit {
         )
         .await;
     }
+}
+
+/// Every record of these zones, as the API renders them, captured **before** a delete that will
+/// take them.
+///
+/// A record removed by the database's `ON DELETE CASCADE` (migration `m0009`) is invisible to the
+/// write observer: no application code deletes it, and by the time anything is notified the row is
+/// gone. So a zone deletion that should say *what it destroyed* has to look first — there is no
+/// after-the-fact way to recover it. Both surfaces do (`web::admin_save`, `api::zones::delete`);
+/// the cascade remains what actually removes them.
+pub async fn snapshot_zone_records(db: &DatabaseConnection, zone_ids: &[i32]) -> Vec<Value> {
+    let mut out = Vec::new();
+    for id in zone_ids {
+        if let Ok(views) = crate::api::record_view::collect_views(db, *id, None, None).await {
+            out.extend(views);
+        }
+    }
+    out
 }
 
 /// `entity/pk` for an audited row, or the bare entity when the row carries no usable key. Rendered

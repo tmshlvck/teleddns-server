@@ -244,6 +244,15 @@ password + 2FA), then exercise `/api/...`.
   in `api::zones::delete`, which deletes the records by hand, while the console simply could not.
   **Adding a table that hangs off another? Give it `on_delete = "Cascade"` and say why, or say why
   not.** The default is `NO ACTION`, which reads as a decision and almost never is one.
+- **A cascade is invisible to the audit log, so a zone delete looks first.** Rows the *database*
+  removes fire no `WriteEvent` — no application code deletes them, and by the time an observer runs
+  they are gone. A zone deletion that recorded only `zone/7` could not be used to reconstruct what
+  was in it, which is the one thing someone opens the audit log for. So both surfaces snapshot the
+  records before deleting (`audit::snapshot_zone_records`) and write one row per record afterwards:
+  `web::zone_records_about_to_go` for the console, `api::zones::delete` for the API. This is the one
+  place the app still has to reconstruct what the library's delete will match — unavoidable, because
+  `WriteEvent::before_rows` can only carry rows the engine itself removed. **If you add another
+  cascade, ask what it makes invisible.**
 - **A migration that adds a column must be guarded by `has_column`.** `m0001_init` builds its tables
   from the **live** entity definitions, so the moment a model gains a field, `m0001` starts creating
   it too — a fresh database then has the column before the `ALTER` step runs, and an unguarded
