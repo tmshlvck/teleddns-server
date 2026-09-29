@@ -234,15 +234,16 @@ password + 2FA), then exercise `/api/...`.
   `api::zones::parse_template`. Same shape as the password-policy invariant above: wire one and you
   have built the documented way around the other. Empty list = unrestricted on both, with
   `dns::check::template_name` as the syntactic floor on both.
-- **A dependent row cascades; a zone's records do not (yet).** `api_key.user_id`, and the
-  `group_id` / `zone_id` of both grant tables, are `ON DELETE CASCADE` — declared on the entity
-  (so a fresh database gets them) *and* rebuilt by `m0008` (so an upgraded one does). A key **is**
-  its owner and a grant naming a deleted group or zone grants nothing, and in every case the rows
-  also **blocked** the delete: the `409`-with-no-way-forward that relativelylight 0.3.2 fixed in its
-  own tables was in ours too. **`rr_*.zone_id` is deliberately still `NO ACTION`** — cascading it
-  would make one console click destroy a zone's records silently, where today it refuses and the
-  operator empties the zone first. `api::zones::delete` does delete the records explicitly, so the
-  two surfaces disagree; resolving that is a product decision, not a schema oversight.
+- **Everything that depends on a row cascades from it.** `api_key.user_id`, both grant tables'
+  `group_id` / `zone_id`, and every `rr_*.zone_id` are `ON DELETE CASCADE` — declared on the entity
+  (so a fresh database gets it) *and* rebuilt by `m0008` / `m0009` (so an upgraded one does). A key
+  **is** its owner, a grant naming a deleted group or zone grants nothing, and a record without its
+  zone is unreachable by every read path. In each case the rows also **blocked** the delete, which
+  is the shape of the bug relativelylight 0.3.2 fixed in its own tables: the same `409`-with-no-way-
+  forward was in ours. Deleting a zone now means the same thing on both surfaces — it already did
+  in `api::zones::delete`, which deletes the records by hand, while the console simply could not.
+  **Adding a table that hangs off another? Give it `on_delete = "Cascade"` and say why, or say why
+  not.** The default is `NO ACTION`, which reads as a decision and almost never is one.
 - **A migration that adds a column must be guarded by `has_column`.** `m0001_init` builds its tables
   from the **live** entity definitions, so the moment a model gains a field, `m0001` starts creating
   it too — a fresh database then has the column before the `ALTER` step runs, and an unguarded

@@ -29,10 +29,17 @@ macro_rules! rr_entity {
 
             #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
             pub enum Relation {
+                // **Cascade.** A record without its zone is unreachable by every read path —
+                // the renderer, the API and the console all start from a zone — so deleting the
+                // zone must take them. This is also what `api::zones::delete` has always done by
+                // hand ("Deleting a zone takes every record in it"); before the cascade the
+                // console could not do it at all, because the constraint refused a zone that still
+                // held records. One meaning of "delete a zone", on both surfaces.
                 #[sea_orm(
                     belongs_to = "crate::model::zone::Entity",
                     from = "Column::ZoneId",
-                    to = "crate::model::zone::Column::Id"
+                    to = "crate::model::zone::Column::Id",
+                    on_delete = "Cascade"
                 )]
                 Zone,
             }

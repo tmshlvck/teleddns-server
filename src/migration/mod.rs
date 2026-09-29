@@ -26,6 +26,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0006_audit_ts_index::Migration),
             Box::new(m0007_zone_template::Migration),
             Box::new(m0008_auth_cascades::Migration),
+            Box::new(m0009_rr_zone_cascade::Migration),
         ]
     }
 }
@@ -792,5 +793,190 @@ mod m0008_auth_cascades {
             tracing::info!(table = t.name, "m0008: foreign keys replaced with cascading ones");
         }
         Ok(())
+    }
+}
+
+/// Give every record table's `zone_id` `ON DELETE CASCADE`, so deleting a zone takes its records.
+///
+/// `api::zones::delete` has always done this by hand — "Delete all RRs of the zone across types,
+/// then the zone" — while the console could not delete a zone at all if it still held records: the
+/// constraint refused it, surfacing as a `409`. Two surfaces, two meanings of "delete a zone". The
+/// schema now says what the API already did, and both agree.
+///
+/// Nothing was ever orphaned by the old shape, incidentally — foreign keys *are* enforced at
+/// runtime (sqlx enables them per connection), so the delete was refused rather than allowed to
+/// leave unreachable rows. What changes is that it now succeeds.
+///
+/// **The DDL is generated from the live entities**, not transcribed: fourteen tables with different
+/// rdata columns is fourteen chances to mistype one, and a hand-written copy would drift from what
+/// `m0001_init` builds for a fresh database. Same guard, same rebuild and the same one-connection
+/// reasoning as [`m0008_auth_cascades`], whose notes apply here in full.
+mod m0009_rr_zone_cascade {
+    use crate::model::rr;
+    use sea_orm::{ConnectionTrait, DatabaseBackend, EntityTrait, Iterable, Schema, Statement};
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0009_rr_zone_cascade"
+        }
+    }
+
+    /// A table's name, the `CREATE TABLE "<name>__new"` for its current shape, and its columns —
+    /// all read off the entity, so this cannot disagree with what a fresh install gets.
+    struct Shape {
+        name: String,
+        ddl: String,
+        columns: String,
+    }
+
+    fn shape<E: EntityTrait>(backend: DatabaseBackend, entity: E) -> Shape {
+        let name = entity.table_name().to_string();
+        let mut stmt = Schema::new(backend).create_table_from_entity(entity);
+        stmt.table(Alias::new(format!("{name}__new")));
+        let columns = E::Column::iter()
+            .map(|c| format!("\"{}\"", c.to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Shape { name, ddl: backend.build(&stmt).to_string(), columns }
+    }
+
+    fn shapes(backend: DatabaseBackend) -> Vec<Shape> {
+        vec![
+            shape(backend, rr::a::Entity),
+            shape(backend, rr::aaaa::Entity),
+            shape(backend, rr::ns::Entity),
+            shape(backend, rr::ptr::Entity),
+            shape(backend, rr::cname::Entity),
+            shape(backend, rr::txt::Entity),
+            shape(backend, rr::mx::Entity),
+            shape(backend, rr::srv::Entity),
+            shape(backend, rr::caa::Entity),
+            shape(backend, rr::sshfp::Entity),
+            shape(backend, rr::tlsa::Entity),
+            shape(backend, rr::dnskey::Entity),
+            shape(backend, rr::ds::Entity),
+            shape(backend, rr::naptr::Entity),
+        ]
+    }
+
+    /// Whether this table's `zone_id` already cascades.
+    async fn cascades(m: &SchemaManager<'_>, table: &str) -> Result<bool, DbErr> {
+        let backend = m.get_database_backend();
+        let sql = match backend {
+            DatabaseBackend::Sqlite => format!(
+                r#"SELECT count(*) AS n FROM pragma_foreign_key_list('{table}') WHERE "on_delete" = 'CASCADE'"#
+            ),
+            _ => format!(
+                "SELECT count(*)::bigint AS n FROM pg_constraint \
+                 WHERE conrelid = '{table}'::regclass AND contype = 'f' AND confdeltype = 'c'"
+            ),
+        };
+        let row = m
+            .get_connection()
+            .query_one(Statement::from_string(backend, sql))
+            .await?
+            .ok_or_else(|| DbErr::Custom(format!("{table}: could not read its foreign keys")))?;
+        Ok(row.try_get::<i64>("", "n")? > 0)
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            let backend = m.get_database_backend();
+            let mut work = Vec::new();
+            for s in shapes(backend) {
+                if m.has_table(&s.name).await? && !cascades(m, &s.name).await? {
+                    work.push(s);
+                }
+            }
+            if work.is_empty() {
+                return Ok(()); // fresh database: m0001_init already built the cascading shape
+            }
+
+            match backend {
+                DatabaseBackend::Sqlite => {
+                    // One string, one connection — see m0008. A record whose zone is already gone
+                    // could not exist (the old constraint refused the delete), so unlike m0008 there
+                    // are no pre-existing orphans to clear; the check costs nothing and says so if
+                    // that assumption is ever wrong.
+                    let mut sql = String::from("PRAGMA foreign_keys=OFF;\nBEGIN;\n");
+                    for s in &work {
+                        let orphans = format!(
+                            "DELETE FROM \"{}\" WHERE zone_id NOT IN (SELECT id FROM zone);\n",
+                            s.name
+                        );
+                        sql.push_str(&orphans);
+                        sql.push_str(&format!("DROP TABLE IF EXISTS \"{}__new\";\n", s.name));
+                        sql.push_str(&s.ddl);
+                        sql.push_str(";\n");
+                        sql.push_str(&format!(
+                            "INSERT INTO \"{0}__new\" ({1}) SELECT {1} FROM \"{0}\";\n",
+                            s.name, s.columns
+                        ));
+                        sql.push_str(&format!("DROP TABLE \"{0}\";\n", s.name));
+                        sql.push_str(&format!(
+                            "ALTER TABLE \"{0}__new\" RENAME TO \"{0}\";\n",
+                            s.name
+                        ));
+                    }
+                    sql.push_str("COMMIT;\nPRAGMA foreign_keys=ON;\n");
+                    m.get_connection().execute_unprepared(&sql).await?;
+                }
+                _ => {
+                    for s in &work {
+                        let db = m.get_connection();
+                        db.execute_unprepared(&format!(
+                            "DELETE FROM \"{}\" WHERE zone_id NOT IN (SELECT id FROM zone)",
+                            s.name
+                        ))
+                        .await?;
+                        let existing = db
+                            .query_all(Statement::from_string(
+                                backend,
+                                format!(
+                                    "SELECT conname FROM pg_constraint \
+                                     WHERE conrelid = '{}'::regclass AND contype = 'f'",
+                                    s.name
+                                ),
+                            ))
+                            .await?;
+                        for row in existing {
+                            let name: String = row.try_get("", "conname")?;
+                            db.execute_unprepared(&format!(
+                                "ALTER TABLE \"{}\" DROP CONSTRAINT \"{name}\"",
+                                s.name
+                            ))
+                            .await?;
+                        }
+                        db.execute_unprepared(&format!(
+                            "ALTER TABLE \"{0}\" ADD CONSTRAINT \"fk-{0}-zone_id\" \
+                             FOREIGN KEY (\"zone_id\") REFERENCES \"zone\" (\"id\") ON DELETE CASCADE",
+                            s.name
+                        ))
+                        .await?;
+                    }
+                }
+            }
+
+            for s in &work {
+                if !cascades(m, &s.name).await? {
+                    return Err(DbErr::Custom(format!(
+                        "{}: rebuilt but its zone_id still does not cascade",
+                        s.name
+                    )));
+                }
+            }
+            tracing::info!(tables = work.len(), "m0009: record tables now cascade from their zone");
+            Ok(())
+        }
+
+        /// Empty for the same reason as `m0008`: putting the constraint back would restore a state
+        /// in which deleting a zone fails, and nothing here is data that could be restored anyway.
+        async fn down(&self, _m: &SchemaManager) -> Result<(), DbErr> {
+            Ok(())
+        }
     }
 }
