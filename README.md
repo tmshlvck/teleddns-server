@@ -51,7 +51,7 @@ backend: "log"                        # "log" (default, no-op: logs the rendered
 # backend: "knot"                     # drive a co-located Knot master (see Production deployment)
 # knot_zone_dir: "/var/lib/knot/zones"
 # knotc_path: "/usr/sbin/knotc"
-# default_knot_template: "master"           # renamed from `knot_template` in 0.5
+# default_knot_template: "master"           # renamed from `knot_template` in 0.4.4
 # knot_templates: ["master", "dnssec-signing"]   # allow-list; empty = unrestricted
 ```
 

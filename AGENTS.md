@@ -346,25 +346,26 @@ password + 2FA), then exercise `/api/...`.
   (built on the primitives) and wire it on every surface: the `reg_rr!` macro in `web/entities.rs`, the
   `write_record` arm in `api/record_view.rs`, and the OpenAPI body doc in `api/openapi.rs`.
 
-## Next release
+## Releasing
 
-The version in `Cargo.toml` is deliberately **not** bumped as features land; it is
-set at release time in its own commit (see `Release 0.4.1`). What is queued:
+The version in `Cargo.toml` is deliberately **not** bumped as features land; it is set at release
+time in its own commit (`Release 0.4.4`), together with the [`CHANGELOG.md`](CHANGELOG.md) entry,
+and tagged `vX.Y.Z`.
 
-- **`0.5.0`, and it must be a minor bump**: `knot_template` was renamed to
-  `default_knot_template`, and `Config` is `deny_unknown_fields`, so an existing
-  config file is a **hard startup error** until the operator edits it. That is the
-  one genuine break in the queue — the relativelylight 0.3 / MPA work before it
-  broke neither config nor database (only the console moved from `/` to
-  `/admin/{entity}`, and the undocumented `/admin/api` CRUD wire was removed).
-- Also worth saying out loud in the release notes: **the upgrade is one-way.** Once
-  a migration has run, the previous binary refuses to start — `sea-orm-migration`
-  errors with "Migration file of version '…' is missing, this migration has been
-  applied but its file is missing". Rolling back means deleting that
-  `seaql_migrations` row (and undoing whatever it did) by hand. True of every
-  migration this project has ever shipped; it has just never been written down.
+**The number does not encode compatibility.** Nothing depends on this crate — it is an application,
+never published — so semver's mechanical meaning does not apply and a breaking change does not have
+to bump the minor. Versions simply increment. That puts the whole weight on the changelog, so two
+things every release note must carry, because neither is visible from a version number:
 
-There is no `CHANGELOG.md`; the release commit message is the changelog.
+- **Any config key that changed.** `Config` is `deny_unknown_fields`, so a renamed key is a hard
+  startup error — deliberately, and useless if the operator is not told which one.
+- **That the upgrade is one-way.** Once a migration has run, the previous binary refuses to start
+  (`sea-orm-migration`: "Migration file of version '…' is missing"). Rolling back means deleting
+  that `seaql_migrations` row by hand and undoing what it did.
+
+**Not published to crates.io.** This is an application, not a library — `cargo publish` would be a
+mistake rather than a step. Nothing enforces that; `publish = false` in `Cargo.toml` would, if it is
+ever worth the line.
 
 ## Conventions
 

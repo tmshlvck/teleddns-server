@@ -158,7 +158,7 @@ backend: "log"
 # The template a zone is declared under when it names none of its own. A zone's `template`
 # field (console / native API) overrides it — that is how DNSSEC signing is turned on for one
 # zone without turning it on for the rest.
-# RENAMED in 0.5: this was `knot_template`. `deny_unknown_fields` means the old key is now a
+# RENAMED in 0.4.4: this was `knot_template`. `deny_unknown_fields` means the old key is now a
 # hard startup error rather than a silently ignored one.
 # default_knot_template: "master"
 
