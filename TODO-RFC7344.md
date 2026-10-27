@@ -25,6 +25,9 @@ Building this does **not** retroactively help the `.eu`/webglobe situation — f
 that again here since it's the reason this plan exists, so it doesn't get lost:
 this only ever acts where teleddns-server itself is the parent.
 
+The push alternative — the child sends its DS here instead of being polled for it
+(Knot's `ds-push`) — and why it doesn't work against this server today, is §11.
+
 ## 1. New capability: outbound DNS queries + DNSSEC validation
 
 Nothing in this codebase today queries a third party's DNS server — everything is
@@ -86,6 +89,29 @@ columns (`status`, `last_seen_fingerprint`, `first_seen_at`, `last_checked_at`,
 an operator reads them, doesn't edit them, same treatment as `api_key.last_used_at`
 today.
 
+**`zone_id` is `ON DELETE CASCADE`**, declared on the entity (`on_delete = "Cascade"`)
+so the table is born with it — the `AGENTS.md` rule for anything that hangs off
+another row. A watch on a zone that no longer exists can watch nothing, and a
+`NO ACTION` FK would put back exactly the `409`-with-no-way-forward that `m0008` /
+`m0009` removed: the zone would become undeletable until someone found and deleted
+its watches first.
+
+What the cascade makes invisible, per the same rule: a zone delete would remove its
+watches with no audit row — the record that *automation was switched off* for those
+delegations would be gone along with the zone. Both zone-delete paths already
+snapshot the zone's records first (`audit::snapshot_zone_records`, called from
+`web::zone_records_about_to_go` and `api::zones::delete`); the `cds_watch` rows go
+into that same snapshot so each one gets its own row afterwards. Two related
+non-cascades, deliberately:
+
+- **Deleting a watch leaves its DS rows alone.** They are ordinary `rr_ds` records
+  once written; removing them is a security-lowering act and stays a human one (or
+  §4.5's opt-in delete signal), never a side effect of un-watching.
+- **Removing the delegation's NS rows does not delete the watch.** There is no FK
+  from a watch to `rr_ns` (an NS RRset isn't a row, §2 above), so the worker treats
+  "no NS at this label" as `status = error` with a `last_error` saying so — visible
+  on the dashboard, rather than a watch that silently disappears.
+
 ## 3. Config
 
 - `cds_scan_enabled: bool` (default `false`) — master switch. No queries happen at
@@ -114,7 +140,7 @@ On each due tick for a `mode ∈ {rollover, both}` watch with an existing DS:
    this rides the *existing* write path exactly (`ActiveModel::insert/update` →
    `after_save` → `sync::on_rr_saved` → serial bump + push enqueue), so nothing
    about the sync pipeline needs to change. Run the new DS values through the
-   *same* `dns::check::{u16,octet,hex}` predicates `web.rs`'s `reg_rr!` already
+   *same* `dns::check::{u16,octet,hex}` predicates `web/entities.rs`'s `reg_rr!` already
    uses for the DS entity — defense in depth even though the values came from a
    validated chain.
 5. **The RFC 7344 "delete" signal** (a CDS with algorithm/digest-type 0, or the
@@ -194,8 +220,10 @@ enabled. Loop shape:
 - This plan's migration (`cds_watch` table) is the next free number. **Read
   `Migrator::migrations()` for it rather than trusting this line** — a shipped
   migration is never renumbered, so an unshipped plan's number goes stale every
-  time anything else lands. At the time of writing the last applied step is
-  `m0007_zone_template`, so this is `m0008_cds_watch`.
+  time anything else lands. At the time of writing (after 0.4.4) the last shipped
+  step is `m0009_rr_zone_cascade`, so this is `m0010_cds_watch`. (This line said
+  `m0008` until `m0008_auth_cascades` and `m0009_rr_zone_cascade` shipped — which
+  is the point.)
 - Whatever number it gets, the step **must be guarded by `has_column` /
   `has_table`**: `m0001_init` builds its tables from the *live* entity definitions,
   so a fresh database already has the new table or column by the time the ALTER
@@ -223,7 +251,9 @@ enabled. Loop shape:
 - [ ] `hickory-resolver`/`hickory-client` dependency added, feature-scoped if
       possible to keep default builds lean.
 - [ ] `src/cds.rs`: query + validation logic (Phase 1 first).
-- [ ] Migration `m0008_cds_watch` + `model/cds_watch.rs`.
+- [ ] Migration `m0010_cds_watch` (re-check the number) + `model/cds_watch.rs`, with
+      `zone_id` `ON DELETE CASCADE` and the watches added to the zone-delete audit
+      snapshot (§2).
 - [ ] Config: `cds_scan_enabled`, `cds_check_interval`, `cds_bootstrap_grace_period`
       (default `3d`), `cds_query_timeout`, `cds_max_concurrent`.
 - [ ] `cds_watch` registered in `web::build_engine` (Superadmin-gated).
@@ -239,3 +269,68 @@ enabled. Loop shape:
       design-invariant note alongside "the library schedules nothing; the worker
       does" — now there are two workers, worth being explicit about which does
       what.
+
+## 11. Alternative: the child pushes (Knot `ds-push`) — not usable here yet
+
+Newer Knot releases (3.3+, as far as we know — **check the option's name and section
+against the documentation for the Knot version actually deployed**; it could not be
+confirmed against the docs available when this was written) can *push* the DS
+instead of waiting to be polled: during a KSK submission, the child's Knot sends a
+TSIG-signed RFC 2136 UPDATE replacing the DS RRset at the parent's primary. For a
+child we operate ourselves, that is strictly better than this plan's polling:
+authenticated by a key, so there is no TOFU window for bootstrap (§5), and no
+third-party queries, no poll interval and no stability heuristics at all.
+
+**Why it doesn't work against teleddns-server as the parent today:**
+
+- teleddns-server does not speak RFC 2136. Its write surfaces are DDNS, the native
+  API and the CF facade — all HTTP.
+- Pointing the push at the **Knot** primary instead is worse than not working. The
+  DB is the source of truth and the zone file Knot serves is rendered from it, so
+  the pushed DS lives only in Knot until the next teleddns write to that zone, then
+  quietly disappears. The reconcile pass won't flag it either: it treats
+  `knot serial ≥ db serial` as in sync (`backend::worker`, because signing bumps
+  the serial too), so the divergence is invisible until it's lost. Meanwhile the
+  child's Knot has already seen its DS at the parent and may have retired the old
+  key.
+
+**Ways around it, without making Knot authoritative:**
+
+1. **A narrow RFC 2136 listener in teleddns-server** — UPDATE only, TSIG only, DS
+   only, at a name that is a delegation (an NS RRset) in a zone we manage. The TSIG
+   key name maps to a user account the way a bearer token does (`principal.rs`: a
+   credential is its owner, nothing more); the write is authorized by a new
+   delegation-scoped predicate beside `zone_manager`/`rr_manager`, goes through
+   `record_view`'s write path (serial bump + push, nothing new in `sync`), and
+   audits with its own `source`. This makes it a **fourth** write surface, so the
+   `AGENTS.md` invariants that say "three" need updating with it. TSIG keys need
+   storing and minting like API keys, and the listener binds its own DNS socket —
+   **never port 53**, which is Knot's, serving the parent zone to the world. It
+   doesn't need to be: `ds-push` names a `remote` on the *child's* Knot, and a
+   remote is any `address@port`. The child operator points it at, say,
+   `teleddns.example.net@5353` (or a dedicated address); the public NS stays Knot
+   on 53. The loop still closes through Knot: we write the DS and push the zone,
+   Knot serves it, and the child's own submission check finds it on the parent's
+   public servers and retires the old key. Knot needs to tell us nothing, and
+   nothing is polled.
+2. **Both, side by side.** Push for children we control (no TOFU), this plan's
+   polling for children we don't (they won't have our TSIG key). The DS write path
+   is the same, so the two share everything below "where did the DS come from".
+
+**Making Knot authoritative instead** — reading zone contents and DNSSEC state back
+from Knot rather than rendering into it — would make `ds-push` work out of the box,
+but it reverses the core design, not just this feature: the console, the three
+APIs, the audit log, per-zone authz, the sync journal and the `log` backend all
+assume the DB holds the truth and Knot holds a copy. A hybrid (Knot accepts UPDATEs
+for parent zones, teleddns imports them back) has two writers to one zone and a
+conflict to resolve on every edit. Not recommended; option 1 gets the same result
+by adding one surface.
+
+**Not planned for now: the child hosted on the same Knot.** When both the parent and
+the child zone are ours — the child under a `dnssec-signing` template on the same
+Knot — neither push nor third-party polling is needed: the child's CDS/CDNSKEY sit
+on our own server, readable locally (a query to localhost, or `knotc`), and that
+source is trusted, so even bootstrap would have no TOFU window. It is the simplest
+of the three cases and would close the loop for nested zones we operate end to end.
+Decided against for now — recorded so it isn't rediscovered as a new idea, and so
+whoever picks it up knows it can reuse §4's DS write path unchanged.
