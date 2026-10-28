@@ -199,6 +199,19 @@ impl Audit {
         }
         (None, "-".into(), "none")
     }
+
+    /// The same triple for an actor the emitter already authenticated and names (`WriteEvent::actor`).
+    /// The id is looked up so the row links to the account like a session-resolved one does.
+    async fn named_actor(&self, username: &str) -> (Option<i32>, String, &'static str) {
+        let uid = relativelylight::auth::user::Entity::find()
+            .filter(relativelylight::auth::user::Column::Username.eq(username))
+            .one(&self.db)
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.id);
+        (uid, username.to_string(), "session")
+    }
 }
 
 /// Name the operator running a CLI subcommand. `SUDO_USER` first — under `sudo` the interesting name
@@ -226,7 +239,13 @@ fn op_str(op: Operation) -> &'static str {
 #[async_trait::async_trait]
 impl WriteObserver for Audit {
     async fn on_write(&self, ev: &WriteEvent<'_>) {
-        let (uid, uname, auth_type) = self.session_actor(ev.headers).await;
+        let (uid, uname, auth_type) = match ev.actor {
+            // Every `auth` event names its caller (relativelylight 0.4). Prefer that to the cookie: a
+            // self-service password change rotates the session before the event fires, so the cookie
+            // resolves to nobody and the row used to say `-`.
+            Some(name) => self.named_actor(name).await,
+            None => self.session_actor(ev.headers).await,
+        };
         let ip = ev.client_ip.to_string(); // already resolved at the edge — see the module docs
         // The event's `source` is stored verbatim: the library names its own emitters, and translating
         // its vocabulary here would only hide which version wrote a row. `crud` → `autocrud` is

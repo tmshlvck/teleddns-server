@@ -837,13 +837,13 @@ repeated here.
 
 ### 11.1 Stack
 
-Rust 2021 / `tokio`; `axum` 0.8; `SeaORM` 1.1 (`sqlx-sqlite` + `sqlx-postgres`,
+Rust 2021 / `tokio`; `axum` 0.8; `SeaORM` 2.0 (`sqlx-sqlite` + `sqlx-postgres`,
 `runtime-tokio-rustls`); `askama` 0.13 for the page shell and the dashboard;
 `serde_json` for the hand-written OpenAPI document; `serde`/`serde_yaml` + `clap`
 for layered config; `prometheus` for metrics; `tracing` for structured logs.
 Passwords are argon2id (via the library); API keys are SHA-256-hashed. Built on
 [`relativelylight`](https://github.com/tmshlvck/relativelylight) — a crates.io
-dependency at `version = "0.3"` (one compatible range for a `0.x` crate; `Cargo.lock`
+dependency at `version = "0.4"` (one compatible range for a `0.x` crate; `Cargo.lock`
 pins the exact version), features
 `crud, axum, ui, csv, auth, sso, validate-base64`. **No front-end dependency
 beyond Bootstrap 5's stylesheet:** the console is server-rendered HTML with no

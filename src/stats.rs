@@ -133,7 +133,15 @@ async fn count_by_type(app: &AppState) -> Vec<(&'static str, HashMap<i32, u64>)>
             let rows: Vec<(i32, i64)> = <$ent>::find()
                 .select_only()
                 .column($col)
-                .column_as(sea_orm::prelude::Expr::val(1).count(), "n")
+                // `ExprTrait` scoped to this one expression: it is implemented for every
+                // `Into<Expr>`, so in function scope it hijacks the `i64::max` below.
+                .column_as(
+                    {
+                        use sea_orm::sea_query::ExprTrait;
+                        sea_orm::prelude::Expr::val(1).count()
+                    },
+                    "n",
+                )
                 .group_by($col)
                 .into_tuple()
                 .all(&app.db)
@@ -268,13 +276,18 @@ pub async fn activity_series(app: &AppState) -> (Vec<(&'static str, Vec<u64>)>, 
         .map(|name| (name, vec![0u64; CHART_POINTS]))
         .collect();
 
+    // `ExprTrait` (for `.div`) stays inside this closure: in function scope it hijacks `i64::max`.
+    let bucket = || {
+        use sea_orm::sea_query::ExprTrait;
+        Expr::col(audit::Column::Ts).div(CHART_BUCKET)
+    };
     let rows: Vec<(i64, String, i64)> = audit::Entity::find()
         .select_only()
-        .column_as(Expr::col(audit::Column::Ts).div(CHART_BUCKET), "bucket")
+        .column_as(bucket(), "bucket")
         .column(audit::Column::Source)
         .column_as(audit::Column::Id.count(), "n")
         .filter(audit::Column::Ts.gte(oldest * CHART_BUCKET))
-        .group_by(Expr::col(audit::Column::Ts).div(CHART_BUCKET))
+        .group_by(bucket())
         .group_by(audit::Column::Source)
         .into_tuple()
         .all(&app.db)

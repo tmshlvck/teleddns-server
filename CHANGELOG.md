@@ -8,6 +8,34 @@ major/minor/patch split carries no mechanical meaning and is not used to encode 
 Versions increment; **anything an operator must do is called out under "Upgrading" in the entry**,
 whatever the number does. Read that section, not the digits.
 
+## Unreleased
+
+relativelylight 0.4.0 and SeaORM 2.0 underneath; the console and the APIs behave as before.
+
+### Upgrading — nothing required, and rollback still works
+
+No config key changed and **no migration was added**, so this is the first upgrade in a while that
+is not one-way: the 0.4.4 binary starts on a database this version has run on (verified on SQLite).
+On SQLite a *freshly created* database declares its 64-bit columns `integer` rather than `bigint`;
+that is the same storage, and old and new databases are interchangeable.
+
+Two behaviour changes come from the library, both in the console's CSV import:
+
+- **Text cells are taken as written, no longer trimmed.** Every DNS field is validated, so a cell
+  with a stray space (`" 192.0.2.1"`) is now rejected with an error beside the row instead of being
+  quietly cleaned up. Trim the file.
+- **A blank cell in a nullable number column clears it** (was: left unchanged) — the same thing a
+  blank form input does.
+
+### Changed
+
+- **A self-service password change is audited with its actor.** The change rotates the session
+  before the library reports it, so the row used to name `-`; it now names the user.
+- **The timezone picker's redirect also refuses `/\…`**, which some browsers treat as `//…` — the
+  route now uses the library's `TzPicker::submitted` instead of its own check.
+- A relation field (the zone on a record form) is a `<select>` up to 50 options, and past that still
+  a `<select>` — the typed-id text box a large zone list used to fall back to is gone.
+
 ## [0.4.4] — 2026-09-29
 
 The console is rewritten as a plain server-rendered multi-page app, DNSSEC signing becomes a

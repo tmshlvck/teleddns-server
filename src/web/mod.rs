@@ -407,13 +407,10 @@ const MAX_ZONES_PER_DELETE: u64 = 10_000;
 /// `POST /tz` — the timezone picker's four lines. Set the cookie, come back to the page it was set
 /// from; every timestamp the server renders after that is in the chosen zone.
 pub async fn set_tz(axum::Form(f): axum::Form<HashMap<String, String>>) -> Response {
-    let tz = Tz::named(f.get("tz").map(String::as_str).unwrap_or("UTC"));
-    // Only ever back to a path on this site — `back` arrives in a form body, so it is caller input.
-    let back = match f.get("back") {
-        Some(b) if b.starts_with('/') && !b.starts_with("//") => b.clone(),
-        _ => "/".into(),
-    };
-    ([(header::SET_COOKIE, tz.cookie())], Redirect::to(&back)).into_response()
+    // `back` arrives in a form body, so it is caller input: `submitted` follows it only when it is a
+    // path on this site (not `//…` or `/\…`) and otherwise returns to `/`.
+    let (cookie, back) = TzPicker::submitted(f.get("tz"), f.get("back"));
+    ([(header::SET_COOKIE, cookie)], Redirect::to(&back)).into_response()
 }
 
 // ===================== API documentation =====================

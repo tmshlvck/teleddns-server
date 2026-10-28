@@ -11,7 +11,7 @@ deviates from the dyn API) is [`DYNDNS2.md`](DYNDNS2.md) — keep it in step wit
 
 A Rust rewrite of a co-located DNS + Dynamic-DNS control-plane for a Knot DNS
 master, built on the [`relativelylight`](https://github.com/tmshlvck/relativelylight)
-back-office library (a **crates.io dependency**, `version = "0.3"` in `Cargo.toml`). The library
+back-office library (a **crates.io dependency**, `version = "0.4"` in `Cargo.toml`). The library
 provides the SeaORM CRUD engine + metadata, the server-rendered admin UI
 (`crud::ui::Admin` — plain HTML fragments, no JavaScript framework), and `auth`
 (users/groups/sessions/login/profile, argon2id, TOTP, the `Authz` gate). Everything
@@ -289,10 +289,24 @@ password + 2FA), then exercise `/api/...`.
   inputs and the CSV export alike, so an export matches what is on screen. The picker only appears
   on pages rendered from a request: `login_shell` / `profile_shell` are handed a fragment and an
   identity, never the request, so those two pages are UTC.
-- `relativelylight` is a **crates.io dependency** (`version = "0.3"`), which for a `0.x` crate is one
+- `relativelylight` is a **crates.io dependency** (`version = "0.4"`), which for a `0.x` crate is one
   compatible range: a patch release is picked up, a behaviour break bumps the minor and is not, and
-  `Cargo.lock` pins the exact version regardless. We are on **0.3.0**, which re-homed the web UI in
-  Rust: `Crud::new(db)` lost its mount path, `render()` became `async render_for(&headers, &state)`,
+  `Cargo.lock` pins the exact version regardless. We are on **0.4.0**, which moved to **SeaORM 2.0** —
+  our entities and `DatabaseConnection` go straight into `MetaModel::new` / `Crud::new` / `Auth::new`,
+  so `sea-orm` and `sea-orm-migration` in `Cargo.toml` must be the same major as the library's. What
+  2.0 changed in our own code: a hand-built `Statement` goes through `query_one_raw` /
+  `query_all_raw` / `execute_raw`; `DatabaseBackend` is `#[non_exhaustive]`; and `Expr`'s
+  `.add` / `.div` / `.count` moved to `sea_query::ExprTrait`. **Import `ExprTrait` in the narrowest
+  scope that needs it** — a block or a closure, never a module or a function: it is implemented for
+  every `Into<Expr>`, so in scope it captures `i64::max` and `Value::is_null` (`stats.rs` hit exactly
+  this). On SQLite, SeaORM 2 declares `i64` columns `integer` where 1.1 wrote `bigint` — the same
+  64-bit affinity, so databases created by either are interchangeable. Of 0.4's own changes we took
+  `TzPicker::submitted` (the `/tz` handler's body) and `WriteEvent::actor` (`audit.rs` — a
+  self-service password change rotates the session before its event fires, so the cookie names
+  nobody). We deliberately do **not** serve 0.4's relation `Picker`: it needs `crud::ui::JS` in the
+  shell, and the console ships no script (see the MPA invariant), so a relation past
+  `picker_threshold` (50) stays a `<select>` of every row — fine for a zone list.
+  0.3.0 before it re-homed the web UI in Rust: `Crud::new(db)` lost its mount path, `render()` became `async render_for(&headers, &state)`,
   writes need a `post` route calling `submit(&headers, ip, &body, &state)` (raw `Bytes` — a CSV
   import is a real file upload), `Table::format` takes a Rust closure instead of a string of
   JavaScript, `Auth::profile_extra` is handed a `ProfileSection` (identity **and** this request's
@@ -303,7 +317,7 @@ password + 2FA), then exercise `/api/...`.
   `resolve_real_ip` layer, `set_password` as a reset plus `reset_admin_access` for break-glass, an
   empty input on a *nullable* column stored as `NULL`, `NOT NULL` columns enforced as `required` (a
   hook-stamped column must be `read_only`), and `#[non_exhaustive]` public types (build them from
-  `Default` + setters, never a struct literal). Moving to `0.4` will be a read of the library's
+  `Default` + setters, never a struct literal). Moving to `0.5` will be a read of the library's
   `CHANGELOG.md` §Upgrading and `docs/MIGRATION-*.md`, not a version bump.
 - **Audit** is written by `audit.rs`, and **every path that writes or deletes app state goes through
   it** — there are exactly three ways in: the `WriteObserver` relativelylight fires for the admin
@@ -369,7 +383,7 @@ ever worth the line.
 
 ## Conventions
 
-SeaORM 1.1, axum 0.8, askama 0.13 (matching the library). `utoipa` is gone with the
+SeaORM 2.0, axum 0.8, askama 0.13 (matching the library). `utoipa` is gone with the
 OpenAPI generator — the document is `serde_json` in `api/openapi.rs`. Match the
 surrounding terse, well-commented style; keep doc comments current (they carry
 the contract). Errors on the API are `{ "error": … }` with the right status

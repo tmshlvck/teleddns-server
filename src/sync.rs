@@ -21,6 +21,7 @@ pub async fn on_rr_saved<C: ConnectionTrait>(db: &C, zone_id: i32) -> Result<(),
 
 /// Bump a zone's SOA serial by one (set-based, so it does not re-trigger the zone hook).
 pub async fn bump_serial<C: ConnectionTrait>(db: &C, zone_id: i32) -> Result<(), DbErr> {
+    use sea_orm::sea_query::ExprTrait; // `.add` — scoped, see relativelylight MIGRATION-0.4 §2
     zone::Entity::update_many()
         .col_expr(zone::Column::Serial, Expr::col(zone::Column::Serial).add(1))
         .filter(zone::Column::Id.eq(zone_id))

@@ -278,7 +278,7 @@ mod m0004_lowercase_names {
             for (table, column) in [("zone", "origin"), ("rr_role", "label")] {
                 let sql = format!("SELECT count(*) AS n FROM {table} WHERE {column} <> lower({column})");
                 let left = db
-                    .query_one(sea_orm::Statement::from_string(db.get_database_backend(), sql))
+                    .query_one_raw(sea_orm::Statement::from_string(db.get_database_backend(), sql))
                     .await?
                     .map(|r| r.try_get::<i64>("", "n").unwrap_or(0))
                     .unwrap_or(0);
@@ -619,8 +619,9 @@ mod m0008_auth_cascades {
             match m.get_database_backend() {
                 DatabaseBackend::Sqlite => sqlite_up(m).await,
                 DatabaseBackend::Postgres => postgres_up(m).await,
-                // The app builds with sqlx-sqlite + sqlx-postgres only; nothing else can get here.
-                DatabaseBackend::MySql => Ok(()),
+                // The app builds with sqlx-sqlite + sqlx-postgres only; nothing else can get here
+                // (and SeaORM 2 marks the enum `#[non_exhaustive]`, so this arm is also the MySQL one).
+                _ => Ok(()),
             }
         }
 
@@ -647,7 +648,7 @@ mod m0008_auth_cascades {
             ),
         };
         let row = db
-            .query_one(Statement::from_string(m.get_database_backend(), sql))
+            .query_one_raw(Statement::from_string(m.get_database_backend(), sql))
             .await?
             .ok_or_else(|| DbErr::Custom(format!("{table}: could not read its foreign keys")))?;
         row.try_get("", "n")
@@ -661,7 +662,7 @@ mod m0008_auth_cascades {
             t.name, t.orphans
         );
         let row = db
-            .query_one(Statement::from_string(m.get_database_backend(), sql))
+            .query_one_raw(Statement::from_string(m.get_database_backend(), sql))
             .await?
             .ok_or_else(|| DbErr::Custom(format!("{}: could not count orphans", t.name)))?;
         row.try_get::<i64>("", "n")
@@ -765,7 +766,7 @@ mod m0008_auth_cascades {
             // an ON DELETE action and the other two tables none — then add them back cascading.
             // Dropping by looked-up name rather than a guessed one: the originals are generated.
             let existing = db
-                .query_all(Statement::from_string(
+                .query_all_raw(Statement::from_string(
                     backend,
                     format!(
                         "SELECT conname FROM pg_constraint \
@@ -876,7 +877,7 @@ mod m0009_rr_zone_cascade {
         };
         let row = m
             .get_connection()
-            .query_one(Statement::from_string(backend, sql))
+            .query_one_raw(Statement::from_string(backend, sql))
             .await?
             .ok_or_else(|| DbErr::Custom(format!("{table}: could not read its foreign keys")))?;
         Ok(row.try_get::<i64>("", "n")? > 0)
@@ -934,7 +935,7 @@ mod m0009_rr_zone_cascade {
                         ))
                         .await?;
                         let existing = db
-                            .query_all(Statement::from_string(
+                            .query_all_raw(Statement::from_string(
                                 backend,
                                 format!(
                                     "SELECT conname FROM pg_constraint \
