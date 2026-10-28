@@ -299,8 +299,10 @@ password + 2FA), then exercise `/api/...`.
   `.add` / `.div` / `.count` moved to `sea_query::ExprTrait`. **Import `ExprTrait` in the narrowest
   scope that needs it** — a block or a closure, never a module or a function: it is implemented for
   every `Into<Expr>`, so in scope it captures `i64::max` and `Value::is_null` (`stats.rs` hit exactly
-  this). On SQLite, SeaORM 2 declares `i64` columns `integer` where 1.1 wrote `bigint` — the same
-  64-bit affinity, so databases created by either are interchangeable. Of 0.4's own changes we took
+  this). Tables `m0001` creates come out slightly different under 2.0 — on SQLite `i64` columns are
+  `integer` where 1.1 wrote `bigint` (the same 64-bit affinity), on PostgreSQL `id` is an identity
+  column where 1.1 made it `serial` — so a fresh database and an upgraded one differ in DDL but not
+  in behaviour. Don't "fix" either toward the other. Of 0.4's own changes we took
   `TzPicker::submitted` (the `/tz` handler's body) and `WriteEvent::actor` (`audit.rs` — a
   self-service password change rotates the session before its event fires, so the cookie names
   nobody). We deliberately do **not** serve 0.4's relation `Picker`: it needs `crud::ui::JS` in the
