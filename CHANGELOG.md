@@ -8,7 +8,7 @@ major/minor/patch split carries no mechanical meaning and is not used to encode 
 Versions increment; **anything an operator must do is called out under "Upgrading" in the entry**,
 whatever the number does. Read that section, not the digits.
 
-## Unreleased
+## [0.4.5] — 2026-10-29
 
 relativelylight 0.4.0 and SeaORM 2.0 underneath; the console and the APIs behave as before.
 
