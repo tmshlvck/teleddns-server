@@ -8,6 +8,14 @@ major/minor/patch split carries no mechanical meaning and is not used to encode 
 Versions increment; **anything an operator must do is called out under "Upgrading" in the entry**,
 whatever the number does. Read that section, not the digits.
 
+## Unreleased
+
+### Changed
+
+- **Build:** `sea-bae` 0.2.2 (via SeaORM's macros) no longer pulls in `proc-macro-error2`, which
+  re-exported the compiler's private `proc_macro` crate and drew a future-incompatibility warning on
+  every build (rust-lang/rust#127909). Lockfile only; nothing to do on upgrade.
+
 ## [0.4.5] — 2026-10-29
 
 relativelylight 0.4.0 and SeaORM 2.0 underneath; the console and the APIs behave as before.
