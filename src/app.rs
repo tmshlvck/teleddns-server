@@ -52,6 +52,20 @@ pub struct AppState {
     pub ops_ip_src_allowed: Arc<Vec<ipnet::IpNet>>,
 }
 
+/// Where relativelylight's *hidden* errors surface (0.4.1's `Auth::on_error`). The login answers
+/// `401 Invalid username or password` whether the password was wrong or the database was gone — an
+/// outage is nobody's business at the login form — so without this sink the real cause leaves no
+/// trace. The library writes nothing itself (logging is ours, see `net.rs`), so this is one `error!`
+/// line. Not an audit row: nothing was written, and the attempt counted against no lockout.
+struct LogErrors;
+
+#[async_trait::async_trait]
+impl relativelylight::observe::ErrorObserver for LogErrors {
+    async fn on_error(&self, ev: &relativelylight::observe::ErrorEvent<'_>) {
+        tracing::error!(source = ev.source, client = %ev.client_ip, "{} failed: {}", ev.during, ev.error);
+    }
+}
+
 /// Run the HTTP server.
 pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     crate::web::init(&cfg); // navbar brand + the timezones the picker offers
@@ -111,6 +125,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         // operator who left a login form open overnight should land somewhere that looks like teleddns.
         .csrf_rejection(crate::web::csrf_rejected)
         .on_write(audit.clone()) // audit auth-table changes (password change, manager reset)
+        .on_error(Arc::new(LogErrors)) // a DB failure at login: still a 401 to the visitor, logged here
         .login_shell(move |form| crate::web::login_shell(form, &sso_buttons))
         .profile_shell(crate::web::profile_shell)
         // Our own section on the profile page: the caller's API keys. 0.3 hands the hook the

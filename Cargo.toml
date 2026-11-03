@@ -11,15 +11,16 @@ name = "teleddns-server"
 path = "src/main.rs"
 
 [dependencies]
-# relativelylight from crates.io. `0.3` is one compatible range for a `0.x` crate, so a patch release is
-# picked up and a behaviour break (which bumps the minor) is not — `Cargo.lock` pins the exact version
+# relativelylight from crates.io. `0.4` is one compatible range for a `0.x` crate, so a patch release is
+# picked up and a behaviour break (which bumps the minor) is not — usually: 0.4.1 broke in a patch (blob
+# removed, `WriteEvent::version` gone, `fixed_filter` pins writes; none touch us). `Cargo.lock` pins the exact version
 # either way. 0.3 re-homed the web UI in Rust: `crud::ui` renders server-side HTML and the crate's JSON
 # /metadata/OpenAPI surface is gone (there is no `openapi` feature any more), so the console is plain
 # MPA and the only documented API is the one this app writes itself (`api/openapi.rs`). 0.4 moved to
 # SeaORM 2.0: our entities and connection go straight into the library, so `sea-orm` below must be the
-# same major — one SeaORM in the build, not two.
+# same major — one SeaORM in the build, not two. 0.4.1 (`Auth::on_error`) is the floor: `app.rs` uses it.
 # `validate-base64` enables validate::base64 (used for the DNSKEY public-key field check).
-relativelylight = { version = "0.4.0", features = ["crud", "axum", "ui", "csv", "auth", "sso", "validate-base64"] }
+relativelylight = { version = "0.4.1", features = ["crud", "axum", "ui", "csv", "auth", "sso", "validate-base64"] }
 
 sea-orm = { version = "2.0", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "2.0", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
@@ -34,7 +35,9 @@ base64 = "0.22"
 form_urlencoded = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+# serde_yaml (dtolnay) is archived and pulls the unmaintained `unsafe-libyaml`; `yaml_serde` is the same
+# crate and API, continued by the YAML organization. Only `from_str` is used (`config.rs`).
+yaml_serde = "0.10"
 
 clap = { version = "4", features = ["derive"] }
 askama = "0.13"
@@ -46,7 +49,7 @@ sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
 ipnet = "2"
-prometheus = "0.13"
+prometheus = "0.14"
 regex = "1"
 
 [dev-dependencies]

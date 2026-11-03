@@ -12,6 +12,24 @@ whatever the number does. Read that section, not the digits.
 
 ### Changed
 
+- **relativelylight 0.4.1.** A database failure during console sign-in is now logged (one `ERROR`
+  line naming the step and the client address) instead of vanishing. The visitor still sees
+  `401 Invalid username or password`, and the attempt no longer counts towards a lockout — before,
+  an outage looked exactly like a wrong password and locked accounts out. 0.4.1's breaking changes
+  (blob storage removed, `WriteEvent::version`, `Table::fixed_filter`) touch nothing teleddns uses.
+- **Security updates (lockfile).** `rustls` 0.23.42 → 0.23.46, `rustls-webpki`, `webpki-roots`,
+  `crypto-bigint`, `event-listener` and `tokio` move past their RustSec advisories, and `quinn-proto`
+  and `rkyv` leave the tree. This was a general `cargo update` within the declared ranges, so
+  nothing to do on upgrade.
+- **`prometheus` 0.14** (was 0.13), which drops `protobuf` 2.x (RUSTSEC uncontrolled recursion).
+  `/metrics` output is unchanged.
+- **`yaml_serde` replaces `serde_yaml`** for the config file. `serde_yaml` is archived and pulled in
+  the unmaintained `unsafe-libyaml`; `yaml_serde` is the same crate, continued by the YAML
+  organization. Config files parse as before.
+- Still flagged by `cargo audit`, both through relativelylight: `rsa` (RUSTSEC-2023-0071, via
+  `openidconnect` for SSO — only ID-token signature *verification* happens here, not the private-key
+  operations the timing attack targets; no fixed version exists) and `basic-toml` (unmaintained, a
+  build-time dependency of `askama` 0.13's derive macro).
 - **Build:** `sea-bae` 0.2.2 (via SeaORM's macros) no longer pulls in `proc-macro-error2`, which
   re-exported the compiler's private `proc_macro` crate and drew a future-incompatibility warning on
   every build (rust-lang/rust#127909). Lockfile only; nothing to do on upgrade.

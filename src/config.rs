@@ -248,7 +248,7 @@ impl Config {
             Some(p) => {
                 let text = std::fs::read_to_string(&p)
                     .map_err(|e| format!("reading config {}: {e}", p.display()))?;
-                serde_yaml::from_str(&text).map_err(|e| format!("parsing config {}: {e}", p.display()))?
+                yaml_serde::from_str(&text).map_err(|e| format!("parsing config {}: {e}", p.display()))?
             }
             None => Config::default(),
         };
@@ -381,14 +381,14 @@ mod tests {
     /// quietly restore the failure mode the rename exists to prevent.
     #[test]
     fn the_renamed_knot_template_key_is_a_hard_error() {
-        let err = serde_yaml::from_str::<Config>("knot_template: master\n")
+        let err = yaml_serde::from_str::<Config>("knot_template: master\n")
             .expect_err("the pre-0.5 key must not parse");
         assert!(
             err.to_string().contains("knot_template"),
             "the error must name the offending key: {err}"
         );
         // And the replacements do parse, including the allow-list.
-        let cfg: Config = serde_yaml::from_str(
+        let cfg: Config = yaml_serde::from_str(
             "default_knot_template: signed\nknot_templates: [master, signed]\n",
         )
         .unwrap();
@@ -402,14 +402,14 @@ mod tests {
     #[test]
     fn the_request_log_is_on_unless_turned_off() {
         assert!(Config::default().log_access);
-        assert!(serde_yaml::from_str::<Config>("debug: true\n").unwrap().log_access, "absent = on");
-        assert!(!serde_yaml::from_str::<Config>("log_access: false\n").unwrap().log_access);
+        assert!(yaml_serde::from_str::<Config>("debug: true\n").unwrap().log_access, "absent = on");
+        assert!(!yaml_serde::from_str::<Config>("log_access: false\n").unwrap().log_access);
     }
 
     #[test]
     fn yaml_partial_overrides_defaults() {
         let cfg: Config =
-            serde_yaml::from_str("default_ttl: 120\nbackend: knot\nsession_idle_timeout: \"30m\"\n")
+            yaml_serde::from_str("default_ttl: 120\nbackend: knot\nsession_idle_timeout: \"30m\"\n")
                 .unwrap();
         assert_eq!(cfg.default_ttl, 120);
         assert_eq!(cfg.backend, "knot");

@@ -290,8 +290,9 @@ password + 2FA), then exercise `/api/...`.
   on pages rendered from a request: `login_shell` / `profile_shell` are handed a fragment and an
   identity, never the request, so those two pages are UTC.
 - `relativelylight` is a **crates.io dependency** (`version = "0.4"`), which for a `0.x` crate is one
-  compatible range: a patch release is picked up, a behaviour break bumps the minor and is not, and
-  `Cargo.lock` pins the exact version regardless. We are on **0.4.0**, which moved to **SeaORM 2.0** —
+  compatible range: a patch release is picked up, a behaviour break bumps the minor and is not (0.4.1
+  was the exception: it broke in a patch, though not in anything we use — read the changelog even for a
+  patch), and `Cargo.lock` pins the exact version regardless. We are on **0.4.1**; 0.4.0 moved to **SeaORM 2.0** —
   our entities and `DatabaseConnection` go straight into `MetaModel::new` / `Crud::new` / `Auth::new`,
   so `sea-orm` and `sea-orm-migration` in `Cargo.toml` must be the same major as the library's. What
   2.0 changed in our own code: a hand-built `Statement` goes through `query_one_raw` /
@@ -305,7 +306,9 @@ password + 2FA), then exercise `/api/...`.
   in behaviour. Don't "fix" either toward the other. Of 0.4's own changes we took
   `TzPicker::submitted` (the `/tz` handler's body) and `WriteEvent::actor` (`audit.rs` — a
   self-service password change rotates the session before its event fires, so the cookie names
-  nobody). We deliberately do **not** serve 0.4's relation `Picker`: it needs `crud::ui::JS` in the
+  nobody). From 0.4.1 we took `Auth::on_error`
+  (`app::LogErrors` — a DB failure at login still answers the visitor `401`, and is logged here rather
+  than lost). We deliberately do **not** serve 0.4's relation `Picker`: it needs `crud::ui::JS` in the
   shell, and the console ships no script (see the MPA invariant), so a relation past
   `picker_threshold` (50) stays a `<select>` of every row — fine for a zone list.
   0.3.0 before it re-homed the web UI in Rust: `Crud::new(db)` lost its mount path, `render()` became `async render_for(&headers, &state)`,
