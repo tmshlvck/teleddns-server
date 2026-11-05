@@ -79,8 +79,6 @@ struct Shell {
     user: String,
     nav: Vec<NavItem>,
     body: String,
-    /// The navbar timezone form, or empty on the pages rendered without a request in hand.
-    tz_picker: String,
     css: &'static str,
     version: &'static str,
     repo: &'static str,
@@ -91,11 +89,10 @@ struct Shell {
 }
 
 impl Shell {
-    /// A page rendered from a request: the nav highlights where we are and the timezone picker
-    /// returns here, so setting a zone doesn't lose the table the operator was looking at.
-    fn page(title: &str, who: &Identity, uri: &Uri, headers: &HeaderMap, body: String) -> Shell {
+    /// A page rendered from a request: the nav highlights where we are.
+    fn page(title: &str, who: &Identity, uri: &Uri, body: String) -> Shell {
         let here = uri.path();
-        let (brand, picker) = ui();
+        let (brand, _) = ui();
         Shell {
             title: title.into(),
             brand,
@@ -105,7 +102,6 @@ impl Shell {
                 NavItem { label: "Console", href: FIRST_ENTITY, active: here.starts_with("/admin") },
             ],
             body,
-            tz_picker: picker.render(&Tz::from_headers(headers), full_path(uri)),
             css: CSS,
             version: VERSION,
             repo: REPO_URL,
@@ -122,7 +118,7 @@ impl Shell {
 
     /// A page rendered *for* us by the library — the login form, the profile page, the CSRF
     /// refusal. Those handlers hand us a fragment and an identity, never the request, so there is no
-    /// URL to highlight and no headers to read a timezone cookie from.
+    /// URL to highlight.
     fn plain(title: &str, user: &str, body: String) -> Shell {
         Shell {
             title: title.into(),
@@ -130,7 +126,6 @@ impl Shell {
             user: user.into(),
             nav: Vec::new(),
             body,
-            tz_picker: String::new(),
             css: CSS,
             version: VERSION,
             repo: REPO_URL,
@@ -141,10 +136,6 @@ impl Shell {
     fn html(self) -> String {
         self.render().unwrap_or_else(|e| format!("<pre>template error: {e}</pre>"))
     }
-}
-
-fn full_path(uri: &Uri) -> &str {
-    uri.path_and_query().map(|p| p.as_str()).unwrap_or("/")
 }
 
 /// Wrap a fragment in a centred card — the shape of every page that is one form (login, profile,
@@ -304,7 +295,7 @@ pub async fn admin_show(
     match panel(&app.engine).render_for(&headers, &state).await {
         // `render_for` is the read enforcement point: a caller the gate refuses gets 401/403 here,
         // not a page with the rows in it.
-        Ok(body) => Html(Shell::page("Console — teleddns", &who, &uri, &headers, body).html()).into_response(),
+        Ok(body) => Html(Shell::page("Console — teleddns", &who, &uri, body).html()).into_response(),
         Err(e) => e.into_response(),
     }
 }
@@ -344,7 +335,7 @@ pub async fn admin_save(
         Ok(Outcome::Invalid(state)) => match panel(&app.engine).render_for(&headers, &state).await {
             Ok(body) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
-                Html(Shell::page("Console — teleddns", &who, &uri, &headers, body).html()),
+                Html(Shell::page("Console — teleddns", &who, &uri, body).html()),
             )
                 .into_response(),
             Err(e) => e.into_response(),
@@ -403,6 +394,23 @@ async fn zone_records_about_to_go(
 /// A bound on how many zones one console delete will be resolved across — this reads every record
 /// of every one of them into memory to audit it.
 const MAX_ZONES_PER_DELETE: u64 = 10_000;
+
+/// The "Display timezone" section at the foot of `/profile`, below the API keys — composed in with
+/// [`crate::keys::section`] through `Auth::profile_extra`, which since relativelylight 0.4.3 hands us
+/// the request's headers, so the picker opens on the zone the caller already has. The timezone is a
+/// personal display preference, so it lives with the user's other settings rather than taking a
+/// slot in every page's navbar. Offered zones are `config.timezones` (see [`init`]).
+pub fn tz_section(headers: &HeaderMap) -> String {
+    let current = Tz::from_headers(headers);
+    format!(
+        r#"<hr class="my-4">
+<h2 class="h5">Display timezone</h2>
+<p class="text-muted">Every time the console shows — tables, edit forms, the dashboard, CSV
+exports — is in this zone. The database and the APIs always use UTC.</p>
+{picker}"#,
+        picker = ui().1.render(&current, "/profile"),
+    )
+}
 
 /// `POST /tz` — the timezone picker's four lines. Set the cookie, come back to the page it was set
 /// from; every timestamp the server renders after that is in the chosen zone.
@@ -484,6 +492,25 @@ mod tests {
         assert!(!html.contains("alpinejs"), "no Alpine: {html}");
         assert!(!html.contains("bootstrap.bundle"), "no Bootstrap JS bundle");
         assert!(!html.contains("x-cloak"));
+    }
+
+    /// The timezone is a profile setting, not navbar chrome: no page shell carries the picker.
+    #[test]
+    fn the_shell_has_no_timezone_picker() {
+        let html = Shell::plain("t", "someone", "<p>body</p>".into()).html();
+        assert!(!html.contains(r#"action="/tz""#), "picker belongs on /profile: {html}");
+    }
+
+    /// The profile's section opens on the caller's current zone (from the cookie) and comes back to
+    /// the profile page once it is set.
+    #[test]
+    fn the_profile_timezone_section_preselects_the_cookie_and_returns_to_profile() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, Tz::named("Europe/Prague").cookie().split(';').next().unwrap().parse().unwrap());
+        let html = tz_section(&headers);
+        assert!(html.contains(r#"action="/tz""#), "{html}");
+        assert!(html.contains(r#"name="back" value="/profile""#), "{html}");
+        assert!(html.contains(r#"<option value="Europe/Prague" selected>"#), "{html}");
     }
 
     /// `back` comes out of a posted form, so it is caller input: it must never be able to send the

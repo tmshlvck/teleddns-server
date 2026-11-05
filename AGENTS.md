@@ -284,15 +284,17 @@ password + 2FA), then exercise `/api/...`.
   the IdP for SSO accounts (an SSO account has no local factor, so it passes the re-auth gate
   unchallenged — relativelylight `docs/AUTH.md` §5h states the limit).
 - **Timezones are done** (this was the long-standing TODO). The DB and the APIs stay UTC; the
-  console's navbar picker (`time::TzPicker`, offered zones from `config.timezones`) posts to `/tz`,
-  which sets a cookie, and the **server** formats every timestamp with it — table cells, datetime
-  inputs and the CSV export alike, so an export matches what is on screen. The picker only appears
-  on pages rendered from a request: `login_shell` / `profile_shell` are handed a fragment and an
-  identity, never the request, so those two pages are UTC.
+  picker (`time::TzPicker`, offered zones from `config.timezones`) posts to `/tz`, which sets a
+  cookie, and the **server** formats every timestamp with it — table cells, datetime inputs and the
+  CSV export alike, so an export matches what is on screen. **The picker lives on `/profile`, not in
+  the navbar** — a personal setting belongs with the other ones, and the navbar stays navigation.
+  It is `web::tz_section`, appended after the API-keys card in `Auth::profile_extra`; since 0.4.3
+  that hook gets `ProfileSection::headers`, so the picker preselects the cookie's zone and the keys
+  card formats its dates in it. Don't put it back in `shell.html`.
 - `relativelylight` is a **crates.io dependency** (`version = "0.4"`), which for a `0.x` crate is one
   compatible range: a patch release is picked up, a behaviour break bumps the minor and is not (0.4.1
   was the exception: it broke in a patch, though not in anything we use — read the changelog even for a
-  patch), and `Cargo.lock` pins the exact version regardless. We are on **0.4.2**; 0.4.0 moved to **SeaORM 2.0** —
+  patch), and `Cargo.lock` pins the exact version regardless. We are on **0.4.3**; 0.4.0 moved to **SeaORM 2.0** —
   our entities and `DatabaseConnection` go straight into `MetaModel::new` / `Crud::new` / `Auth::new`,
   so `sea-orm` and `sea-orm-migration` in `Cargo.toml` must be the same major as the library's. What
   2.0 changed in our own code: a hand-built `Statement` goes through `query_one_raw` /
@@ -310,7 +312,8 @@ password + 2FA), then exercise `/api/...`.
   (`app::LogErrors` — a DB failure at login still answers the visitor `401`, and is logged here rather
   than lost). 0.4.2 made askama **private** to the library — no template type of it is public — so
   our askama is ours to version (0.16, without `config`: no `askama.toml`, and that feature pulls the
-  unmaintained `basic-toml`). We deliberately do **not** serve 0.4's relation `Picker`: it needs `crud::ui::JS` in the
+  unmaintained `basic-toml`). 0.4.3's `ProfileSection::headers` is what lets the profile page
+  carry the timezone picker and format the keys card's times (see Timezones above). We deliberately do **not** serve 0.4's relation `Picker`: it needs `crud::ui::JS` in the
   shell, and the console ships no script (see the MPA invariant), so a relation past
   `picker_threshold` (50) stays a `<select>` of every row — fine for a zone list.
   0.3.0 before it re-homed the web UI in Rust: `Crud::new(db)` lost its mount path, `render()` became `async render_for(&headers, &state)`,

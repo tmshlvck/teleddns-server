@@ -12,13 +12,19 @@ whatever the number does. Read that section, not the digits.
 
 ### Changed
 
-- **relativelylight 0.4.2** (was 0.4.0). A database failure during console sign-in is now logged (one `ERROR`
+- **relativelylight 0.4.3** (was 0.4.0). A database failure during console sign-in is now logged (one `ERROR`
   line naming the step and the client address) instead of vanishing. The visitor still sees
   `401 Invalid username or password`, and the attempt no longer counts towards a lockout — before,
   an outage looked exactly like a wrong password and locked accounts out. 0.4.1's breaking changes
   (blob storage removed, `WriteEvent::version`, `Table::fixed_filter`) touch nothing teleddns uses.
   0.4.2 fixes the profile page dropping the API-keys card right after disabling 2FA (or when
   recovery codes could not be created at enrolment): it rendered the password form alone.
+  0.4.3 stops Firefox restoring a stale choice into the timezone picker on reload.
+- **The timezone picker moved from the navbar to `/profile`**, as a "Display timezone" section below
+  the API keys: it is a personal setting, and the navbar now holds only navigation. It still sets
+  the same cookie, so a zone chosen before the upgrade is kept.
+- **The API-keys card on `/profile` shows dates.** "Expires" and "Last used" were raw Unix seconds;
+  they are now `YYYY-MM-DD HH:MM` in the display timezone, named under the table.
 - **Security updates (lockfile).** `rustls` 0.23.42 → 0.23.46, `rustls-webpki`, `webpki-roots`,
   `crypto-bigint`, `event-listener` and `tokio` move past their RustSec advisories, and `quinn-proto`
   and `rkyv` leave the tree. This was a general `cargo update` within the declared ranges, so

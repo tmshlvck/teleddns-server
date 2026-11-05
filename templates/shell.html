@@ -34,10 +34,6 @@
       {% endfor %}
     </ul>
     <div class="d-flex align-items-center gap-3">
-      {#- The timezone picker (relativelylight `time::TzPicker`) posts to our /tz, which sets the
-          cookie the *server* formats timestamps with — table cells, datetime inputs and CSV alike.
-          Empty on the pages rendered without a request in hand (login, profile). -#}
-      {{ tz_picker|safe }}
       {% if !user.is_empty() %}
       <span class="navbar-text">
         <a href="/profile" class="link-body-emphasis text-decoration-none fw-medium">{{ user }}</a>

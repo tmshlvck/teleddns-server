@@ -424,8 +424,8 @@ view — page, sort, search, which zone is filtered, which row's create/edit dia
 open — is in the query string, so every screen is a bookmarkable link and the zone an
 operator picks follows them across all fifteen record tables. A rejected write
 re-renders the dialog with the messages beside the fields and the typed values still
-in them. Timestamps are formatted **server-side** in the zone chosen by the navbar
-picker (a cookie), which is also the zone a CSV export uses.
+in them. Timestamps are formatted **server-side** in the zone chosen on the profile
+page (a cookie), which is also the zone a CSV export uses.
 
 There is no JSON API behind these pages and no client-side state; the only script the
 app ships is the light/dark toggle.
@@ -946,8 +946,10 @@ Knot backend + worker, §8 operability, §9 config + CLI.
   `resolve_real_ip`, outermost and mandatory (§3.6) — and CSRF is in place for every
   cookie-authenticated write (§4.1).
 - **Timezone display is done** (was deferred): the DB and the APIs stay UTC, and the
-  console formats every timestamp server-side in the zone chosen from the navbar
-  picker — cells, datetime inputs and CSV exports alike. Offered zones come from
-  `config.timezones`. The two pages the library renders for us (login, profile) get no
-  picker: their hooks are handed a fragment and an identity, never the request, so
-  they stay UTC.
+  console formats every timestamp server-side in the zone chosen on `/profile` —
+  cells, datetime inputs and CSV exports alike. Offered zones come from
+  `config.timezones`. The picker is a section of the profile page, below the API keys,
+  not navbar chrome: it is a personal setting, and the navbar is kept to navigation.
+  It rides on `Auth::profile_extra`, which since relativelylight 0.4.3 is handed the
+  request's headers — so the picker preselects the current zone, and the keys card's
+  dates follow it too. The login page has no zone to show.

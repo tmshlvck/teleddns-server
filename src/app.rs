@@ -68,7 +68,7 @@ impl relativelylight::observe::ErrorObserver for LogErrors {
 
 /// Run the HTTP server.
 pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
-    crate::web::init(&cfg); // navbar brand + the timezones the picker offers
+    crate::web::init(&cfg); // navbar brand + the timezones the profile's picker offers
     let db = crate::db::connect(&cfg.db_dsn).await?;
     Migrator::up(&db, None).await?; // versioned schema (auth + app tables), applied once
     // The audit sink persists a row per write; shared as the WriteObserver for the admin auto-CRUD
@@ -133,7 +133,9 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         // forms rendered complete — no script fills them in afterwards.
         .profile_extra(move |s| {
             let db = extra_db.clone();
-            async move { crate::keys::section(&db, &s).await }
+            // …followed by the display-timezone picker: a personal setting, so it sits with the
+            // others here instead of in every page's navbar.
+            async move { crate::keys::section(&db, &s).await + &crate::web::tz_section(&s.headers) }
         });
     // OIDC single sign-on (optional): built from config, routes merged below.
     let sso = crate::sso::build(&cfg, &auth);
@@ -223,7 +225,7 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
             "/admin/{entity}",
             get(crate::web::admin_show).post(crate::web::admin_save),
         )
-        // Where the navbar's timezone picker posts: sets the cookie the server formats with.
+        // Where the profile page's timezone picker posts: sets the cookie the server formats with.
         .route("/tz", axum::routing::post(crate::web::set_tz))
         .route("/keys", axum::routing::post(crate::keys::mint))
         .route("/keys/{id}/revoke", axum::routing::post(crate::keys::revoke))

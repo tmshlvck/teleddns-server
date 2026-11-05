@@ -27,6 +27,7 @@ use relativelylight::auth::ProfileSection;
 use relativelylight::crud::ui::esc_str;
 use relativelylight::csrf::Csrf;
 use relativelylight::middleware::RealIp;
+use relativelylight::time::Tz;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use serde::Deserialize;
 use serde_json::json;
@@ -41,7 +42,9 @@ pub async fn section(db: &DatabaseConnection, s: &ProfileSection) -> String {
         .all(db)
         .await
         .unwrap_or_default();
-    render_card(&keys, &s.csrf)
+    // 0.4.3 hands the hook the request's headers, so the times below follow the caller's timezone
+    // cookie like every console table — before, this card had no request and printed raw epochs.
+    render_card(&keys, &s.csrf, &Tz::from_headers(&s.headers))
 }
 
 #[derive(Deserialize)]
@@ -208,9 +211,11 @@ fn gen_token() -> String {
 }
 
 /// The card fragment (no page shell) — embedded on the profile page. `csrf` is *this request's*
-/// token: the hook is handed it precisely so the section can contain real forms.
-fn render_card(keys: &[api_key::Model], csrf: &str) -> String {
+/// token: the hook is handed it precisely so the section can contain real forms. `tz` is the caller's
+/// display zone, the same cookie the console's tables are formatted with.
+fn render_card(keys: &[api_key::Model], csrf: &str, tz: &Tz) -> String {
     let token = Csrf::hidden_input(csrf);
+    let when = |t: Option<i64>| t.map(|e| tz.format(e)).unwrap_or_else(|| "never".into());
     let rows: String = keys
         .iter()
         .map(|k| {
@@ -220,8 +225,8 @@ fn render_card(keys: &[api_key::Model], csrf: &str) -> String {
 {token}<button class="btn btn-sm btn-outline-danger">Revoke</button></form></td></tr>"#,
                 name = esc_str(&k.name),
                 prefix = esc_str(&k.prefix),
-                exp = k.expires_at.map(|e| e.to_string()).unwrap_or_else(|| "never".into()),
-                used = k.last_used_at.map(|e| e.to_string()).unwrap_or_else(|| "never".into()),
+                exp = when(k.expires_at),
+                used = when(k.last_used_at),
                 id = k.id,
             )
         })
@@ -248,7 +253,9 @@ a device is lost. The raw key is shown once, when created.</p>
 </form>
 <table class="table table-sm align-middle mt-3"><thead><tr>
 <th>Name</th><th>Prefix</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
-<tbody>{rows}</tbody></table>"#
+<tbody>{rows}</tbody>
+<caption class="small">Times in {zone}.</caption></table>"#,
+        zone = esc_str(tz.name()),
     )
 }
 
@@ -273,7 +280,7 @@ mod tests {
     /// are refused without one, and since 0.3 there is no script to fill it in afterwards.
     #[test]
     fn every_form_carries_the_request_s_csrf_token() {
-        let html = render_card(&[key(1), key(2)], "tok3n");
+        let html = render_card(&[key(1), key(2)], "tok3n", &Tz::named("UTC"));
         assert_eq!(html.matches(r#"<form method="post""#).count(), 3); // 1 mint + 2 revoke
         assert_eq!(html.matches(r#"name="_csrf" value="tok3n""#).count(), 3);
         assert!(!html.contains("<script"), "the card ships no JavaScript: {html}");
@@ -283,9 +290,27 @@ mod tests {
     /// nothing — and starts working by itself if they are later granted something.
     #[test]
     fn the_card_offers_a_mint_form_and_a_revoke_form_per_key() {
-        let html = render_card(&[key(1)], "t");
+        let html = render_card(&[key(1)], "t", &Tz::named("UTC"));
         assert!(html.contains(r#"action="/keys""#), "mint form");
         assert!(html.contains(r#"action="/keys/1/revoke""#));
         assert!(!html.to_lowercase().contains("level"), "no level anywhere: {html}");
+    }
+
+    /// Expiry and last use are dates in the caller's zone, named under the table — not the raw Unix
+    /// seconds the card printed before 0.4.3 handed the hook the request's headers.
+    #[test]
+    fn times_are_formatted_in_the_caller_s_zone() {
+        let mut k = key(1);
+        k.expires_at = Some(1_800_000_000); // 2027-01-15 08:00 UTC
+        k.last_used_at = Some(1_700_000_000); // 2023-11-14 22:13 UTC
+        let html = render_card(&[k.clone()], "t", &Tz::named("UTC"));
+        assert!(html.contains("<td>2027-01-15 08:00</td>"), "{html}");
+        assert!(html.contains("<td>2023-11-14 22:13</td>"), "{html}");
+        assert!(html.contains("Times in UTC."), "{html}");
+        assert!(!html.contains("1800000000"), "no raw epoch: {html}");
+
+        let html = render_card(&[k], "t", &Tz::named("Europe/Prague"));
+        assert!(html.contains("<td>2027-01-15 09:00</td>"), "CET is UTC+1 in January: {html}");
+        assert!(html.contains("Times in Europe/Prague."), "{html}");
     }
 }

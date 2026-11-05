@@ -177,7 +177,7 @@ pub async fn page(headers: HeaderMap, uri: Uri, State(app): State<AppState>) -> 
     };
     match page.render() {
         Ok(body) => Html(
-            super::Shell::page("Dashboard — teleddns", &who, &uri, &headers, body)
+            super::Shell::page("Dashboard — teleddns", &who, &uri, body)
                 .refresh_every(REFRESH_SECS)
                 .html(),
         )

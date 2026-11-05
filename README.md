@@ -87,7 +87,7 @@ Then open **`http://127.0.0.1:8080/`**, log in, and you have:
 - **Dashboard** — `/`: zone/record counts, backend liveness, per-zone sync state, the push queue
 - **Console** — `/admin/zone` and the table beside it: zones, records, users, groups, grants, audit log
 - **API docs** — `/docs` (Swagger UI); spec at `/openapi.json`
-- **Profile** — password, 2FA, and self-service API keys at `/profile` (or click your name in the header)
+- **Profile** — password, 2FA, self-service API keys and the display timezone at `/profile` (or click your name in the header)
 - **Health / metrics** — `/healthcheck` · `/metrics`
 - **DDNS** — `GET|POST /nic/update|/ddns/update|/update?hostname=…[&myip=…]`
 - **Management API** — `/api/zones` + `/api/zones/{id}/rr`
@@ -122,8 +122,8 @@ plus the serial each zone is actually being answered with beside the one in the
 database. `/admin/{entity}` is the console; every table's view (page, sort, search,
 zone filter, the open create/edit dialog) lives in the URL, so any screen is a link
 you can bookmark or put in a runbook, and the zone you pick follows you from one
-record type to the next. The navbar's **timezone** picker sets a cookie the *server*
-formats with, so a CSV export matches what is on screen.
+record type to the next. The **display timezone**, chosen at the foot of `/profile`, is a
+cookie the *server* formats with, so a CSV export matches what is on screen.
 
 Nothing on the console is built in the browser: no framework, no JSON API behind the
 pages, no script file. The page loads Bootstrap's stylesheet and about forty lines of
@@ -568,7 +568,7 @@ public_url: "https://ddns.example.com"            # external HTTPS base (SSO + c
 ops_ip_src_allowed: ["10.9.0.0/24"]                  # Prometheus / uptime host
 
 ui_title: "Example DNS"                           # navbar brand
-timezones: ["UTC", "Europe/Prague"]               # the console's timezone picker; "all" offers
+timezones: ["UTC", "Europe/Prague"]               # the profile page's timezone picker; "all" offers
                                                   # every zone the host knows (default: UTC + EU + US)
 ```
 
