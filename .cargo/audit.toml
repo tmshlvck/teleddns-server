@@ -1,0 +1,12 @@
+# `cargo audit` policy. Every ignore says why it is safe *here*, and when it should go.
+
+[advisories]
+ignore = [
+    # rsa — the Marvin attack: timing recovers an RSA *private* key from decryption or signing, and
+    # no fixed `rsa` release exists. It is in the build only through relativelylight's `sso` feature
+    # (`openidconnect` checks RS256 ID-token signatures with the provider's *public* key). teleddns
+    # holds no RSA private key anywhere — API keys are SHA-256 hashes, Knot is driven over `knotc` —
+    # so there is nothing to leak. relativelylight docs/AUTH.md §5b gives the same reasoning.
+    # Remove once `openidconnect` moves to a fixed `rsa`.
+    "RUSTSEC-2023-0071",
+]

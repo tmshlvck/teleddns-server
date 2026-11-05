@@ -12,11 +12,13 @@ whatever the number does. Read that section, not the digits.
 
 ### Changed
 
-- **relativelylight 0.4.1.** A database failure during console sign-in is now logged (one `ERROR`
+- **relativelylight 0.4.2** (was 0.4.0). A database failure during console sign-in is now logged (one `ERROR`
   line naming the step and the client address) instead of vanishing. The visitor still sees
   `401 Invalid username or password`, and the attempt no longer counts towards a lockout — before,
   an outage looked exactly like a wrong password and locked accounts out. 0.4.1's breaking changes
   (blob storage removed, `WriteEvent::version`, `Table::fixed_filter`) touch nothing teleddns uses.
+  0.4.2 fixes the profile page dropping the API-keys card right after disabling 2FA (or when
+  recovery codes could not be created at enrolment): it rendered the password form alone.
 - **Security updates (lockfile).** `rustls` 0.23.42 → 0.23.46, `rustls-webpki`, `webpki-roots`,
   `crypto-bigint`, `event-listener` and `tokio` move past their RustSec advisories, and `quinn-proto`
   and `rkyv` leave the tree. This was a general `cargo update` within the declared ranges, so
@@ -26,10 +28,15 @@ whatever the number does. Read that section, not the digits.
 - **`yaml_serde` replaces `serde_yaml`** for the config file. `serde_yaml` is archived and pulled in
   the unmaintained `unsafe-libyaml`; `yaml_serde` is the same crate, continued by the YAML
   organization. Config files parse as before.
-- Still flagged by `cargo audit`, both through relativelylight: `rsa` (RUSTSEC-2023-0071, via
-  `openidconnect` for SSO — only ID-token signature *verification* happens here, not the private-key
-  operations the timing attack targets; no fixed version exists) and `basic-toml` (unmaintained, a
-  build-time dependency of `askama` 0.13's derive macro).
+- **`askama` 0.16** (was 0.13), built without its `config` feature, which drops the unmaintained
+  `basic-toml` (RUSTSEC-2026-0374). relativelylight 0.4.2 made askama private to the library, so the
+  two no longer have to match. `axum-extra` 0.12, `sha2` 0.11 and `base64` 0.23 follow the library,
+  so the build carries one copy of each. Templates and output are unchanged.
+- **Building needs Rust 1.88 or newer** (askama 0.16 and relativelylight 0.4.2's `totp-rs` 6).
+- **`cargo audit` is clean.** The one remaining advisory, `rsa` (RUSTSEC-2023-0071, the Marvin
+  attack), is ignored in `.cargo/audit.toml` with the reason: it arrives via `openidconnect` for SSO,
+  which only *verifies* ID-token signatures with a public key, and teleddns holds no RSA private key
+  for the timing attack to recover. No fixed `rsa` release exists yet.
 - **Build:** `sea-bae` 0.2.2 (via SeaORM's macros) no longer pulls in `proc-macro-error2`, which
   re-exported the compiler's private `proc_macro` crate and drew a future-incompatibility warning on
   every build (rust-lang/rust#127909). Lockfile only; nothing to do on upgrade.

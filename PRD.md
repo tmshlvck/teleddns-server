@@ -838,7 +838,7 @@ repeated here.
 ### 11.1 Stack
 
 Rust 2021 / `tokio`; `axum` 0.8; `SeaORM` 2.0 (`sqlx-sqlite` + `sqlx-postgres`,
-`runtime-tokio-rustls`); `askama` 0.13 for the page shell and the dashboard;
+`runtime-tokio-rustls`); `askama` 0.16 for the page shell and the dashboard;
 `serde_json` for the hand-written OpenAPI document; `serde`/`yaml_serde` + `clap`
 for layered config; `prometheus` for metrics; `tracing` for structured logs.
 Passwords are argon2id (via the library); API keys are SHA-256-hashed. Built on

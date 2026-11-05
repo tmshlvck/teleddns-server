@@ -292,7 +292,7 @@ password + 2FA), then exercise `/api/...`.
 - `relativelylight` is a **crates.io dependency** (`version = "0.4"`), which for a `0.x` crate is one
   compatible range: a patch release is picked up, a behaviour break bumps the minor and is not (0.4.1
   was the exception: it broke in a patch, though not in anything we use — read the changelog even for a
-  patch), and `Cargo.lock` pins the exact version regardless. We are on **0.4.1**; 0.4.0 moved to **SeaORM 2.0** —
+  patch), and `Cargo.lock` pins the exact version regardless. We are on **0.4.2**; 0.4.0 moved to **SeaORM 2.0** —
   our entities and `DatabaseConnection` go straight into `MetaModel::new` / `Crud::new` / `Auth::new`,
   so `sea-orm` and `sea-orm-migration` in `Cargo.toml` must be the same major as the library's. What
   2.0 changed in our own code: a hand-built `Statement` goes through `query_one_raw` /
@@ -308,7 +308,9 @@ password + 2FA), then exercise `/api/...`.
   self-service password change rotates the session before its event fires, so the cookie names
   nobody). From 0.4.1 we took `Auth::on_error`
   (`app::LogErrors` — a DB failure at login still answers the visitor `401`, and is logged here rather
-  than lost). We deliberately do **not** serve 0.4's relation `Picker`: it needs `crud::ui::JS` in the
+  than lost). 0.4.2 made askama **private** to the library — no template type of it is public — so
+  our askama is ours to version (0.16, without `config`: no `askama.toml`, and that feature pulls the
+  unmaintained `basic-toml`). We deliberately do **not** serve 0.4's relation `Picker`: it needs `crud::ui::JS` in the
   shell, and the console ships no script (see the MPA invariant), so a relation past
   `picker_threshold` (50) stays a `<select>` of every row — fine for a zone list.
   0.3.0 before it re-homed the web UI in Rust: `Crud::new(db)` lost its mount path, `render()` became `async render_for(&headers, &state)`,
@@ -388,7 +390,7 @@ ever worth the line.
 
 ## Conventions
 
-SeaORM 2.0, axum 0.8, askama 0.13 (matching the library). `utoipa` is gone with the
+SeaORM 2.0 (must match the library), axum 0.8, askama 0.16 (need not — the library's is private). `utoipa` is gone with the
 OpenAPI generator — the document is `serde_json` in `api/openapi.rs`. Match the
 surrounding terse, well-commented style; keep doc comments current (they carry
 the contract). Errors on the API are `{ "error": … }` with the right status

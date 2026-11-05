@@ -2,6 +2,7 @@
 name = "teleddns-server"
 version = "0.4.5"
 edition = "2021"
+rust-version = "1.88"   # askama 0.16; relativelylight 0.4.2 (totp-rs 6) declares the same
 license = "GPL-3.0-or-later"
 description = "Co-located DNS management + Dynamic DNS server for a Knot DNS master"
 default-run = "teleddns-server"
@@ -26,11 +27,11 @@ sea-orm = { version = "2.0", features = ["macros", "with-json", "sqlx-sqlite", "
 sea-orm-migration = { version = "2.0", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 
 axum = "0.8"
-axum-extra = { version = "0.10", features = ["cookie"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "process", "signal", "time"] }
 
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 # Parses a form-encoded POST body on the DDNS endpoint (already in the tree via axum).
 form_urlencoded = "1"
 serde = { version = "1", features = ["derive"] }
@@ -40,12 +41,14 @@ serde_json = "1"
 yaml_serde = "0.10"
 
 clap = { version = "4", features = ["derive"] }
-askama = "0.13"
+# No `config` feature: there is no askama.toml, and it would pull in the unmaintained `basic-toml`
+# (RUSTSEC-2026-0374). Since relativelylight 0.4.2 askama is private to the library, so this version is ours.
+askama = { version = "0.16", default-features = false, features = ["derive", "std"] }
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 rand = "0.8"
 ipnet = "2"
