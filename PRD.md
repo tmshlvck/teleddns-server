@@ -365,7 +365,9 @@ access grants (zone-role / record-role) are managed — none of that is on the A
   governs `admin reset-password` or the first-start seed: a recovery path must always be
   able to set a password.
 - **Self-service profile:** change own password, manage own TOTP/passkeys, and
-  **mint/revoke API keys** (§3.4). Admins can reset another user's password — a reset
+  **mint/revoke API keys** (§3.4). Admins can reset another user's password and turn off
+  their 2FA on the library's manager page, `/profile/{id}`, which the console's Users table
+  opens as each row's View. A reset revokes all of the target's sessions and otherwise
   changes *only* the password: a disabled account stays disabled and 2FA stays
   enrolled, so it can never quietly re-open a closed account. Recovering a locked-out
   administrator is a separate, deliberately destructive CLI action (§9).

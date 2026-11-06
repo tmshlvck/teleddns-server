@@ -327,6 +327,12 @@ browser before they log in cannot be inherited afterwards.
 and *all* of a target's when a manager resets it. `/profile` also has a **Sign out other
 sessions** button for evicting an intruder without a password change.
 
+**Resetting someone else's password or 2FA** is the user's own page, `/profile/{id}` — in the
+console it is **View** on the user's row under *Users*. That page resets the password and signs
+the user out everywhere, and turns off a 2FA whose device is lost. The Users edit form can set a
+password too (that is how an account gets its first one), but it is a plain row update: existing
+sessions stay signed in, which is why the form says to use View for a reset.
+
 **Sensitive profile changes ask for a factor again**, in the same request: enrolling 2FA or
 turning it off, and a manager's reset or 2FA-disable (which take the *manager's* own factor,
 not the target's). A current password or a fresh TOTP code satisfies it; a code spent this

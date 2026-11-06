@@ -23,6 +23,13 @@ whatever the number does. Read that section, not the digits.
 - **The timezone picker moved from the navbar to `/profile`**, as a "Display timezone" section below
   the API keys: it is a personal setting, and the navbar now holds only navigation. It still sets
   the same cookie, so a zone chosen before the upgrade is kept.
+- **The profile pages have the console's navbar** — `/profile`, 2FA enrolment and an admin's
+  `/profile/{id}`. Dashboard and Console appear for admins only; any other account sees its name
+  and "log out". The "Back to the dashboard" link under the card is gone.
+- **View on a user in the console opens that user's reset page** (`/profile/{id}`): a password
+  reset that signs them out everywhere, and turning off a lost 2FA — the latter impossible from
+  the console before, whose user form hides the 2FA columns. The edit form's password field now
+  says so: setting a password there does not end the user's sessions.
 - **The API-keys card on `/profile` shows dates.** "Expires" and "Last used" were raw Unix seconds;
   they are now `YYYY-MM-DD HH:MM` in the display timezone, named under the table.
 - **Security updates (lockfile).** `rustls` 0.23.42 → 0.23.46, `rustls-webpki`, `webpki-roots`,

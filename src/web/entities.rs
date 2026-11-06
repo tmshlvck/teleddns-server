@@ -288,6 +288,16 @@ pub fn build_engine(
     let mut user = MetaModel::new(relativelylight::auth::user::Entity);
     user.field("username").validate_str(relativelylight::auth::valid_username);
     user.field("password_hash").password();
+    // Kept editable on purpose — creating an account with a password is this form's job — but a
+    // *reset* has a better home, so say where: the manager page (`/profile/{id}`, the Users table's
+    // View) also revokes the user's sessions and asks the admin to re-authenticate, which this
+    // generic row write does not.
+    user.field("password_hash").description = Some(
+        "Blank keeps the current password (on a new account: no password login). Setting one here \
+         does not sign the user out of existing sessions — to reset a password, or turn off a lost \
+         2FA, use View on the user's row instead."
+            .into(),
+    );
     // The *other half* of `config.password_level`: relativelylight screens a password typed on
     // `/profile`, this screens one typed here. Skip either and it becomes the documented way around the
     // other — an admin could set `hunter2` on an account the profile page would have refused. The crud

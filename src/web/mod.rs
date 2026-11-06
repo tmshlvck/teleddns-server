@@ -97,16 +97,27 @@ impl Shell {
             title: title.into(),
             brand,
             user: who.username.clone(),
-            nav: vec![
-                NavItem { label: "Dashboard", href: "/", active: here == "/" },
-                NavItem { label: "Console", href: FIRST_ENTITY, active: here.starts_with("/admin") },
-            ],
+            nav: nav(here),
             body,
             css: CSS,
             version: VERSION,
             repo: REPO_URL,
             refresh: 0,
         }
+    }
+
+    /// The profile pages the library renders for us — the caller's own `/profile`, the 2FA
+    /// enrolment, and a manager's `/profile/{id}`. The hook gets no request, but the navbar needs
+    /// none: on these paths no item is active, and `who` (the *caller*, also on a manager's page) says
+    /// whether to offer the links at all. Dashboard and Console are Superadmin-only, so anyone else —
+    /// a person or device account that is here for its password, 2FA or API keys — sees only their
+    /// name and "log out" rather than two links that answer `403`.
+    fn profile(title: &str, who: &Identity, body: String) -> Shell {
+        let mut shell = Shell::plain(title, &who.username, body);
+        if who.in_group(crate::app::ADMIN_GROUP) {
+            shell.nav = nav("/profile");
+        }
+        shell
     }
 
     /// Reload this page every `secs` seconds. Only the dashboard asks: a reload on a page with a
@@ -136,6 +147,15 @@ impl Shell {
     fn html(self) -> String {
         self.render().unwrap_or_else(|e| format!("<pre>template error: {e}</pre>"))
     }
+}
+
+/// The navbar's links, `here` deciding which is highlighted. One list for every page that has them,
+/// so the profile pages and the console can't drift apart.
+fn nav(here: &str) -> Vec<NavItem> {
+    vec![
+        NavItem { label: "Dashboard", href: "/", active: here == "/" },
+        NavItem { label: "Console", href: FIRST_ENTITY, active: here.starts_with("/admin") },
+    ]
 }
 
 /// Wrap a fragment in a centred card — the shape of every page that is one form (login, profile,
@@ -193,10 +213,19 @@ fn panel(engine: &Engine) -> Admin<'_> {
         .separator()
         .group("Accounts")
         .entity_with("auth_user", |t| {
-            t.title("Users").description(
-                "Login accounts — for people, and for devices that need their own narrow grant. Set an \
-                 SSO provider on an account to make it external (no local password / 2FA).",
-            )
+            t.title("Users")
+                .description(
+                    "Login accounts — for people, and for devices that need their own narrow grant. Set \
+                     an SSO provider on an account to make it external (no local password / 2FA). View \
+                     opens the account's reset page: a password reset that signs the user out \
+                     everywhere, and turning off a lost 2FA.",
+                )
+                // relativelylight's manager page, not the read-only dialog: the one place that can turn
+                // off a user's 2FA (its columns are hidden on the form) and the reset that revokes the
+                // target's sessions. Gated by the library itself (caller in `Auth::admin_group`, which
+                // is `ADMIN_GROUP` — the same group this console's gate checks); a click on one's own
+                // row lands on one's own `/profile`.
+                .detail_href("/profile/{id}")
         })
         .entity_with("auth_group", |t| {
             t.title("Groups").description(
@@ -448,11 +477,12 @@ pub fn login_shell(form: &str, sso_buttons: &str) -> String {
         .html()
 }
 
-/// App chrome around the library's profile/password/2FA page (and, below it, [`crate::keys`]'s
-/// API-key card — composed in via `Auth::profile_extra`).
+/// App chrome around the library's profile pages: the caller's own (password, 2FA, and below them
+/// [`crate::keys`]'s API-key card and [`tz_section`], composed in via `Auth::profile_extra`), the 2FA
+/// enrolment, and a manager's `/profile/{id}` reset page — which the console's Users table links to
+/// as each row's View. The full navbar, so none of them is a dead end.
 pub fn profile_shell(fragment: &str, who: &Identity) -> String {
-    let body = card(36, &format!(r#"{fragment}<hr><a href="/">&larr; Back to the dashboard</a>"#));
-    Shell::plain("Profile — teleddns", &who.username, body).html()
+    Shell::profile("Profile — teleddns", who, card(36, fragment)).html()
 }
 
 /// The CSRF refusal, in our page shell instead of relativelylight's bare one. Same discipline as the
@@ -492,6 +522,22 @@ mod tests {
         assert!(!html.contains("alpinejs"), "no Alpine: {html}");
         assert!(!html.contains("bootstrap.bundle"), "no Bootstrap JS bundle");
         assert!(!html.contains("x-cloak"));
+    }
+
+    /// The profile pages get the console's navbar — but only a Superadmin gets its links: Dashboard
+    /// and Console would answer anyone else `403`.
+    #[test]
+    fn the_profile_navbar_links_the_console_for_admins_only() {
+        let admin = Identity::new("1", "root", vec![crate::app::ADMIN_GROUP.to_string()]);
+        let device = Identity::new("2", "router", vec!["home".to_string()]);
+        let html = profile_shell("<p>fragment</p>", &admin);
+        assert!(html.contains(&format!(r#"href="{FIRST_ENTITY}""#)), "{html}");
+        assert!(html.contains(r#"href="/">Dashboard"#), "{html}");
+        assert!(html.contains("root") && html.contains("/logout"));
+        let html = profile_shell("<p>fragment</p>", &device);
+        assert!(!html.contains(FIRST_ENTITY), "no Console link for a non-admin: {html}");
+        assert!(!html.contains(">Dashboard<"), "{html}");
+        assert!(html.contains("router") && html.contains("/logout"));
     }
 
     /// The timezone is a profile setting, not navbar chrome: no page shell carries the picker.

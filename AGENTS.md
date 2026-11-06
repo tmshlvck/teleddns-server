@@ -291,6 +291,16 @@ password + 2FA), then exercise `/api/...`.
   It is `web::tz_section`, appended after the API-keys card in `Auth::profile_extra`; since 0.4.3
   that hook gets `ProfileSection::headers`, so the picker preselects the cookie's zone and the keys
   card formats its dates in it. Don't put it back in `shell.html`.
+- **The profile pages share the console's navbar** (`Shell::profile`, one `nav()` list), though
+  `profile_shell` is handed no request: no item is active there, and `who` decides whether the links
+  appear at all — Superadmins only, since Dashboard and Console are `403` for anyone else. `who` is
+  the *caller* on a manager's `/profile/{id}` too, which is the right name for the navbar.
+- **A user's reset page is the console's View.** The Users table's `detail_href("/profile/{id}")`
+  sends View to the library's manager page — the only path that turns off another user's 2FA (the
+  TOTP columns are hidden on the form) and the reset that revokes the target's sessions and
+  re-authenticates the admin. The edit form keeps its password field (an account's first password
+  is set there) with a description pointing at View; don't turn that note into a restriction
+  without asking.
 - `relativelylight` is a **crates.io dependency** (`version = "0.4"`), which for a `0.x` crate is one
   compatible range: a patch release is picked up, a behaviour break bumps the minor and is not (0.4.1
   was the exception: it broke in a patch, though not in anything we use — read the changelog even for a
