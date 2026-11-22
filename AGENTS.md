@@ -298,15 +298,19 @@ password + 2FA), then exercise `/api/...`.
   inputs and the CSV export alike, so an export matches what is on screen. **The picker lives on
   `/profile`, not in the navbar** — a personal setting belongs with the other ones, and the navbar
   stays navigation. It is `web::tz_section`, a `profile_card` from `Auth::profile_extra`. Because it
-  is not on every page, **every page names its zone in the footer** ("Times in …"). Don't put the
-  picker back in `shell.html`.
+  is not on every page, **every page names its zone in the navbar** ("TZ: …", linking to the card's
+  `#timezone` anchor once someone is signed in). Don't put the picker back in `shell.html`.
 - **One shell, one navbar, for every page** (`Shell::new`). Since 0.5 the library hands
   `login_shell`, `profile_shell` and `csrf_rejection` the request's `Parts`, so its pages get the
-  same chrome as ours: the active item, the footer's zone. `who` decides whether the links appear at
+  same chrome as ours: the active item, the zone. `who` decides whether the links appear at
   all — Superadmins only, since Dashboard and Console are `403` for anyone else; it is the *caller*
   on a manager's `/profile/{id}` too, which is the right name for the navbar. A badge by the name
   says when the account should choose a new password (`Identity::password_change` — 0.5 flags an
-  account whose password someone else set, e.g. in the console).
+  account whose password someone else set, e.g. in the console). The right-hand side is drawn the way
+  climb draws it: the zone, then the name as a `<details>` menu holding Profile and Log out (a
+  disclosure, not a Bootstrap dropdown, which would need the JS bundle), then the theme toggle. The
+  typography is deliberately quiet: a regular-weight brand, and `fw-medium` only on the current item
+  and the name.
 - **A user's credentials page is linked from the console.** `auth::user::meta_model` links each
   account's id to the library's manager page, `/profile/{id}` — the only path that turns off another
   user's 2FA and the reset that revokes the target's sessions and re-authenticates the admin. The

@@ -74,7 +74,7 @@ struct Shell {
     password_due: bool,
     nav: Vec<NavItem>,
     body: String,
-    /// The zone every time on the page is shown in, named in the footer: the picker lives on
+    /// The zone every time on the page is shown in, named in the navbar: the picker lives on
     /// `/profile` only, and a time with no zone beside it is ambiguous.
     tz: String,
     css: &'static str,
@@ -403,15 +403,16 @@ const MAX_ZONES_PER_DELETE: u64 = 10_000;
 
 /// The "Display timezone" card on `/profile`, composed in after the library's own cards (API keys
 /// among them) through `Auth::profile_extra`. The timezone is a personal display preference, so it
-/// lives with the user's other settings rather than taking a slot in every page's navbar; every other
-/// page names the zone in its footer instead. The picker is relativelylight 0.5's `time::picker`, a
+/// lives with the user's other settings rather than taking a slot in every page's navbar; the navbar
+/// names the zone and links here (`#timezone`, on the card's first line, with room above it for the
+/// card's title — not on the card itself, whose markup is the library's). The picker is relativelylight 0.5's `time::picker`, a
 /// searchable list of every zone the host knows: `time::JS` (inlined by the shell) sets the cookie
 /// and reloads, so there is no route behind it.
 pub fn tz_section(headers: &HeaderMap) -> String {
     auth::profile_card(
         "Display timezone",
         &format!(
-            r#"<p class="text-muted">Every time the console shows — tables, edit forms, the dashboard,
+            r#"<p id="timezone" class="text-muted" style="scroll-margin-top:4rem">Every time the console shows — tables, edit forms, the dashboard,
 CSV exports — is in this zone. The database and the APIs always use UTC.</p>
 {}"#,
             time::picker(&Tz::from_headers(headers))
@@ -514,14 +515,32 @@ mod tests {
         assert!(html.contains("router") && html.contains("/logout"));
     }
 
-    /// The picker is a profile setting, not navbar chrome; every page names the zone instead.
+    /// The picker is a profile setting, not navbar chrome; every page names the zone instead — a
+    /// link to the profile's card once someone is signed in, plain text on the login page.
     #[test]
     fn the_shell_names_the_zone_but_has_no_picker() {
         let cookie = Tz::named("Europe/Prague").cookie();
         let req = parts("/admin/zone", Some(cookie.split(';').next().unwrap()));
         let html = Shell::for_parts("t", None, &req, "<p>body</p>".into()).html();
         assert!(!html.contains("<datalist"), "picker belongs on /profile: {html}");
-        assert!(html.contains("Times in Europe/Prague"), "{html}");
+        assert!(html.contains("TZ: Europe/Prague"), "{html}");
+        assert!(!html.contains("/profile#timezone"), "no profile to link before login: {html}");
+        let who = Identity::new("1", "root", vec![]);
+        let html = Shell::for_parts("t", Some(&who), &req, "<p>body</p>".into()).html();
+        assert!(html.contains(r#"href="/profile#timezone""#), "{html}");
+    }
+
+    /// The account menu is a `<details>` (no Bootstrap JS) holding Profile and Log out.
+    #[test]
+    fn the_account_menu_opens_profile_and_logout() {
+        let who = Identity::new("1", "root", vec![]);
+        let html = Shell::for_parts("t", Some(&who), &parts("/profile", None), String::new()).html();
+        let menu = &html[html.find(r#"<details class="td-menu">"#).expect("menu")..];
+        let menu = &menu[..menu.find("</details>").unwrap()];
+        assert!(menu.contains("root"), "{menu}");
+        assert!(menu.contains(r#"href="/profile""#) && menu.contains(r#"href="/logout""#), "{menu}");
+        let html = Shell::for_parts("t", None, &parts("/login", None), String::new()).html();
+        assert!(!html.contains("td-menu\">"), "no account menu before login");
     }
 
     /// The profile's card opens on the caller's current zone (from the cookie).
@@ -532,5 +551,6 @@ mod tests {
         let html = tz_section(&headers);
         assert!(html.contains("Display timezone"), "{html}");
         assert!(html.contains(r#"value="Europe/Prague""#), "{html}");
+        assert!(html.contains(r#"id="timezone""#), "the navbar's zone links here: {html}");
     }
 }

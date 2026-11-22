@@ -43,7 +43,8 @@ whatever the number does. Read that section, not the digits.
     TOTP.
   - **The profile page is a grid of cards** (two columns on a wide screen); the display timezone is
     one of them, with a searchable list of every zone, and a first visit takes the browser's own
-    zone. Every page now names its zone in the footer.
+    zone. Every page names its zone in the navbar ("TZ: …", linking to that card), and the username
+    opens a small menu with Profile and Log out, as in climb.
   - **Console dialogs are real modals** (focus inside, Esc closes; a changed form asks before
     discarding), and pages cross-fade. Without JavaScript they work as before.
   - **Search finds more** — numbers, dates and the zone column by its name — and the audit log has

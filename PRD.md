@@ -955,4 +955,5 @@ Knot backend + worker, §8 operability, §9 config + CLI.
   cells, datetime inputs and CSV exports alike. The picker (relativelylight 0.5's
   `time::picker`: every zone the host knows; a first visit takes the browser's) is a
   card on the profile page, not navbar chrome: it is a personal setting, and the
-  navbar is kept to navigation. Every page names its zone in the footer instead.
+  navbar is kept to navigation. Every page names its zone in the navbar instead
+  ("TZ: …", a link to that card), beside the account menu (Profile, Log out).

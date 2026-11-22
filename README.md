@@ -123,7 +123,7 @@ database. `/admin/{entity}` is the console; every table's view (page, sort, sear
 zone filter, the open create/edit dialog) lives in the URL, so any screen is a link
 you can bookmark or put in a runbook, and the zone you pick follows you from one
 record type to the next. The **display timezone**, chosen on `/profile` (a first visit takes
-the browser's) and named in every page's footer, is a cookie the *server* formats with, so
+the browser's) and named in every page's navbar, is a cookie the *server* formats with, so
 a CSV export matches what is on screen.
 
 Nothing on the console is built in the browser: no framework, no JSON API behind the
