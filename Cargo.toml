@@ -1,6 +1,6 @@
 [package]
 name = "teleddns-server"
-version = "0.4.5"
+version = "0.4.6"
 edition = "2021"
 rust-version = "1.89"   # relativelylight 0.5 (webauthn-rs 0.6) declares the same
 license = "GPL-3.0-or-later"

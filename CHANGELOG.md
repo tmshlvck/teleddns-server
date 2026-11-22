@@ -8,7 +8,11 @@ major/minor/patch split carries no mechanical meaning and is not used to encode 
 Versions increment; **anything an operator must do is called out under "Upgrading" in the entry**,
 whatever the number does. Read that section, not the digits.
 
-## Unreleased
+## [0.4.6] — 2026-11-22
+
+relativelylight 0.5 underneath: API keys, the accounts tables and the timezone picker are now the
+library's, the profile page is a grid of cards, and every page carries one navbar with the zone and
+an account menu. **This upgrade is one-way and removes a config key** — read "Upgrading".
 
 ### Upgrading — one config key removed, and the upgrade is one-way
 
@@ -60,13 +64,12 @@ whatever the number does. Read that section, not the digits.
   0.4.2 fixes the profile page dropping the API-keys card right after disabling 2FA (or when
   recovery codes could not be created at enrolment): it rendered the password form alone.
   0.4.3 stops Firefox restoring a stale choice into the timezone picker on reload.
-- **The timezone picker moved from the navbar to `/profile`**, as a "Display timezone" section below
-  the API keys: it is a personal setting, and the navbar now holds only navigation. It still sets
-  the same cookie, so a zone chosen before the upgrade is kept.
+- **The timezone picker moved from the navbar to `/profile`**, as the "Display timezone" card: it is
+  a personal setting. It still sets the same cookie, so a zone chosen before the upgrade is kept.
 - **The profile pages have the console's navbar** — `/profile`, 2FA enrolment and an admin's
-  `/profile/{id}`. Dashboard and Console appear for admins only; any other account sees its name
-  and "log out". The "Back to the dashboard" link under the card is gone.
-- **View on a user in the console opens that user's reset page** (`/profile/{id}`): a password
+  `/profile/{id}`. Dashboard and Console appear for admins only; any other account sees only its
+  zone and its account menu. The "Back to the dashboard" link under the card is gone.
+- **A user's id in the console opens that user's reset page** (`/profile/{id}`): a password
   reset that signs them out everywhere, and turning off a lost 2FA — the latter impossible from
   the console before, whose user form hides the 2FA columns. The edit form's password field now
   says so: setting a password there does not end the user's sessions.
@@ -85,7 +88,6 @@ whatever the number does. Read that section, not the digits.
   `basic-toml` (RUSTSEC-2026-0374). relativelylight 0.4.2 made askama private to the library, so the
   two no longer have to match. `axum-extra` 0.12, `sha2` 0.11 and `base64` 0.23 follow the library,
   so the build carries one copy of each. Templates and output are unchanged.
-- **Building needs Rust 1.88 or newer** (askama 0.16 and relativelylight 0.4.2's `totp-rs` 6).
 - **`cargo audit` is clean.** The one remaining advisory, `rsa` (RUSTSEC-2023-0071, the Marvin
   attack), is ignored in `.cargo/audit.toml` with the reason: it arrives via `openidconnect` for SSO,
   which only *verifies* ID-token signatures with a public key, and teleddns holds no RSA private key
