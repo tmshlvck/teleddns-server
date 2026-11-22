@@ -11,10 +11,10 @@ deviates from the dyn API) is [`DYNDNS2.md`](DYNDNS2.md) — keep it in step wit
 
 A Rust rewrite of a co-located DNS + Dynamic-DNS control-plane for a Knot DNS
 master, built on the [`relativelylight`](https://github.com/tmshlvck/relativelylight)
-back-office library (a **crates.io dependency**, `version = "0.4"` in `Cargo.toml`). The library
+back-office library (a **crates.io dependency**, `version = "0.5"` in `Cargo.toml`). The library
 provides the SeaORM CRUD engine + metadata, the server-rendered admin UI
-(`crud::ui::Admin` — plain HTML fragments, no JavaScript framework), and `auth`
-(users/groups/sessions/login/profile, argon2id, TOTP, the `Authz` gate). Everything
+(`crud::Admin` — plain HTML fragments, no JavaScript framework), and `auth`
+(users/groups/sessions/login/profile, argon2id, TOTP, API keys, the `Authz` gate). Everything
 DNS-specific is app code, and so is every route: the library contributes none.
 
 ## Before you start — fetch first
@@ -69,11 +69,10 @@ password + 2FA), then exercise `/api/...`.
 | `config.rs` | layered YAML config (defaults → file → env → flags) |
 | `db.rs` | connection; SQLite DSN normalization |
 | `app.rs` | `AppState`, router composition, server bootstrap, admin seed |
-| `model/` | SeaORM entities: `zone` (SOA inline), `rr` (one table per type, macro), `api_key`, `roles` (zone_role/rr_role), `sync_task`, `idempotency`, `audit` |
+| `model/` | SeaORM entities: `zone` (SOA inline), `rr` (one table per type, macro), `roles` (zone_role/rr_role), `sync_task`, `idempotency`, `audit` |
 | `migration/` | versioned `sea-orm-migration` steps (auth tables via the library + app tables + audit) |
 | `authz.rs` | `Level` algebra, the `min()` cap, `effective_level`, `user_groups` |
-| `principal.rs` | resolve session / HTTP Basic / bearer → `Principal` (with a token level); the one place credential failures are counted + metered |
-| `keys.rs` | self-service API-key component (`section()` composed onto `/profile` via `Auth::profile_extra`; CSRF-checked mint/revoke of the caller's own keys) |
+| `principal.rs` | resolve HTTP Basic / API key → `Principal`; the one place credential failures are counted + metered (keys: `Auth::identify_key`, which brakes them itself) |
 | `stats.rs` | the numbers `/healthcheck`, `/metrics` and the dashboard all report — one `Stats::gather`, one `warnings()` predicate, so the three can't disagree |
 | `sync.rs` | serial bump + push enqueue (called from RR/zone `after_save` hooks and write paths) |
 | `audit.rs` | audit sink: `WriteObserver` for admin/auth writes + `record()` for DDNS/API/CF; writes the `audit` table |
@@ -85,7 +84,7 @@ password + 2FA), then exercise `/api/...`.
 | `net.rs` | just two middlewares (source admission via `ip_src_allowed`/`ops_ip_src_allowed`, access log — the library ships no logging, so the request log is ours). Neither resolves an address — both read the `RealIp` extension `relativelylight::middleware::resolve_real_ip` fills at the outermost layer. CIDR rules are `relativelylight::net`'s `parse_nets`/`in_nets` (both families and the `::ffff:` form) |
 | `metrics.rs` | Prometheus registry + instruments |
 | `sso.rs` | build relativelylight `Sso` (OIDC) from config; login-page buttons |
-| `web/` | the console, a plain MPA: `mod.rs` (page shell + the `get`/`post` handler pair behind `/admin/{entity}` + the login/profile/CSRF chrome + `/tz`), `entities.rs` (the CRUD engine: every managed entity's labels, help and validators), `dashboard.rs` (the landing page) |
+| `web/` | the console, a plain MPA: `mod.rs` (page shell + the `get`/`post` handler pair behind `/admin/{entity}` + the login/profile/CSRF chrome + the profile's timezone card), `entities.rs` (the CRUD engine: every managed entity's labels, help and validators), `dashboard.rs` (the landing page) |
 | `templates/` | the two askama templates the app owns: `shell.html` (the only `<html>` in the tree) and `dashboard.html` |
 | `zoneimport.rs` | BIND zone-file parser for `admin import` |
 
@@ -93,7 +92,7 @@ password + 2FA), then exercise `/api/...`.
 
 - **The app owns the roots.** Since library 0.3 `relativelylight` contributes **no routes at all** —
   only HTML fragments and a write path. `app.rs` owns the axum router, `web/mod.rs` owns the page
-  shell (Bootstrap 5's *stylesheet* plus `crud::ui::CSS`, and nothing else), and `api/openapi.rs`
+  shell (Bootstrap 5's *stylesheet*, `crud::CSS`, and the library's two inlined scripts `crud::JS` + `time::JS`), and `api/openapi.rs`
   owns the whole OpenAPI document.
 - **One name for the admin group.** `app::ADMIN_GROUP` drives `Auth::admin_group`, the
   console gate in `web/entities.rs`, the Superadmin decision in `authz::user_groups`, the first-start seed,
@@ -140,23 +139,24 @@ password + 2FA), then exercise `/api/...`.
   `post` on the *same path* writes (`submit`), and a write answers `303`. The view — page, sort,
   filters, search, which entity, which dialog is open — lives in the **query string** and nowhere
   else, so every screen is a link. There is no JSON between browser and server, no client-side
-  state, and no script file: the only JavaScript the app ships is the shell's light/dark toggle
-  (enhancement — without it the page is light) and Swagger UI on `/docs`, which is a viewer for the
-  *machine* API, not part of the console. If you reach for `fetch`, you are rebuilding the thing
-  0.3 deleted.
+  state, and no script file. The shell inlines the library's two small scripts — `crud::JS` (the
+  dialogs become real modals, with Esc) and `time::JS` (sets the zone cookie) — and the light/dark
+  toggle; all three are enhancement, and every page works without them (plainer, in UTC, light).
+  Swagger UI on `/docs` is a viewer for the *machine* API, not part of the console. If you reach for
+  `fetch`, you are rebuilding the thing 0.3 deleted.
 - **Both handlers must build the same panel.** `web::panel()` is a *function* for that reason: a
   link the read side renders has to be a write the post side accepts, and `submit` refuses an
   entity the panel doesn't list before it consults any gate. Never inline one of them.
 - **Cookie-authenticated writes need the CSRF token.** relativelylight's own forms and
-  the `crud` engine (`crud.csrf(auth.csrf())` in `web/entities.rs`) render and enforce it; app-owned
-  cookie-auth posts must too — `keys.rs` is the worked example (`Csrf::hidden_input` from the token
-  `Auth::profile_extra` hands it, verified with `Csrf::verify`).
+  the `crud` engine (`engine.csrf(auth.csrf())` in `web/entities.rs`) render and enforce it. The app
+  owns no cookie-authenticated form of its own any more (0.5 took the API-key card over); one added
+  must carry `Csrf::hidden_input(&s.csrf)` from the `ProfileSection` and check `Csrf::verify`.
   Bearer-authenticated surfaces are exempt by design, so `/api` and `/client/v4` stay
   header-only.
 - **The library schedules nothing; the worker does.** `relativelylight` spawns no tasks, so
   `Auth::prune` (expired sessions on *both* clocks + expired lockout rows) is called hourly from
-  `backend::worker`, next to the reconcile and full-resync passes. It is the **method**, not the free
-  `auth::prune` — only the handle knows our `session_idle_secs`. Missing a prune is harmless
+  `backend::worker`, next to the reconcile and full-resync passes (0.5 removed the free `auth::prune`;
+  only the handle knows our `session_idle_secs`). Missing a prune is harmless
   — expired rows read as absent — so it stays best-effort.
 - **One address, resolved once, at the edge.** `relativelylight::middleware::resolve_real_ip` is the
   **outermost** layer in `app.rs` (`Router::layer` wraps, so it is the last one added) and is
@@ -176,10 +176,13 @@ password + 2FA), then exercise `/api/...`.
   **`config.log_access` decides whether that layer is installed at all** (`app.rs`), rather than
   having the middleware check a flag and return early — off should cost nothing per request. It is
   the only log with a switch, because it is the only one a reverse proxy duplicates.
-- **Both password surfaces or neither.** `config.password_level` feeds `Auth::password_policy` (the
-  profile + manager pages) **and** the `password_hash` field validator on the admin user form
-  (`web/entities.rs`). Wire a new one and you have created the documented way around the other. It governs typed
-  input only — `admin reset-password` and the first-start seed must always be able to set a password.
+- **One password policy, one wiring.** `config.password_level` feeds `Auth::password_policy`, and
+  that one setting screens the profile + manager pages **and** the console's user form, which is
+  `auth::user::meta_model(&auth)` (0.5) and takes its validator from the `Auth`. Don't configure the
+  user table by hand again: a second wiring is the documented way around the first. The console sets
+  an account's *first* password only (`create_only`); every later one is the manager page's, which
+  also signs the account out. It governs typed input only — `admin reset-password` and the
+  first-start seed must always be able to set a password.
 - **Every mutation bumps the serial + enqueues a push.** RR/zone create+update go
   through SeaORM `ActiveModel::insert/update`, whose `after_save` hooks call
   `sync::*`. **Deletes fire no hook at all** — every delete path is a set-based
@@ -234,7 +237,8 @@ password + 2FA), then exercise `/api/...`.
   `api::zones::parse_template`. Same shape as the password-policy invariant above: wire one and you
   have built the documented way around the other. Empty list = unrestricted on both, with
   `dns::check::template_name` as the syntactic floor on both.
-- **Everything that depends on a row cascades from it.** `api_key.user_id`, both grant tables'
+- **Everything that depends on a row cascades from it.** `auth_api_key.user_id` (the library's
+  since 0.5; `m0008` gave our old `api_key` the same, and `m0010` renamed it), both grant tables'
   `group_id` / `zone_id`, and every `rr_*.zone_id` are `ON DELETE CASCADE` — declared on the entity
   (so a fresh database gets it) *and* rebuilt by `m0008` / `m0009` (so an upgraded one does). A key
   **is** its owner, a grant naming a deleted group or zone grants nothing, and a record without its
@@ -257,6 +261,8 @@ password + 2FA), then exercise `/api/...`.
   from the **live** entity definitions, so the moment a model gains a field, `m0001` starts creating
   it too — a fresh database then has the column before the `ALTER` step runs, and an unguarded
   `add_column` is a `duplicate column name` at boot. `m0003` and `m0007` are the worked examples.
+  The same holds for the library's tables — `m0001` builds them from the live
+  `auth::table_create_statements` — so `m0010` guards each of 0.5's `auth::upgrade` statements.
 - **A shipped migration is never renumbered.** `Migrator::migrations()` is the truth; the two
   `TODO-*.md` plans carry *proposed* numbers that go stale the moment anything else ships. Check the
   vec before picking one, and renumber the plan, not the code.
@@ -280,31 +286,46 @@ password + 2FA), then exercise `/api/...`.
   (`ip_src_allowed`). Everything else on the old list of gaps has landed: real-ip resolution is the
   library's `resolve_real_ip` layer (see the invariant above), CSRF covers every cookie-authenticated
   write, and 0.2.0 brought re-auth before a password/2FA change, session invalidation after a password
-  change, and TOTP recovery codes. Still missing, library-side: passkeys/WebAuthn, and re-auth through
-  the IdP for SSO accounts (an SSO account has no local factor, so it passes the re-auth gate
-  unchallenged — relativelylight `docs/AUTH.md` §5h states the limit).
-- **Timezones are done** (this was the long-standing TODO). The DB and the APIs stay UTC; the
-  picker (`time::TzPicker`, offered zones from `config.timezones`) posts to `/tz`, which sets a
-  cookie, and the **server** formats every timestamp with it — table cells, datetime inputs and the
-  CSV export alike, so an export matches what is on screen. **The picker lives on `/profile`, not in
-  the navbar** — a personal setting belongs with the other ones, and the navbar stays navigation.
-  It is `web::tz_section`, appended after the API-keys card in `Auth::profile_extra`; since 0.4.3
-  that hook gets `ProfileSection::headers`, so the picker preselects the cookie's zone and the keys
-  card formats its dates in it. Don't put it back in `shell.html`.
-- **The profile pages share the console's navbar** (`Shell::profile`, one `nav()` list), though
-  `profile_shell` is handed no request: no item is active there, and `who` decides whether the links
-  appear at all — Superadmins only, since Dashboard and Console are `403` for anyone else. `who` is
-  the *caller* on a manager's `/profile/{id}` too, which is the right name for the navbar.
-- **A user's reset page is the console's View.** The Users table's `detail_href("/profile/{id}")`
-  sends View to the library's manager page — the only path that turns off another user's 2FA (the
-  TOTP columns are hidden on the form) and the reset that revokes the target's sessions and
-  re-authenticates the admin. The edit form keeps its password field (an account's first password
-  is set there) with a description pointing at View; don't turn that note into a restriction
-  without asking.
-- `relativelylight` is a **crates.io dependency** (`version = "0.4"`), which for a `0.x` crate is one
+  change, and TOTP recovery codes; 0.5 brought re-auth through the IdP for SSO accounts (a
+  **Confirm with …** round trip before a sensitive change). Passkeys exist in the library (feature
+  `passkeys`) but are **not** turned on here: it is ~130 crates and an `rp_id`/origin to configure,
+  and nothing asked for it yet. Turning it on is the feature, `Auth::passkeys(..)`, and
+  `auth::passkey::meta_model()` in the Accounts group; the tables already exist (`m0010`).
+- **Timezones are done.** The DB and the APIs stay UTC; the picker is relativelylight 0.5's
+  `time::picker` (every zone the host knows — there is no configured list any more) driven by
+  `time::JS`, which sets a cookie and reloads, with no route behind it; a first visit takes the
+  browser's zone. The **server** formats every timestamp with that cookie — table cells, datetime
+  inputs and the CSV export alike, so an export matches what is on screen. **The picker lives on
+  `/profile`, not in the navbar** — a personal setting belongs with the other ones, and the navbar
+  stays navigation. It is `web::tz_section`, a `profile_card` from `Auth::profile_extra`. Because it
+  is not on every page, **every page names its zone in the footer** ("Times in …"). Don't put the
+  picker back in `shell.html`.
+- **One shell, one navbar, for every page** (`Shell::new`). Since 0.5 the library hands
+  `login_shell`, `profile_shell` and `csrf_rejection` the request's `Parts`, so its pages get the
+  same chrome as ours: the active item, the footer's zone. `who` decides whether the links appear at
+  all — Superadmins only, since Dashboard and Console are `403` for anyone else; it is the *caller*
+  on a manager's `/profile/{id}` too, which is the right name for the navbar. A badge by the name
+  says when the account should choose a new password (`Identity::password_change` — 0.5 flags an
+  account whose password someone else set, e.g. in the console).
+- **A user's credentials page is linked from the console.** `auth::user::meta_model` links each
+  account's id to the library's manager page, `/profile/{id}` — the only path that turns off another
+  user's 2FA and the reset that revokes the target's sessions and re-authenticates the admin. The
+  console's form sets an account's *first* password only.
+- `relativelylight` is a **crates.io dependency** (`version = "0.5"`), which for a `0.x` crate is one
   compatible range: a patch release is picked up, a behaviour break bumps the minor and is not (0.4.1
   was the exception: it broke in a patch, though not in anything we use — read the changelog even for a
-  patch), and `Cargo.lock` pins the exact version regardless. We are on **0.4.3**; 0.4.0 moved to **SeaORM 2.0** —
+  patch), and `Cargo.lock` pins the exact version regardless. We are on **0.5.0**. What 0.5 changed
+  for us (library `docs/MIGRATION-0.5.md`): only `sso` is a feature now (the rest is always
+  compiled); everything in `crud` is imported from `crud::` (no `crud::ui::`/`seaorm::`/`engine::`);
+  the engine's settings (`csrf`, `on_write`) are set on the `Engine` after `crud.into_engine()`; the
+  accounts panel is the library's `meta_model()`s; **API keys are the library's** (`Auth::api_keys`
+  for the profile card, `Auth::identify_key` for the bearer check, `auth_api_key` — our `api_key`
+  renamed by `m0010`); the profile page is a grid of `profile_card`s; and the auth tables grew six
+  columns and three tables (`m0010`). A row's link is `MetaModel::view_path`, a display formatter is
+  `MetaField::format_cell`, both on the model. We still do **not** serve the relation `Picker`
+  (`picker_path`): a relation past `picker_threshold` (50) stays a `<select>` of every row, which is
+  fine for a zone list, and "+ New" / relation links (`picker_create`, `picker_view`) need it.
+  0.4.0 moved to **SeaORM 2.0** —
   our entities and `DatabaseConnection` go straight into `MetaModel::new` / `Crud::new` / `Auth::new`,
   so `sea-orm` and `sea-orm-migration` in `Cargo.toml` must be the same major as the library's. What
   2.0 changed in our own code: a hand-built `Statement` goes through `query_one_raw` /
@@ -316,32 +337,30 @@ password + 2FA), then exercise `/api/...`.
   `integer` where 1.1 wrote `bigint` (the same 64-bit affinity), on PostgreSQL `id` is an identity
   column where 1.1 made it `serial` — so a fresh database and an upgraded one differ in DDL but not
   in behaviour. Don't "fix" either toward the other. Of 0.4's own changes we took
-  `TzPicker::submitted` (the `/tz` handler's body) and `WriteEvent::actor` (`audit.rs` — a
+  `WriteEvent::actor` (`audit.rs` — a
   self-service password change rotates the session before its event fires, so the cookie names
   nobody). From 0.4.1 we took `Auth::on_error`
   (`app::LogErrors` — a DB failure at login still answers the visitor `401`, and is logged here rather
   than lost). 0.4.2 made askama **private** to the library — no template type of it is public — so
   our askama is ours to version (0.16, without `config`: no `askama.toml`, and that feature pulls the
-  unmaintained `basic-toml`). 0.4.3's `ProfileSection::headers` is what lets the profile page
-  carry the timezone picker and format the keys card's times (see Timezones above). We deliberately do **not** serve 0.4's relation `Picker`: it needs `crud::ui::JS` in the
-  shell, and the console ships no script (see the MPA invariant), so a relation past
-  `picker_threshold` (50) stays a `<select>` of every row — fine for a zone list.
-  0.3.0 before it re-homed the web UI in Rust: `Crud::new(db)` lost its mount path, `render()` became `async render_for(&headers, &state)`,
+  unmaintained `basic-toml`). 0.4.3's `ProfileSection::headers` is what lets the profile card
+  preselect the caller's zone. 0.3.0 before it re-homed the web UI in Rust: `Crud::new(db)` lost its mount path, `render()` became `async render_for(&headers, &state)`,
   writes need a `post` route calling `submit(&headers, ip, &body, &state)` (raw `Bytes` — a CSV
   import is a real file upload), `Table::format` takes a Rust closure instead of a string of
   JavaScript, `Auth::profile_extra` is handed a `ProfileSection` (identity **and** this request's
-  CSRF token), `time::JS` is gone in favour of a server-side `Tz`, and the `openapi` feature, the
+  CSRF token), and the `openapi` feature, the
   JSON/metadata API and `Crud::into_router` no longer exist. **Reads are gated now** — `render_for`
   answers 401/403 itself rather than rendering rows a caller may not read. The 0.2.0 defaults it
   inherits are still in force: CSRF on the auth forms, the DB-backed login lockout, the mandatory
   `resolve_real_ip` layer, `set_password` as a reset plus `reset_admin_access` for break-glass, an
   empty input on a *nullable* column stored as `NULL`, `NOT NULL` columns enforced as `required` (a
   hook-stamped column must be `read_only`), and `#[non_exhaustive]` public types (build them from
-  `Default` + setters, never a struct literal). Moving to `0.5` will be a read of the library's
-  `CHANGELOG.md` §Upgrading and `docs/MIGRATION-*.md`, not a version bump.
+  `Default` + setters, never a struct literal). Moving to `0.6` will be a read of the library's
+  `CHANGELOG.md` and `docs/MIGRATION-*.md`, not a version bump.
 - **Audit** is written by `audit.rs`, and **every path that writes or deletes app state goes through
   it** — there are exactly three ways in: the `WriteObserver` relativelylight fires for the admin
-  auto-CRUD + auth handlers; `Audit::record` (DDNS/API/CF/`keys.rs`, principal + `RealIp` already
+  auto-CRUD + auth handlers (sign-ins and API-key mints/revokes included, since 0.5);
+  `Audit::record` (DDNS/API/CF, principal + `RealIp` already
   resolved); and `Audit::record_local` for the paths with no request behind them (`admin import`,
   `admin reset-password`, the first-start seed, the retention pass), actored by the shell user with
   `auth_type: local`. `audit::SOURCES` is the vocabulary — add a surface, add it there, and it shows
@@ -408,5 +427,5 @@ OpenAPI generator — the document is `serde_json` in `api/openapi.rs`. Match th
 surrounding terse, well-commented style; keep doc comments current (they carry
 the contract). Errors on the API are `{ "error": … }` with the right status
 (400/401/403/404/422/500); the CF facade uses the CF envelope. HTML the app
-writes itself goes through `crud::ui::esc_str` (or an askama template, which
+writes itself goes through `crud::esc_str` (or an askama template, which
 escapes for you) — never `format!` a database value straight into a page.

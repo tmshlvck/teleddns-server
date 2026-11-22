@@ -11,7 +11,6 @@ mod config;
 mod db;
 mod ddns;
 mod dns;
-mod keys;
 mod metrics;
 mod migration;
 mod model;

@@ -122,13 +122,15 @@ plus the serial each zone is actually being answered with beside the one in the
 database. `/admin/{entity}` is the console; every table's view (page, sort, search,
 zone filter, the open create/edit dialog) lives in the URL, so any screen is a link
 you can bookmark or put in a runbook, and the zone you pick follows you from one
-record type to the next. The **display timezone**, chosen at the foot of `/profile`, is a
-cookie the *server* formats with, so a CSV export matches what is on screen.
+record type to the next. The **display timezone**, chosen on `/profile` (a first visit takes
+the browser's) and named in every page's footer, is a cookie the *server* formats with, so
+a CSV export matches what is on screen.
 
 Nothing on the console is built in the browser: no framework, no JSON API behind the
-pages, no script file. The page loads Bootstrap's stylesheet and about forty lines of
-CSS, and the only JavaScript is the light/dark toggle — turn scripting off and
-everything still works, in light mode.
+pages, no script file. The page loads Bootstrap's stylesheet and a little CSS; its only
+JavaScript is inlined and optional — dialogs that behave as modals (Esc closes them),
+the timezone cookie, and the light/dark toggle. Turn scripting off and everything still
+works: plainer dialogs, times in UTC, light mode.
 
 **Working inside one zone.** Each record table carries a **zone picker** in the side
 panel, and the choice follows you from one RR type to the next — pick the zone once
@@ -245,9 +247,10 @@ the DDNS client it exists for never needs to. A user gets the union of their gro
 grants; users, groups and grants are managed **only** in the operator console (or via
 SSO), never on the API.
 
-**API keys (bearer tokens)** are self-service on the profile page (`/profile`,
-below password + 2FA): a user mints/revokes their own keys. Only the key's hash is
-stored; the raw key is shown once.
+**API keys (bearer tokens)** are self-service on the profile page (`/profile`): a user
+mints (after confirming their password or a 2FA code) and revokes their own keys. Only
+the key's hash is stored; the raw key is shown once. The console lists every key under
+*Access → API keys*, where an operator can disable or delete one.
 
 A key **is its owner** — it carries no rights of its own, and there is nothing to
 choose at mint time but a label and an optional expiry. Every check uses the owner's
@@ -328,10 +331,10 @@ and *all* of a target's when a manager resets it. `/profile` also has a **Sign o
 sessions** button for evicting an intruder without a password change.
 
 **Resetting someone else's password or 2FA** is the user's own page, `/profile/{id}` — in the
-console it is **View** on the user's row under *Users*. That page resets the password and signs
-the user out everywhere, and turns off a 2FA whose device is lost. The Users edit form can set a
-password too (that is how an account gets its first one), but it is a plain row update: existing
-sessions stay signed in, which is why the form says to use View for a reset.
+console, click the user's **id** under *Users*. That page resets the password and signs the user
+out everywhere, and turns off a 2FA whose device is lost. The console's Users form sets an
+account's *first* password only; a password set for someone asks them to choose their own at
+their next sign-in (a badge by their name says so).
 
 **Sensitive profile changes ask for a factor again**, in the same request: enrolling 2FA or
 turning it off, and a manager's reset or 2FA-disable (which take the *manager's* own factor,
@@ -574,8 +577,6 @@ public_url: "https://ddns.example.com"            # external HTTPS base (SSO + c
 ops_ip_src_allowed: ["10.9.0.0/24"]                  # Prometheus / uptime host
 
 ui_title: "Example DNS"                           # navbar brand
-timezones: ["UTC", "Europe/Prague"]               # the profile page's timezone picker; "all" offers
-                                                  # every zone the host knows (default: UTC + EU + US)
 ```
 
 `/etc/systemd/system/teleddns-server.service`:

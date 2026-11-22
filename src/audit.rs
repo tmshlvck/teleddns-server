@@ -41,9 +41,13 @@ use std::net::IpAddr;
 /// `crud` is the older spelling of `autocrud` — relativelylight renamed it (cosmetic; a bare "crud"
 /// says little in an app with CRUD screens of its own), and it is still what our pinned 0.2.1 writes.
 /// Both stay listed because the rename isn't retroactive: a stored row keeps whichever spelling was
-/// current when it was written, until it ages out of `audit_retention_days`.
+/// current when it was written, until it ages out of `audit_retention_days`. `keys` is the same kind
+/// of fossil: our own API-key card wrote it until relativelylight 0.5 took the keys over, and a
+/// mint or revoke is now `auth-profile` (on `auth_api_key/{id}`). `auth-login` is 0.5's too: every
+/// completed console sign-in.
 pub const SOURCES: &[&str] = &[
-    "ddns", "api", "cfapi", "keys", "autocrud", "crud", "auth-profile", "auth-admin", "cli", "startup",
+    "ddns", "api", "cfapi", "keys", "autocrud", "crud", "auth-login", "auth-profile", "auth-admin", "cli",
+    "startup",
 ];
 
 pub struct Audit {

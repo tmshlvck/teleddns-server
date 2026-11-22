@@ -250,7 +250,11 @@ revoke it on its own, and the audit log names the device instead of a person. Ha
 device a key of an admin account gives it that account's authority; no property of the
 key can take that back.
 
-- Only a one-way hash of the key is stored; the raw key is shown **once** on mint.
+- Only a one-way hash of the key is stored; the raw key is shown **once** on mint, which
+  asks for the account's password (or a code) first.
+- The keys are relativelylight's (`auth_api_key`, `Auth::identify_key`, the `/profile`
+  card) since its 0.5, which adopted this very model; teleddns's own table moved into it
+  with every key intact (migration `m0010`).
 - A key carries: a display name, an optional expiry, a last-used timestamp, and a
   disabled flag. `expires_at` and `disabled` are the only limits on it.
 - Tokens authenticate the API surfaces and the DDNS endpoint (§2, §6); they never
@@ -367,15 +371,15 @@ access grants (zone-role / record-role) are managed — none of that is on the A
 - **Self-service profile:** change own password, manage own TOTP/passkeys, and
   **mint/revoke API keys** (§3.4). Admins can reset another user's password and turn off
   their 2FA on the library's manager page, `/profile/{id}`, which the console's Users table
-  opens as each row's View. A reset revokes all of the target's sessions and otherwise
+  links from each account's id. A reset revokes all of the target's sessions and otherwise
   changes *only* the password: a disabled account stays disabled and 2FA stays
   enrolled, so it can never quietly re-open a closed account. Recovering a locked-out
   administrator is a separate, deliberately destructive CLI action (§9).
 - **Failed logins are locked out** per account (and per source address where the peer
   is the real client) — see §3.6. An operator clears one by deleting its row in the
   console; nothing else is needed.
-- **CSRF:** every cookie-authenticated write — the login/profile forms, the API-key
-  card, and the admin console's JSON API — carries a double-submit token
+- **CSRF:** every cookie-authenticated write — the login/profile forms (the API-key
+  card among them) and the admin console's forms — carries a double-submit token
   (`X-CSRF-Token` header or a `_csrf` field) and is `403` without it. Bearer-
   authenticated requests are exempt: an `Authorization` header is not ambient, so a
   cross-site request cannot borrow it. A script that posts to `/login` must read the
@@ -429,8 +433,9 @@ re-renders the dialog with the messages beside the fields and the typed values s
 in them. Timestamps are formatted **server-side** in the zone chosen on the profile
 page (a cookie), which is also the zone a CSV export uses.
 
-There is no JSON API behind these pages and no client-side state; the only script the
-app ships is the light/dark toggle.
+There is no JSON API behind these pages and no client-side state. The only scripts are
+the library's two small inlined ones (`crud::JS` makes the dialogs real modals with
+Esc; `time::JS` sets the zone cookie) and the light/dark toggle — all enhancement.
 
 ---
 
@@ -520,8 +525,8 @@ are out of scope.
 
 ### 5.3 Supporting data
 
-- **API keys** — belong to a user; hash, prefix, name, expiry, last-used, disabled
-  (§3.4). No level: a key authenticates as its owner and carries no rights of its own.
+- **API keys** — belong to a user; hash, prefix, name, created, expiry, last-used,
+  disabled (§3.4); relativelylight's `auth_api_key`. No level: a key authenticates as its owner and carries no rights of its own.
 - **Zone grant** — Zone Manager; unique on `(group, zone)`.
 - **Record grant** — RR Manager; unique on `(group, zone, label)`.
 - **Users / groups / group membership / sessions** — the auth model (§3.5, §4). Plus
@@ -539,8 +544,9 @@ replicate via native DNS.
 
 Every mutating action emits a structured **audit** log line — actor (user +
 token), source IP (post reverse-proxy rewrite), action, target, and `source` ∈
-{`ddns`, `api`, `cfapi`, `keys`, `autocrud`, `auth-profile`, `auth-admin`, `cli`,
-`startup`}. The library-emitted values (`autocrud`, `auth-*`) are stored exactly
+{`ddns`, `api`, `cfapi`, `keys`, `autocrud`, `auth-login`, `auth-profile`,
+`auth-admin`, `cli`, `startup`}. (`keys` is historical: API-key mints and revokes are
+`auth-profile` since relativelylight 0.5; `auth-login` is a completed console sign-in.) The library-emitted values (`autocrud`, `auth-*`) are stored exactly
 as the library reports them; `autocrud` is spelled `crud` up to relativelylight
 0.2.1, and a stored row keeps the spelling it was written with until it ages out.
 
@@ -845,28 +851,28 @@ Rust 2021 / `tokio`; `axum` 0.8; `SeaORM` 2.0 (`sqlx-sqlite` + `sqlx-postgres`,
 for layered config; `prometheus` for metrics; `tracing` for structured logs.
 Passwords are argon2id (via the library); API keys are SHA-256-hashed. Built on
 [`relativelylight`](https://github.com/tmshlvck/relativelylight) — a crates.io
-dependency at `version = "0.4"` (one compatible range for a `0.x` crate; `Cargo.lock`
-pins the exact version), features
-`crud, axum, ui, csv, auth, sso, validate-base64`. **No front-end dependency
-beyond Bootstrap 5's stylesheet:** the console is server-rendered HTML with no
-framework, no build step and no script file.
+dependency at `version = "0.5"` (one compatible range for a `0.x` crate; `Cargo.lock`
+pins the exact version), feature `sso` (everything else is always compiled since
+0.5). **No front-end dependency beyond Bootstrap 5's stylesheet:** the console is
+server-rendered HTML with no framework, no build step and no script file.
 
 ### 11.2 Library boundary — reuse vs. build
 
 **From `relativelylight` (no per-model code):** the `auth` stack (`auth_user` /
 `auth_group` / `auth_user_group` / `auth_session`, argon2id, `Auth::identify`,
-login/logout/profile incl. TOTP + recovery codes, session lifetimes and revocation,
+login/logout/profile incl. TOTP + recovery codes and **API keys** (minting on `/profile`,
+`identify_key` for machine callers), session lifetimes and revocation,
 the re-authentication gate, the DB-backed credential lockout, the OIDC `sso` module,
 the `Authz` gate + presets); the `csrf` double-submit token; the `middleware` layers
 (`resolve_real_ip`, which every consumer of a client address depends on); the `crud`
 engine + `MetaModel` introspection driving the **operator admin console** over our
-entities; `crud::ui::Admin`/`Table` HTML fragments and their write path (`submit`);
-CSV import/export; the server-side timezone (`time::Tz`/`TzPicker`); and `validate`
+entities, including the accounts panel's models (`auth::user::meta_model` & co.);
+`crud::Admin`/`Table` HTML fragments and their write path (`submit`);
+CSV import/export; the timezone (`time::Tz`, `time::picker`); and `validate`
 (the shared field-validator predicates and the password policy — §5.2, §4.1).
 
-**We build (app code):** the DNS domain model (`zone` + one entity per RR type); the
-bearer **API-key** entity + a principal resolver (the library authenticates browsers,
-not machine callers); the **role/grant authorization** module — Superadmin / Zone
+**We build (app code):** the DNS domain model (`zone` + one entity per RR type); a
+principal resolver over HTTP Basic and the library's API keys; the **role/grant authorization** module — Superadmin / Zone
 Manager / RR Manager over two grant tables, which is row- and scope-aware and so
 beyond the library's header-only per-model gate — shared by all three request
 surfaces; the **DDNS** endpoint; the **native**
@@ -876,7 +882,7 @@ journal**; and config, migrations, metrics, healthcheck, CLI, and zone-file impo
 ### 11.3 Key decisions
 
 - **The app owns the roots.** Per the library's composition contract, the app owns
-  the axum router, the page shell (Bootstrap 5's stylesheet plus `crud::ui::CSS`),
+  the axum router, the page shell (Bootstrap 5's stylesheet plus `crud::CSS`),
   and the OpenAPI document; since library 0.3 the library contributes **no routes at
   all** — only HTML fragments and a write path the app calls from its own handlers.
 - **The console is a multi-page app.** One `get` renders and one `post` on the same
@@ -886,7 +892,7 @@ journal**; and config, migrations, metrics, healthcheck, CLI, and zone-file impo
   browser was removed with the JavaScript that consumed it (library 0.3). The three
   APIs this server *publishes* (§6) are hand-written and hand-documented.
 - **One authorization model, three surfaces.** DDNS, the native API, and the CF
-  facade all resolve a `Principal` (session / HTTP Basic / bearer) and then ask one of
+  facade all resolve a `Principal` (HTTP Basic / API key) and then ask one of
   two predicates, `zone_manager` or `rr_manager` (§3.3). A credential never carries
   rights of its own. The operator console is Superadmin-only via the library's admin
   gate. There is never a second authz path.
@@ -915,8 +921,10 @@ Knot backend + worker, §8 operability, §9 config + CLI.
 
 **Open items / TODO:**
 
-- **Passkeys** (§3.5, §4.1) are not implemented — TOTP 2FA is. "Has a strong
-  factor" (which disables DDNS HTTP Basic) currently means TOTP or SSO.
+- **Passkeys** (§3.5, §4.1) are not turned on — TOTP 2FA is. relativelylight 0.5 has
+  them behind its `passkeys` feature, and the tables exist (`m0010`); enabling them is
+  configuration (an `rp_id` and origin) and one panel entry. "Has a strong factor"
+  (which disables DDNS HTTP Basic) currently means TOTP or SSO.
 - **SSO group mapping is a subset** of §4.2: the library matches the *username*
   claim by regex/equals (global) and *other* claims by exact value only; a regex on
   a non-username claim is ignored (logged). Scope rules accordingly.
@@ -938,20 +946,13 @@ Knot backend + worker, §8 operability, §9 config + CLI.
 - **No *username* whitelist on the lockout** (§3.6) — addresses can be exempted,
   accounts cannot, deliberately: an account that can never lock is an account whose
   password can be guessed at forever.
-- **Re-authentication for SSO accounts is unreachable.** The sensitive-change gate
-  (§4.1) asks for a password or a TOTP code, and an SSO account has neither, so it
-  passes unchallenged. The real fix is re-auth through the IdP (`prompt=login`),
-  which is relativelylight's to build; refusing instead would lock SSO administrators
-  out of the manager pages permanently.
 - **CORS** is not middleware yet; the only network filter is source admission
   (`ip_src_allowed`). Real-IP resolution now *is* a middleware — the library's
   `resolve_real_ip`, outermost and mandatory (§3.6) — and CSRF is in place for every
   cookie-authenticated write (§4.1).
 - **Timezone display is done** (was deferred): the DB and the APIs stay UTC, and the
   console formats every timestamp server-side in the zone chosen on `/profile` —
-  cells, datetime inputs and CSV exports alike. Offered zones come from
-  `config.timezones`. The picker is a section of the profile page, below the API keys,
-  not navbar chrome: it is a personal setting, and the navbar is kept to navigation.
-  It rides on `Auth::profile_extra`, which since relativelylight 0.4.3 is handed the
-  request's headers — so the picker preselects the current zone, and the keys card's
-  dates follow it too. The login page has no zone to show.
+  cells, datetime inputs and CSV exports alike. The picker (relativelylight 0.5's
+  `time::picker`: every zone the host knows; a first visit takes the browser's) is a
+  card on the profile page, not navbar chrome: it is a personal setting, and the
+  navbar is kept to navigation. Every page names its zone in the footer instead.

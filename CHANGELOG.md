@@ -10,8 +10,47 @@ whatever the number does. Read that section, not the digits.
 
 ## Unreleased
 
+### Upgrading — one config key removed, and the upgrade is one-way
+
+- **`timezones` is gone from the config.** relativelylight 0.5's picker always offers every zone the
+  host knows, so there is nothing to configure; `Config` refuses unknown keys, so **delete the
+  line** or the server will not start. A zone a user already chose is kept (same cookie).
+- **Migration `m0010` renames the `api_key` table to `auth_api_key`** (relativelylight's) and adds
+  the library's new auth columns and tables. Every existing key keeps working — the stored hash is
+  the same — but the previous binary will not start on the migrated database. Rolling back means
+  renaming the table back, deleting the `m0010_relativelylight_0_5` row from `seaql_migrations`, and
+  leaving the added columns in place (the old binary ignores them).
+- **Rust 1.89 or newer** to build (relativelylight 0.5's MSRV).
+
 ### Changed
 
+- **relativelylight 0.5** (was 0.4.3). What an operator or user notices:
+  - **API keys are the library's.** The `/profile` card looks much the same, but minting a key now
+    asks for your password (or a 2FA code) first, and the keys gain a "Created" date (`0` / 1970
+    for keys minted before the upgrade: the old table never recorded it). Mints and revokes are
+    audited as `auth-profile` on `auth_api_key/{id}` (was `keys` on `api_key/{id}`). The console's
+    API-keys table can no longer create a key — one made there had no raw value anyone could see.
+  - **Console sign-ins are audited** (`auth-login`).
+  - **A password set for someone else** — in the console's user form, or by a manager's reset —
+    asks its owner to choose their own: they land on `/profile` with a notice after signing in, and
+    a "change your password" badge sits by their name until they do. `admin reset-password` and
+    the first-start seed don't flag.
+  - **The console's user form sets an account's first password only.** Every later change is the
+    account's credentials page (`/profile/{id}`), which also signs the account out; it is now
+    reached from the user's **id** in the Users table (was: View).
+  - **SSO accounts confirm at their provider** before a sensitive change (a manager's reset, adding
+    a 2FA factor, minting a key), where they used to pass unchallenged. SSO accounts may also enrol
+    TOTP.
+  - **The profile page is a grid of cards** (two columns on a wide screen); the display timezone is
+    one of them, with a searchable list of every zone, and a first visit takes the browser's own
+    zone. Every page now names its zone in the footer.
+  - **Console dialogs are real modals** (focus inside, Esc closes; a changed form asks before
+    discarding), and pages cross-fade. Without JavaScript they work as before.
+  - **Search finds more** — numbers, dates and the zone column by its name — and the audit log has
+    a from/to date filter on its timestamp.
+  - Fixes from the library, among them: a lockout that ran out counts again
+    (before, an account locked once had no limit until the next prune), and break-glass now clears
+    recovery codes too.
 - **relativelylight 0.4.3** (was 0.4.0). A database failure during console sign-in is now logged (one `ERROR`
   line naming the step and the client address) instead of vanishing. The visitor still sees
   `401 Invalid username or password`, and the attempt no longer counts towards a lockout — before,

@@ -43,11 +43,11 @@ pub async fn authenticate(
     // `X-Auth-Key` is CF's own carrier for the same token; `Authorization: Bearer` wins when both are
     // present (as on DDNS and the native API), so one request is never two credential checks.
     let token = principal::bearer_token(headers)
-        .or_else(|| headers.get("X-Auth-Key").and_then(|v| v.to_str().ok()).map(str::to_string));
+        .or_else(|| headers.get("X-Auth-Key").and_then(|v| v.to_str().ok()));
     let Some(token) = token else {
         return Err(cf_err(StatusCode::UNAUTHORIZED, 1000, "invalid token"));
     };
-    match principal::from_token(app, ip, &token, Source::Cfapi).await {
+    match principal::from_token(app, ip, token, Source::Cfapi).await {
         Ok(p) => Ok(p),
         Err(principal::AuthError::Locked(retry)) => Err((
             StatusCode::TOO_MANY_REQUESTS,

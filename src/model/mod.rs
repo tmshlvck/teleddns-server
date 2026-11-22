@@ -1,7 +1,6 @@
 //! The DNS + supporting data model (SeaORM entities). The schema is created by the versioned
 //! migrator in [`crate::migration`], run at startup.
 
-pub mod api_key;
 pub mod audit;
 pub mod idempotency;
 pub mod roles;

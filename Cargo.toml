@@ -2,7 +2,7 @@
 name = "teleddns-server"
 version = "0.4.5"
 edition = "2021"
-rust-version = "1.88"   # askama 0.16; relativelylight 0.4.2 (totp-rs 6) declares the same
+rust-version = "1.89"   # relativelylight 0.5 (webauthn-rs 0.6) declares the same
 license = "GPL-3.0-or-later"
 description = "Co-located DNS management + Dynamic DNS server for a Knot DNS master"
 default-run = "teleddns-server"
@@ -12,16 +12,13 @@ name = "teleddns-server"
 path = "src/main.rs"
 
 [dependencies]
-# relativelylight from crates.io. `0.4` is one compatible range for a `0.x` crate, so a patch release is
-# picked up and a behaviour break (which bumps the minor) is not — usually: 0.4.1 broke in a patch (blob
-# removed, `WriteEvent::version` gone, `fixed_filter` pins writes; none touch us). `Cargo.lock` pins the exact version
-# either way. 0.3 re-homed the web UI in Rust: `crud::ui` renders server-side HTML and the crate's JSON
-# /metadata/OpenAPI surface is gone (there is no `openapi` feature any more), so the console is plain
-# MPA and the only documented API is the one this app writes itself (`api/openapi.rs`). 0.4 moved to
-# SeaORM 2.0: our entities and connection go straight into the library, so `sea-orm` below must be the
-# same major — one SeaORM in the build, not two. 0.4.3 is the floor: `keys.rs` reads `ProfileSection::headers`.
-# `validate-base64` enables validate::base64 (used for the DNSKEY public-key field check).
-relativelylight = { version = "0.4.3", features = ["crud", "axum", "ui", "csv", "auth", "sso", "validate-base64"] }
+# relativelylight from crates.io. `0.5` is one compatible range for a `0.x` crate, so a patch release is
+# picked up and a behaviour break (which bumps the minor) is not; `Cargo.lock` pins the exact version
+# either way. Since 0.5 only `sso`, `passkeys` and `files` are features — the engine, the admin UI, CSV,
+# timezones, `auth`, CSRF and the validators (base64 for the DNSKEY field among them) are always
+# compiled. SeaORM 2.0: our entities and connection go straight into the library, so `sea-orm` below
+# must be the same major — one SeaORM in the build, not two.
+relativelylight = { version = "0.5", features = ["sso"] }
 
 sea-orm = { version = "2.0", features = ["macros", "with-json", "sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "2.0", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }

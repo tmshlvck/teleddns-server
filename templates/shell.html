@@ -1,9 +1,11 @@
 {#- The one page shell every teleddns page goes through (`web::Shell`). The library renders HTML
-    *fragments*; the `<html>`, the navbar, the Bootstrap stylesheet and `crud::ui::CSS` are ours.
+    *fragments*; the `<html>`, the navbar, the Bootstrap stylesheet and `crud::CSS` are ours.
 
     There is no framework here and no script file: the console is a plain multi-page app, so every
-    control is a link or a form. The only JavaScript in the whole shell is the light/dark toggle at
-    the bottom, which is pure enhancement — without it the page is light. -#}
+    control is a link or a form. The JavaScript at the bottom is enhancement, all of it inlined:
+    the library's `crud::JS` (dialogs become real modals, with Esc) and `time::JS` (sets the zone
+    cookie from the profile's picker, and from the browser on a first visit), and the light/dark
+    toggle. Without any of it every page still works — plainer, in UTC, and light. -#}
 <!doctype html>
 <html lang="en">
 <head>
@@ -35,6 +37,10 @@
     </ul>
     <div class="d-flex align-items-center gap-3">
       {% if !user.is_empty() %}
+      {% if password_due %}
+      {#- `Identity::password_change`: a password someone else set, or one past its age. -#}
+      <a class="badge text-bg-warning text-decoration-none" href="/profile">change your password</a>
+      {% endif %}
       <span class="navbar-text">
         <a href="/profile" class="link-body-emphasis text-decoration-none fw-medium">{{ user }}</a>
         &middot; <a href="/logout" class="link-secondary text-decoration-none">log out</a>
@@ -53,8 +59,13 @@
       &middot; <a href="/docs" class="link-secondary text-decoration-none">API docs</a>
       &middot; <a href="{{ repo }}" class="link-secondary text-decoration-none" target="_blank" rel="noopener">GitHub</a>
       &middot; &copy; 2026 Tomas Hlavacek &middot; <span>GPL-3.0-or-later</span>
+      {#- The picker is on /profile only, so every page says which zone its times are in. -#}
+      &middot; <span>Times in {{ tz }}</span>
     </div>
   </footer>
+
+  <script>{{ js|safe }}</script>
+  <script>{{ tz_js|safe }}</script>
 
   <script>
     function ruTheme(){return document.documentElement.getAttribute('data-bs-theme')||'light';}

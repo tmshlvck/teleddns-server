@@ -1,5 +1,5 @@
 //! The operator web console — a plain multi-page app. Every page is rendered server-side: the
-//! library hands us HTML *fragments* ([`relativelylight::crud::ui`]) and this module owns the
+//! library hands us HTML *fragments* ([`relativelylight::crud`]) and this module owns the
 //! `<html>`, the navbar, the login/profile chrome and the two handlers behind each surface.
 //!
 //! The shape is the one [`relativelylight`]'s `docs/APP.md` describes, and it is the whole of it:
@@ -10,7 +10,9 @@
 //! * the **URL is the view**: page, sort, filters, search, which entity is showing and which row's
 //!   dialog is open are all query parameters, parsed once into a [`ViewState`];
 //! * there is no JSON between the browser and the server, no framework, and no script file. The
-//!   only JavaScript the shell ships is the light/dark toggle, which is pure enhancement.
+//!   shell inlines the library's two small scripts — `crud::JS` (the dialogs become real modals,
+//!   with Esc) and `time::JS` (the zone cookie, set from the browser) — plus the light/dark toggle;
+//!   all three are enhancement, and every page works without them.
 //!
 //! [`dashboard`] is the landing page; [`entities`] configures what the console can manage.
 
@@ -23,14 +25,13 @@ use crate::app::AppState;
 use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
+use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use relativelylight::auth::Identity;
-use relativelylight::crud::engine::Engine;
-use relativelylight::crud::ui::{Admin, Outcome, ViewState, CSS};
+use relativelylight::auth::{self, Identity};
+use relativelylight::crud::{Admin, Engine, Outcome, ViewState, CSS, JS};
 use relativelylight::middleware::RealIp;
-use relativelylight::time::{Tz, TzPicker};
-use std::collections::HashMap;
+use relativelylight::time::{self, Tz};
 
 /// The repository, shown in the footer.
 const REPO_URL: &str = "https://github.com/tmshlvck/teleddns-server";
@@ -43,25 +44,16 @@ pub const FIRST_ENTITY: &str = "/admin/zone";
 
 // ===================== the page shell =====================
 
-/// The navbar brand and the offered timezones, both from config, set once at startup.
-static UI: std::sync::OnceLock<(String, TzPicker)> = std::sync::OnceLock::new();
+/// The navbar brand, from config, set once at startup.
+static BRAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Wire the shell to the configuration (call once at startup). Timezone names the host's database
-/// doesn't know are dropped here and reported, rather than offered as options that silently mean UTC.
+/// Wire the shell to the configuration (call once at startup).
 pub fn init(cfg: &crate::config::Config) {
-    let picker = match cfg.timezones.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        [] => TzPicker::new(),
-        ["all"] => TzPicker::new().all_zones(),
-        ref list => TzPicker::new().zones(list.iter().copied()),
-    };
-    if !picker.unknown_zones().is_empty() {
-        tracing::warn!(ignored = ?picker.unknown_zones(), "config `timezones` names zones this host doesn't know");
-    }
-    let _ = UI.set((cfg.ui_title.clone(), picker));
+    let _ = BRAND.set(cfg.ui_title.clone());
 }
 
-fn ui() -> &'static (String, TzPicker) {
-    UI.get_or_init(|| ("TeleDDNS Server Manager".into(), TzPicker::new()))
+fn brand() -> &'static str {
+    BRAND.get_or_init(|| "TeleDDNS Server Manager".into())
 }
 
 struct NavItem {
@@ -77,9 +69,17 @@ struct Shell {
     title: String,
     brand: &'static str,
     user: String,
+    /// The account should choose a new password (`Identity::password_change`, relativelylight 0.5:
+    /// a password an admin set for it, or one past its age): a badge by the name, linking `/profile`.
+    password_due: bool,
     nav: Vec<NavItem>,
     body: String,
+    /// The zone every time on the page is shown in, named in the footer: the picker lives on
+    /// `/profile` only, and a time with no zone beside it is ambiguous.
+    tz: String,
     css: &'static str,
+    js: &'static str,
+    tz_js: &'static str,
     version: &'static str,
     repo: &'static str,
     /// Seconds between automatic reloads, or `0` for none. A `<meta http-equiv="refresh">` rather
@@ -89,35 +89,33 @@ struct Shell {
 }
 
 impl Shell {
-    /// A page rendered from a request: the nav highlights where we are.
-    fn page(title: &str, who: &Identity, uri: &Uri, body: String) -> Shell {
-        let here = uri.path();
-        let (brand, _) = ui();
+    /// Every page, ours or one the library renders for us: since 0.5 the library's login, profile and
+    /// CSRF-refusal hooks are handed the request too, so there is one constructor and one navbar.
+    /// `who` is the caller (`None` on the login page and the CSRF refusal, which never name anyone).
+    /// The links appear for Superadmins only — Dashboard and Console answer anyone else `403`, so a
+    /// person or device account that is here for its password, 2FA or API keys sees only its name.
+    fn new(title: &str, who: Option<&Identity>, uri: &Uri, headers: &HeaderMap, body: String) -> Shell {
+        let admin = who.is_some_and(|w| w.in_group(crate::app::ADMIN_GROUP));
         Shell {
             title: title.into(),
-            brand,
-            user: who.username.clone(),
-            nav: nav(here),
+            brand: brand(),
+            user: who.map(|w| w.username.clone()).unwrap_or_default(),
+            password_due: who.is_some_and(|w| w.password_change.is_some()),
+            nav: if admin { nav(uri.path()) } else { Vec::new() },
             body,
+            tz: Tz::from_headers(headers).name().to_string(),
             css: CSS,
+            js: JS,
+            tz_js: time::JS,
             version: VERSION,
             repo: REPO_URL,
             refresh: 0,
         }
     }
 
-    /// The profile pages the library renders for us — the caller's own `/profile`, the 2FA
-    /// enrolment, and a manager's `/profile/{id}`. The hook gets no request, but the navbar needs
-    /// none: on these paths no item is active, and `who` (the *caller*, also on a manager's page) says
-    /// whether to offer the links at all. Dashboard and Console are Superadmin-only, so anyone else —
-    /// a person or device account that is here for its password, 2FA or API keys — sees only their
-    /// name and "log out" rather than two links that answer `403`.
-    fn profile(title: &str, who: &Identity, body: String) -> Shell {
-        let mut shell = Shell::plain(title, &who.username, body);
-        if who.in_group(crate::app::ADMIN_GROUP) {
-            shell.nav = nav("/profile");
-        }
-        shell
+    /// The same, from the request parts the library's hooks are handed.
+    fn for_parts(title: &str, who: Option<&Identity>, req: &Parts, body: String) -> Shell {
+        Shell::new(title, who, &req.uri, &req.headers, body)
     }
 
     /// Reload this page every `secs` seconds. Only the dashboard asks: a reload on a page with a
@@ -125,23 +123,6 @@ impl Shell {
     fn refresh_every(mut self, secs: u32) -> Shell {
         self.refresh = secs;
         self
-    }
-
-    /// A page rendered *for* us by the library — the login form, the profile page, the CSRF
-    /// refusal. Those handlers hand us a fragment and an identity, never the request, so there is no
-    /// URL to highlight.
-    fn plain(title: &str, user: &str, body: String) -> Shell {
-        Shell {
-            title: title.into(),
-            brand: &ui().0,
-            user: user.into(),
-            nav: Vec::new(),
-            body,
-            css: CSS,
-            version: VERSION,
-            repo: REPO_URL,
-            refresh: 0,
-        }
     }
 
     fn html(self) -> String {
@@ -158,8 +139,8 @@ fn nav(here: &str) -> Vec<NavItem> {
     ]
 }
 
-/// Wrap a fragment in a centred card — the shape of every page that is one form (login, profile,
-/// a one-off confirmation) rather than a table.
+/// Wrap a fragment in a centred card — the shape of a page that is one form (login, a one-off
+/// refusal) rather than a table or the profile's grid.
 fn card(width_rem: u32, body: &str) -> String {
     format!(
         r#"<div class="card shadow-sm mx-auto mt-4" style="max-width:{width_rem}rem"><div class="card-body">{body}</div></div>"#
@@ -191,11 +172,12 @@ fn panel(engine: &Engine) -> Admin<'_> {
         .rr_tables()
         .separator()
         .group("Access")
-        .entity_with("api_key", |t| {
-            t.title("API keys").description(
-                "Bearer tokens for the HTTP API and DDNS. A key has no rights of its own — it acts as \
-                 its owner, so what it may touch is whatever that account's grants allow. Only the \
-                 hash is stored; the raw key is shown once at mint.",
+        .entity_with("auth_api_key", |t| {
+            // Minted on the owner's `/profile`; a key made here would have no raw value anyone saw.
+            t.title("API keys").create(false).description(
+                "Bearer tokens for the HTTP API and DDNS, minted by each user on their profile page. A \
+                 key has no rights of its own — it acts as its owner, so what it may touch is \
+                 whatever that account's grants allow. Only the hash is stored.",
             )
         })
         .entity_with("zone_role", |t| {
@@ -213,19 +195,14 @@ fn panel(engine: &Engine) -> Admin<'_> {
         .separator()
         .group("Accounts")
         .entity_with("auth_user", |t| {
-            t.title("Users")
-                .description(
-                    "Login accounts — for people, and for devices that need their own narrow grant. Set \
-                     an SSO provider on an account to make it external (no local password / 2FA). View \
-                     opens the account's reset page: a password reset that signs the user out \
-                     everywhere, and turning off a lost 2FA.",
-                )
-                // relativelylight's manager page, not the read-only dialog: the one place that can turn
-                // off a user's 2FA (its columns are hidden on the form) and the reset that revokes the
-                // target's sessions. Gated by the library itself (caller in `Auth::admin_group`, which
-                // is `ADMIN_GROUP` — the same group this console's gate checks); a click on one's own
-                // row lands on one's own `/profile`.
-                .detail_href("/profile/{id}")
+            // The id links to relativelylight's manager page (`auth::user::meta_model` declares it):
+            // the one place that turns off a user's 2FA and the reset that revokes their sessions.
+            t.title("Users").description(
+                "Login accounts — for people, and for devices that need their own narrow grant. Set \
+                 an SSO provider on an account to make it external (no local password / 2FA). The id \
+                 opens the account's credentials page: a password reset that signs the user out \
+                 everywhere, and turning off a lost 2FA.",
+            )
         })
         .entity_with("auth_group", |t| {
             t.title("Groups").description(
@@ -233,13 +210,13 @@ fn panel(engine: &Engine) -> Admin<'_> {
             )
         })
         .entity_with("auth_username_lockout", |t| {
-            t.title("Locked accounts").description(
+            t.title("Locked accounts").create(false).edit(false).description(
                 "Accounts with recent failed logins (console, DDNS HTTP Basic). Delete a row to \
                  unlock one immediately; otherwise it clears itself when the lockout expires.",
             )
         })
         .entity_with("auth_ip_lockout", |t| {
-            t.title("Locked addresses").description(
+            t.title("Locked addresses").create(false).edit(false).description(
                 "Client addresses with recent failed credential checks — this is what brakes bearer- \
                  token guessing, which names no account. Delete a row to unlock.",
             )
@@ -251,7 +228,7 @@ fn panel(engine: &Engine) -> Admin<'_> {
             // field description renders under a form input, and this table is `read_only`, so it has
             // no form and the help would never be seen. `source` is the column an operator reads the
             // log by, and "cli" or "autocrud" mean nothing without the list.
-            t.read_only(true).per_page(50).title("Audit log").description(format!(
+            t.read_only(true).per_page(50).range_filter("ts").title("Audit log").description(format!(
                 "Append-only record of every state-changing request (DDNS, API, CF facade, admin, \
                  auth). Read-only. The `source` column is one of: {}.",
                 crate::audit::SOURCES.join(", ")
@@ -324,7 +301,7 @@ pub async fn admin_show(
     match panel(&app.engine).render_for(&headers, &state).await {
         // `render_for` is the read enforcement point: a caller the gate refuses gets 401/403 here,
         // not a page with the rows in it.
-        Ok(body) => Html(Shell::page("Console — teleddns", &who, &uri, body).html()).into_response(),
+        Ok(body) => Html(Shell::new("Console — teleddns", Some(&who), &uri, &headers, body).html()).into_response(),
         Err(e) => e.into_response(),
     }
 }
@@ -364,7 +341,7 @@ pub async fn admin_save(
         Ok(Outcome::Invalid(state)) => match panel(&app.engine).render_for(&headers, &state).await {
             Ok(body) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
-                Html(Shell::page("Console — teleddns", &who, &uri, body).html()),
+                Html(Shell::new("Console — teleddns", Some(&who), &uri, &headers, body).html()),
             )
                 .into_response(),
             Err(e) => e.into_response(),
@@ -424,30 +401,22 @@ async fn zone_records_about_to_go(
 /// of every one of them into memory to audit it.
 const MAX_ZONES_PER_DELETE: u64 = 10_000;
 
-/// The "Display timezone" section at the foot of `/profile`, below the API keys — composed in with
-/// [`crate::keys::section`] through `Auth::profile_extra`, which since relativelylight 0.4.3 hands us
-/// the request's headers, so the picker opens on the zone the caller already has. The timezone is a
-/// personal display preference, so it lives with the user's other settings rather than taking a
-/// slot in every page's navbar. Offered zones are `config.timezones` (see [`init`]).
+/// The "Display timezone" card on `/profile`, composed in after the library's own cards (API keys
+/// among them) through `Auth::profile_extra`. The timezone is a personal display preference, so it
+/// lives with the user's other settings rather than taking a slot in every page's navbar; every other
+/// page names the zone in its footer instead. The picker is relativelylight 0.5's `time::picker`, a
+/// searchable list of every zone the host knows: `time::JS` (inlined by the shell) sets the cookie
+/// and reloads, so there is no route behind it.
 pub fn tz_section(headers: &HeaderMap) -> String {
-    let current = Tz::from_headers(headers);
-    format!(
-        r#"<hr class="my-4">
-<h2 class="h5">Display timezone</h2>
-<p class="text-muted">Every time the console shows — tables, edit forms, the dashboard, CSV
-exports — is in this zone. The database and the APIs always use UTC.</p>
-{picker}"#,
-        picker = ui().1.render(&current, "/profile"),
+    auth::profile_card(
+        "Display timezone",
+        &format!(
+            r#"<p class="text-muted">Every time the console shows — tables, edit forms, the dashboard,
+CSV exports — is in this zone. The database and the APIs always use UTC.</p>
+{}"#,
+            time::picker(&Tz::from_headers(headers))
+        ),
     )
-}
-
-/// `POST /tz` — the timezone picker's four lines. Set the cookie, come back to the page it was set
-/// from; every timestamp the server renders after that is in the chosen zone.
-pub async fn set_tz(axum::Form(f): axum::Form<HashMap<String, String>>) -> Response {
-    // `back` arrives in a form body, so it is caller input: `submitted` follows it only when it is a
-    // path on this site (not `//…` or `/\…`) and otherwise returns to `/`.
-    let (cookie, back) = TzPicker::submitted(f.get("tz"), f.get("back"));
-    ([(header::SET_COOKIE, cookie)], Redirect::to(&back)).into_response()
 }
 
 // ===================== API documentation =====================
@@ -472,23 +441,25 @@ pub async fn docs() -> Html<&'static str> {
 // ===================== the pages relativelylight renders =====================
 
 /// App chrome around the library's login form, with any configured SSO buttons appended below it.
-pub fn login_shell(form: &str, sso_buttons: &str) -> String {
-    Shell::plain("Log in — teleddns", "", card(24, &format!(r#"<h1 class="h5 mb-3">Log in</h1>{form}{sso_buttons}"#)))
-        .html()
+pub fn login_shell(form: &str, req: &Parts, sso_buttons: &str) -> String {
+    let body = card(24, &format!(r#"<h1 class="h5 mb-3">Log in</h1>{form}{sso_buttons}"#));
+    Shell::for_parts("Log in — teleddns", None, req, body).html()
 }
 
-/// App chrome around the library's profile pages: the caller's own (password, 2FA, and below them
-/// [`crate::keys`]'s API-key card and [`tz_section`], composed in via `Auth::profile_extra`), the 2FA
-/// enrolment, and a manager's `/profile/{id}` reset page — which the console's Users table links to
-/// as each row's View. The full navbar, so none of them is a dead end.
-pub fn profile_shell(fragment: &str, who: &Identity) -> String {
-    Shell::profile("Profile — teleddns", who, card(36, fragment)).html()
+/// App chrome around the library's profile pages: the caller's own (a grid of cards — password, 2FA,
+/// API keys, and our [`tz_section`]), the 2FA enrolment, and a manager's `/profile/{id}` reset page,
+/// which the console's Users table links each id to. `who` is the *caller*, also on a manager's page,
+/// which is the right name for the navbar.
+pub fn profile_shell(fragment: &str, who: &Identity, req: &Parts) -> String {
+    // The fragment is a grid (two columns on a wide screen): a wide column, no card around it.
+    let body = format!(r#"<div class="mx-auto mt-2" style="max-width:72rem">{fragment}</div>"#);
+    Shell::for_parts("Profile — teleddns", Some(who), req, body).html()
 }
 
 /// The CSRF refusal, in our page shell instead of relativelylight's bare one. Same discipline as the
 /// default: the request never proved it came from this site, so it names no user and sets no cookie,
 /// and it stays a `403`.
-pub fn csrf_rejected() -> Response {
+pub fn csrf_rejected(req: &Parts) -> Response {
     let body = card(
         32,
         r#"<h1 class="h5 mb-3">Request rejected</h1>
@@ -496,32 +467,35 @@ pub fn csrf_rejected() -> Response {
 one reloaded after signing out.</p>
 <p class="mb-0"><a href="/">Reload the console</a> and try again.</p>"#,
     );
-    (StatusCode::FORBIDDEN, Html(Shell::plain("Request rejected — teleddns", "", body).html()))
-        .into_response()
-}
-
-/// A one-off page carrying one message in a card — used by [`crate::keys`] to show a freshly
-/// minted key once.
-pub fn notice(title: &str, user: &str, body: &str) -> Response {
-    Html(Shell::plain(title, user, card(36, body)).html()).into_response()
+    let html = Shell::for_parts("Request rejected — teleddns", None, req, body).html();
+    (StatusCode::FORBIDDEN, Html(html)).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The shell is the one place `<html>` is written, and it must carry Bootstrap's stylesheet and
-    /// the library's own CSS — without the latter the create/edit `<dialog>` renders unstyled.
-    /// It must **not** carry Alpine or Bootstrap's JavaScript bundle: 0.3 needs neither, and a page
-    /// that still loads them is a page someone will write client-side state into again.
+    fn parts(path: &str, cookie: Option<&str>) -> Parts {
+        let mut req = axum::http::Request::builder().uri(path);
+        if let Some(c) = cookie {
+            req = req.header(header::COOKIE, c);
+        }
+        req.body(()).unwrap().into_parts().0
+    }
+
+    /// The shell is the one place `<html>` is written, and it must carry Bootstrap's stylesheet, the
+    /// library's CSS (without it the create/edit `<dialog>` renders unstyled) and its two scripts.
+    /// It must **not** carry Alpine or Bootstrap's JavaScript bundle: a page that loads a framework is
+    /// a page someone will write client-side state into again.
     #[test]
-    fn the_shell_loads_the_stylesheets_and_no_framework() {
-        let html = Shell::plain("t", "someone", "<p>body</p>".into()).html();
+    fn the_shell_loads_the_library_assets_and_no_framework() {
+        let html = Shell::for_parts("t", None, &parts("/", None), "<p>body</p>".into()).html();
         assert!(html.contains("bootstrap@5.3.3/dist/css/bootstrap.min.css"));
-        assert!(html.contains(CSS), "crud::ui::CSS must be inlined");
+        assert!(html.contains(CSS), "crud::CSS must be inlined");
+        assert!(html.contains(JS), "crud::JS must be inlined");
+        assert!(html.contains(time::JS), "time::JS must be inlined, or the picker does nothing");
         assert!(!html.contains("alpinejs"), "no Alpine: {html}");
         assert!(!html.contains("bootstrap.bundle"), "no Bootstrap JS bundle");
-        assert!(!html.contains("x-cloak"));
     }
 
     /// The profile pages get the console's navbar — but only a Superadmin gets its links: Dashboard
@@ -530,48 +504,33 @@ mod tests {
     fn the_profile_navbar_links_the_console_for_admins_only() {
         let admin = Identity::new("1", "root", vec![crate::app::ADMIN_GROUP.to_string()]);
         let device = Identity::new("2", "router", vec!["home".to_string()]);
-        let html = profile_shell("<p>fragment</p>", &admin);
+        let html = profile_shell("<p>fragment</p>", &admin, &parts("/profile", None));
         assert!(html.contains(&format!(r#"href="{FIRST_ENTITY}""#)), "{html}");
         assert!(html.contains(r#"href="/">Dashboard"#), "{html}");
         assert!(html.contains("root") && html.contains("/logout"));
-        let html = profile_shell("<p>fragment</p>", &device);
+        let html = profile_shell("<p>fragment</p>", &device, &parts("/profile", None));
         assert!(!html.contains(FIRST_ENTITY), "no Console link for a non-admin: {html}");
         assert!(!html.contains(">Dashboard<"), "{html}");
         assert!(html.contains("router") && html.contains("/logout"));
     }
 
-    /// The timezone is a profile setting, not navbar chrome: no page shell carries the picker.
+    /// The picker is a profile setting, not navbar chrome; every page names the zone instead.
     #[test]
-    fn the_shell_has_no_timezone_picker() {
-        let html = Shell::plain("t", "someone", "<p>body</p>".into()).html();
-        assert!(!html.contains(r#"action="/tz""#), "picker belongs on /profile: {html}");
+    fn the_shell_names_the_zone_but_has_no_picker() {
+        let cookie = Tz::named("Europe/Prague").cookie();
+        let req = parts("/admin/zone", Some(cookie.split(';').next().unwrap()));
+        let html = Shell::for_parts("t", None, &req, "<p>body</p>".into()).html();
+        assert!(!html.contains("<datalist"), "picker belongs on /profile: {html}");
+        assert!(html.contains("Times in Europe/Prague"), "{html}");
     }
 
-    /// The profile's section opens on the caller's current zone (from the cookie) and comes back to
-    /// the profile page once it is set.
+    /// The profile's card opens on the caller's current zone (from the cookie).
     #[test]
-    fn the_profile_timezone_section_preselects_the_cookie_and_returns_to_profile() {
+    fn the_profile_timezone_card_preselects_the_cookie() {
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, Tz::named("Europe/Prague").cookie().split(';').next().unwrap().parse().unwrap());
         let html = tz_section(&headers);
-        assert!(html.contains(r#"action="/tz""#), "{html}");
-        assert!(html.contains(r#"name="back" value="/profile""#), "{html}");
-        assert!(html.contains(r#"<option value="Europe/Prague" selected>"#), "{html}");
-    }
-
-    /// `back` comes out of a posted form, so it is caller input: it must never be able to send the
-    /// browser off-site after setting the cookie.
-    #[tokio::test]
-    async fn the_timezone_form_only_returns_to_a_local_path() {
-        let go = |back: &str| {
-            let f = HashMap::from([("tz".to_string(), "UTC".to_string()), ("back".into(), back.into())]);
-            async move {
-                let r = set_tz(axum::Form(f)).await;
-                r.headers().get(header::LOCATION).unwrap().to_str().unwrap().to_string()
-            }
-        };
-        assert_eq!(go("/admin/rr_a?page=2").await, "/admin/rr_a?page=2");
-        assert_eq!(go("https://evil.example/").await, "/");
-        assert_eq!(go("//evil.example/").await, "/");
+        assert!(html.contains("Display timezone"), "{html}");
+        assert!(html.contains(r#"value="Europe/Prague""#), "{html}");
     }
 }

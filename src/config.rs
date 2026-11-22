@@ -34,12 +34,6 @@ pub struct Config {
     pub log_access: bool,
     /// Brand shown in the web UI navbar (top-left). Default "TeleDDNS Server Manager".
     pub ui_title: String,
-    /// IANA zone names the console's timezone picker offers (the chosen one rides in a cookie and
-    /// the **server** formats every timestamp with it — table cells, datetime inputs and CSV exports
-    /// alike). Empty = relativelylight's default list (UTC + Europe + the United States); the single
-    /// entry `all` offers every zone the host's tz database knows. A name the host doesn't know is
-    /// dropped with a startup warning rather than offered as an option that quietly means UTC.
-    pub timezones: Vec<String>,
 
     /// $TTL + records created via the management API.
     pub default_ttl: u32,
@@ -184,7 +178,6 @@ impl Default for Config {
             debug: false,
             log_access: true,
             ui_title: "TeleDDNS Server Manager".into(),
-            timezones: vec![],
             default_ttl: 3600,
             ddns_rr_ttl: 60,
             backend_sync_delay: Duration::from_secs(10),
@@ -284,10 +277,10 @@ impl Config {
         }
     }
 
-    /// The password policy `password_level` names, or `None` when screening is off. Used **twice** —
-    /// on relativelylight's own profile/manager pages (`Auth::password_policy`) and as the admin user
-    /// form's field validator (`web::build_engine`) — because whichever surface is left unscreened
-    /// becomes the way around the other.
+    /// The password policy `password_level` names, or `None` when screening is off. Handed to
+    /// `Auth::password_policy` once, which screens relativelylight's profile/manager pages **and** the
+    /// console's user form (`auth::user::meta_model` takes it from the `Auth`) — one wiring, so no
+    /// surface is left unscreened as the way around the others.
     pub fn password_policy(&self) -> Option<relativelylight::validate::PasswordPolicy> {
         match self.password_level {
             0 => None,

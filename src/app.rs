@@ -6,8 +6,9 @@ use axum::routing::get;
 use axum::Router;
 use crate::migration::Migrator;
 use relativelylight::auth::lockout::{IpLockout, Lockout, UsernameLockout};
+use relativelylight::auth::api_key::ApiKeys;
 use relativelylight::auth::{self, Auth};
-use relativelylight::crud::engine::Engine;
+use relativelylight::crud::Engine;
 use sea_orm::{DatabaseConnection, EntityTrait, PaginatorTrait};
 use sea_orm_migration::MigratorTrait;
 use std::sync::Arc;
@@ -68,11 +69,11 @@ impl relativelylight::observe::ErrorObserver for LogErrors {
 
 /// Run the HTTP server.
 pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
-    crate::web::init(&cfg); // navbar brand + the timezones the profile's picker offers
+    crate::web::init(&cfg); // navbar brand
     let db = crate::db::connect(&cfg.db_dsn).await?;
     Migrator::up(&db, None).await?; // versioned schema (auth + app tables), applied once
     // The audit sink persists a row per write; shared as the WriteObserver for the admin auto-CRUD
-    // and the auth handlers, and used directly by the DDNS/API/CF/keys handlers. Built first because
+    // and the auth handlers (API keys included), and used directly by the DDNS/API/CF handlers. Built first because
     // the seed and the retention pass below both write state, and both are audited like anything else.
     // The address arrives on the event, already resolved by the `resolve_real_ip` layer, so the sink
     // needs nothing but the DB and the session-cookie name to resolve the actor.
@@ -92,9 +93,6 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let secure = cfg.public_url.starts_with("https://");
     // SSO login buttons for the login page (empty when no providers are configured).
     let sso_buttons = crate::sso::buttons_html(&cfg);
-    // The profile page (password + 2FA) is owned by relativelylight; teleddns composes its
-    // API-key/bearer-token component in below it via `profile_extra`.
-    let extra_db = db.clone();
     // The brute-force brake (PRD §3.6) — mandatory, so it is a constructor argument. Counters live in
     // `auth_username_lockout` / `auth_ip_lockout`; a locked key is refused before its secret is read.
     // Built from `Lockout::default()` and the two setters, not a struct literal — the type is
@@ -117,26 +115,25 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         // Idle sessions expire inside the (unchanged) 7-day absolute lifetime: a console left open on
         // an unattended desk stops being a live credential. `0` in the config turns the clock off.
         .session_idle_secs(cfg.session_idle_timeout.as_secs() as i64)
-        // Screen a *typed* password on the profile + manager pages. The admin user form is a separate
-        // wiring off the same config value (`web::build_engine`) — skip either and it becomes the way
-        // around the other. `admin reset-password` is deliberately unaffected.
+        // Screen a *typed* password on the profile + manager pages **and** the console's user form,
+        // which takes its validator from this `Auth` (`auth::user::meta_model`) — one wiring, so
+        // neither can become the way around the other. `admin reset-password` is deliberately
+        // unaffected.
         .password_policy(cfg.password_policy())
         // Render the CSRF refusal in our own page shell rather than the library's bare page — an
         // operator who left a login form open overnight should land somewhere that looks like teleddns.
         .csrf_rejection(crate::web::csrf_rejected)
         .on_write(audit.clone()) // audit auth-table changes (password change, manager reset)
         .on_error(Arc::new(LogErrors)) // a DB failure at login: still a 401 to the visitor, logged here
-        .login_shell(move |form| crate::web::login_shell(form, &sso_buttons))
+        .login_shell(move |form, req| crate::web::login_shell(form, req, &sso_buttons))
         .profile_shell(crate::web::profile_shell)
-        // Our own section on the profile page: the caller's API keys. 0.3 hands the hook the
-        // request's CSRF token alongside the identity, which is what lets the section hold real
-        // forms rendered complete — no script fills them in afterwards.
-        .profile_extra(move |s| {
-            let db = extra_db.clone();
-            // …followed by the display-timezone picker: a personal setting, so it sits with the
-            // others here instead of in every page's navbar.
-            async move { crate::keys::section(&db, &s).await + &crate::web::tz_section(&s.headers) }
-        });
+        // Self-service API keys on `/profile` — list, mint (re-authenticated, shown once), revoke,
+        // each audited — and the bearer check behind DDNS/API/CF (`principal::from_token`). A key is
+        // its owner and nothing more; the `tddns_` prefix is what every key ever minted carries.
+        .api_keys(ApiKeys::new("tddns_").name_placeholder("router at home"))
+        // Our one card on the profile page: the display timezone, a personal setting, so it sits
+        // with the others here instead of in every page's navbar.
+        .profile_extra(|s| async move { crate::web::tz_section(&s.headers) });
     // OIDC single sign-on (optional): built from config, routes merged below.
     let sso = crate::sso::build(&cfg, &auth);
     if let Some(s) = &sso {
@@ -149,7 +146,6 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         audit.clone(),
         cfg.default_ttl,
         &cfg.knot_templates,
-        cfg.password_policy(),
     ));
     // An operator running knot with one template is fine; one who has added a second (a signing
     // policy, say) and not listed it here has zones the orphan sweep cannot recognise as ours.
@@ -225,10 +221,6 @@ pub async fn serve(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
             "/admin/{entity}",
             get(crate::web::admin_show).post(crate::web::admin_save),
         )
-        // Where the profile page's timezone picker posts: sets the cookie the server formats with.
-        .route("/tz", axum::routing::post(crate::web::set_tz))
-        .route("/keys", axum::routing::post(crate::keys::mint))
-        .route("/keys/{id}/revoke", axum::routing::post(crate::keys::revoke))
         .route("/nic/update", ddns.clone())
         .route("/ddns/update", ddns.clone())
         .route("/update", ddns)

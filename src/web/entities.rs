@@ -3,13 +3,12 @@
 //! *same* predicate the DDNS/native-API/CF write paths enforce. Build the engine here; the panel
 //! that renders it is [`super::panel`].
 
-use relativelylight::auth::{Auth, GroupReadWrite};
-use relativelylight::crud::engine::Engine;
-use relativelylight::crud::seaorm::{Crud, MetaModel};
+use relativelylight::auth::{self, Auth, GroupReadWrite};
+use relativelylight::crud::{Crud, Engine, MetaModel, WriteTransform};
 use sea_orm::DatabaseConnection;
 use std::sync::Arc;
 
-/// Hand each write event to several sinks. `Crud::on_write` takes one observer and this app has two
+/// Hand each write event to several sinks. `Engine::on_write` takes one observer and this app has two
 /// — recording the write and reacting to it are different jobs, and keeping them apart means a
 /// failure in either cannot swallow the other.
 struct Observers(Vec<Arc<dyn relativelylight::observe::WriteObserver>>);
@@ -27,7 +26,7 @@ impl relativelylight::observe::WriteObserver for Observers {
 /// matches, so a label or origin typed `WWW` here would never meet the lower-cased `www` a DDNS or API
 /// request resolves to (`dns::normalize_label`). Applied to every record label, every zone origin, and
 /// the label on a record grant.
-fn lowercase() -> relativelylight::crud::seaorm::WriteTransform {
+fn lowercase() -> WriteTransform {
     Box::new(|v| match v.as_str() {
         Some(s) => serde_json::Value::String(crate::dns::normalize_label(s)),
         None => v,
@@ -74,20 +73,11 @@ pub fn build_engine(
     default_ttl: u32,
     // Template names an operator allows zones to be assigned to; empty = unrestricted.
     knot_templates: &[String],
-    password_policy: Option<relativelylight::validate::PasswordPolicy>,
 ) -> Engine {
     let gate = Arc::new(GroupReadWrite::new(auth, [crate::app::ADMIN_GROUP]));
-    // 0.3 dropped the mount path: every link the UI renders is query-only and relative, so the engine
-    // never learns where the console is served from.
+    // Every link the UI renders is query-only and relative, so the engine never learns where the
+    // console is served from.
     let mut crud = Crud::new(db.clone());
-    // Two sinks behind one hook: `audit` records what changed, `DeleteSync` keeps DNS in step with
-    // console deletes (which fire no SeaORM hook — see `sync::DeleteSync`). The engine takes one
-    // observer, so they are fanned out.
-    crud.on_write(Arc::new(Observers(vec![audit, Arc::new(crate::sync::DeleteSync::new(db.clone()))])));
-    // The console's writes are cookie-authenticated, so every posted form must echo the double-submit
-    // CSRF token (`auth.csrf()` shares one token cookie with the login/profile forms). The library
-    // renders the hidden `_csrf` input itself and `Admin::submit` refuses a body without it.
-    crud.csrf(auth.csrf());
 
     // Zone (+ inline SOA). The SOA fields get plain-language labels + example values.
     let mut z = MetaModel::new(crate::model::zone::Entity);
@@ -244,24 +234,10 @@ pub fn build_engine(
         "regexp" => ("Regexp", "Substitution expression, e.g. !^.*$!sip:info@example.com!", str check::naptr_regexp),
         "replacement" => ("Replacement (FQDN)", "Next name to look up, or a single . when using Regexp.", str check::target_name));
 
-    // API keys: minted from the profile page; here shown read-mostly (never expose the hash).
-    let mut apikey = MetaModel::new(crate::model::api_key::Entity);
-    apikey.field("hashed_key").hidden = true;
-    apikey.field("name").label = Some("Label".into());
-    apikey.field("name").description = Some("A human-readable name for this key.".into());
-    apikey.field("name").validate_str(check::non_empty_value);
-    apikey.field("prefix").label = Some("Prefix".into());
-    apikey.field("prefix").description =
-        Some("Short visible start of the key, shown to help identify it.".into());
-    apikey.field("expires_at").label = Some("Expires at".into());
-    apikey.field("expires_at").description = Some("Optional expiry (UTC). Empty = never.".into());
-    apikey.field("expires_at").datetime();
-    apikey.field("last_used_at").label = Some("Last used".into());
-    apikey.field("last_used_at").read_only = true; // maintained by the principal resolver, not admins
-    apikey.field("last_used_at").datetime();
-    apikey.field("disabled").label = Some("Disabled".into());
-    apikey.relation("user").label = Some("Owner".into());
-    crud.register(apikey, gate.clone());
+    // API keys are relativelylight's own table (`auth_api_key`) since 0.5: minted on `/profile`, here
+    // an inventory — the hash hidden, the owner read-only (moving a key would hand its holder another
+    // account's rights). The panel never creates one: nobody could see the raw value.
+    crud.register(auth::api_key::meta_model(), gate.clone());
 
     // Access grants (group → scope).
     let mut zr = MetaModel::new(crate::model::zone_role::Entity);
@@ -284,94 +260,36 @@ pub fn build_engine(
     rrr.field("label").on_write = Some(lowercase());
     crud.register(rrr, gate.clone());
 
-    // Auth accounts + groups (admin-only, read included).
-    let mut user = MetaModel::new(relativelylight::auth::user::Entity);
-    user.field("username").validate_str(relativelylight::auth::valid_username);
-    user.field("password_hash").password();
-    // Kept editable on purpose — creating an account with a password is this form's job — but a
-    // *reset* has a better home, so say where: the manager page (`/profile/{id}`, the Users table's
-    // View) also revokes the user's sessions and asks the admin to re-authenticate, which this
-    // generic row write does not.
-    user.field("password_hash").description = Some(
-        "Blank keeps the current password (on a new account: no password login). Setting one here \
-         does not sign the user out of existing sessions — to reset a password, or turn off a lost \
-         2FA, use View on the user's row instead."
-            .into(),
-    );
-    // The *other half* of `config.password_level`: relativelylight screens a password typed on
-    // `/profile`, this screens one typed here. Skip either and it becomes the documented way around the
-    // other — an admin could set `hunter2` on an account the profile page would have refused. The crud
-    // pipeline is coerce → validate → transform, so the validator sees the plaintext before
-    // `password()`'s argon2 hook hashes it. `optional` because blank has a meaning on this column
-    // (blank on create = no password / login disabled, blank on edit = keep the current one), and
-    // without it "leave blank" would become a validation error.
-    if let Some(policy) = password_policy {
-        user.field("password_hash").validate_str(relativelylight::validate::optional(Box::new(
-            relativelylight::validate::password(policy),
-        )));
-    }
-    user.field("totp_secret").hidden = true;
-    user.field("totp_pending").hidden = true;
-    // The TOTP replay guard's bookkeeping (the last step number a code was spent at). Not a secret,
-    // but not an operator's business either, and editing it would either replay-enable a code or lock
-    // the account out of its own authenticator until the clock caught up.
-    user.field("totp_last_step").hidden = true;
-    user.field("is_active").default = Some(serde_json::json!(true));
-    user.field("sso_provider").label = Some("SSO provider".into());
+    // Accounts, groups and the lockout counters come configured from the library: secrets hidden,
+    // the hook-maintained stamps read-only, the username checked, groups as an N:M relation. The
+    // panel sets an account's **first** password only — screened by the policy `Auth` was given
+    // (`config.password_level`), so the profile pages and this form can't disagree — and the id links
+    // to the account's credentials page (`/profile/{id}`) for every reset after that, which also signs
+    // the account out. What we add is the vocabulary: what an SSO account and a group *mean* here.
+    // (SSO users' groups are reconciled on login — see sso.rs — so a manual edit of an SSO account's
+    // groups is overwritten on its next login.)
+    let mut user = auth::user::meta_model(auth);
     user.field("sso_provider").description = Some(
         "Set to an SSO provider key (e.g. google) to make this an external account — no local \
          password or 2FA. Leave empty for a local password account."
             .into(),
     );
-    // Lifecycle timestamps are maintained by relativelylight (hook / login flow) — show, don't edit.
-    for f in ["created_at", "updated_at", "last_login_at"] {
-        user.field(f).read_only = true;
-        user.field(f).datetime();
-    }
-    let mut group = MetaModel::new(relativelylight::auth::group::Entity);
-    group.field("name").validate_str(relativelylight::auth::valid_group_name);
-    for f in ["created_at", "updated_at"] {
-        group.field(f).read_only = true;
-        group.field(f).datetime();
-    }
-    // Expose the user↔group membership (N:M) on both forms so admins can assign groups from either
-    // the user or the group. (SSO users' groups are reconciled on login — see sso.rs — so manual
-    // edits to an SSO account's groups are overwritten on their next login.)
-    user.relate(&group);
-    group.relate(&user);
-    // The relation's name is the target model's slug (auth_group / auth_user).
-    user.relation("auth_group").label = Some("Groups".into());
     user.relation("auth_group").description =
         Some("Group memberships — the zone/record grants hang off these, and `admin` means Superadmin.".into());
-    group.relation("auth_user").label = Some("Members".into());
     crud.register(user, gate.clone());
-    crud.register(group, gate.clone());
+    crud.register(auth::group::meta_model(), gate.clone());
 
-    // Lockout rows (relativelylight `auth::lockout`): who is currently locked out of the login form /
-    // DDNS Basic / the token surfaces, and the operator's unlock — **deleting the row**. Everything is
-    // maintained by the limiter, so nothing here is editable; the delete is gated (Superadmin), CSRF-checked
-    // and audited like any other write, which is exactly why the counters live in the DB (PRD §3.6).
-    let mut ul = MetaModel::new(relativelylight::auth::lockout::username_entity::Entity);
-    ul.field("username").label = Some("Account".into());
+    // Lockout rows: who is currently locked out of the login form / DDNS Basic / the token surfaces,
+    // and the operator's unlock — **deleting the row**, gated, CSRF-checked and audited like any other
+    // write, which is exactly why the counters live in the DB (PRD §3.6).
+    let mut ul = auth::lockout::username_meta_model();
     ul.field("username").description =
         Some("The submitted account name (lower-cased). Unknown names are counted too.".into());
-    ul.field("failures").label = Some("Failures".into());
-    ul.field("failures").read_only = true;
-    ul.field("last_failure_at").label = Some("Last failure".into());
-    ul.field("last_failure_at").read_only = true;
-    ul.field("last_failure_at").datetime();
     ul.row_label = Box::new(|row| row["username"].as_str().unwrap_or_default().to_string());
     crud.register(ul, gate.clone());
-
-    let mut il = MetaModel::new(relativelylight::auth::lockout::ip_entity::Entity);
-    il.field("ip").label = Some("Client address".into());
+    let mut il = auth::lockout::ip_meta_model();
     il.field("ip").description =
         Some("Source address as resolved for the request (honours trust_proxy).".into());
-    il.field("failures").label = Some("Failures".into());
-    il.field("failures").read_only = true;
-    il.field("last_failure_at").label = Some("Last failure".into());
-    il.field("last_failure_at").read_only = true;
-    il.field("last_failure_at").datetime();
     il.row_label = Box::new(|row| row["ip"].as_str().unwrap_or_default().to_string());
     crud.register(il, gate.clone());
 
@@ -392,6 +310,15 @@ pub fn build_engine(
     });
     crud.register(a, gate.clone());
 
-    crud.into_engine()
+    let mut engine = crud.into_engine();
+    // Two sinks behind one hook: `audit` records what changed, `DeleteSync` keeps DNS in step with
+    // console deletes (which fire no SeaORM hook — see `sync::DeleteSync`). The engine takes one
+    // observer, so they are fanned out.
+    engine.on_write(Arc::new(Observers(vec![audit, Arc::new(crate::sync::DeleteSync::new(db))])));
+    // The console's writes are cookie-authenticated, so every posted form must echo the double-submit
+    // CSRF token (`auth.csrf()` shares one token cookie with the login/profile forms). The library
+    // renders the hidden `_csrf` input itself and `Admin::submit` refuses a body without it.
+    engine.csrf(auth.csrf());
+    engine
 }
 

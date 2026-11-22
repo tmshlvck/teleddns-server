@@ -27,6 +27,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0007_zone_template::Migration),
             Box::new(m0008_auth_cascades::Migration),
             Box::new(m0009_rr_zone_cascade::Migration),
+            Box::new(m0010_relativelylight_0_5::Migration),
         ]
     }
 }
@@ -49,14 +50,16 @@ mod m0001_init {
         async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
             let backend = m.get_database_backend();
 
-            // relativelylight auth tables: auth_user, auth_group, auth_user_group, auth_session.
+            // relativelylight auth tables — every one `auth::table_create_statements` reports (users,
+            // groups, sessions, lockout counters, recovery codes and, since 0.5, API keys + passkeys).
             for stmt in relativelylight::auth::table_create_statements(backend) {
                 m.create_table(stmt).await?;
             }
 
-            // App tables, referenced-first: zone before rr_*; auth (above) before roles/api_key.
+            // App tables, referenced-first: zone before rr_*; auth (above) before the grant tables.
+            // (`api_key` was ours until relativelylight 0.5 took the keys over — `m0010`.)
             let schema = Schema::new(backend);
-            use crate::model::{api_key, audit, idempotency, rr, rr_role, sync_task, zone, zone_role};
+            use crate::model::{audit, idempotency, rr, rr_role, sync_task, zone, zone_role};
             macro_rules! create {
                 ($($ent:expr),* $(,)?) => {{
                     $( m.create_table(schema.create_table_from_entity($ent)).await?; )*
@@ -69,7 +72,6 @@ mod m0001_init {
                 rr::tlsa::Entity, rr::dnskey::Entity, rr::ds::Entity, rr::naptr::Entity,
             );
             create!(
-                api_key::Entity,
                 zone_role::Entity,
                 rr_role::Entity,
                 sync_task::Entity,
@@ -113,6 +115,9 @@ mod m0001_init {
                 "rr_role",
                 "zone_role",
                 "api_key",
+                "auth_api_key",
+                "auth_webauthn_challenge",
+                "auth_passkey",
                 "rr_naptr",
                 "rr_ds",
                 "rr_dnskey",
@@ -979,5 +984,130 @@ mod m0009_rr_zone_cascade {
         async fn down(&self, _m: &SchemaManager) -> Result<(), DbErr> {
             Ok(())
         }
+    }
+}
+
+/// relativelylight **0.5**: its new `auth` columns and tables, and our API keys moving into its
+/// `auth_api_key` (`docs/MIGRATION-0.5.md` §2 + §3 in the library).
+///
+/// - **`api_key` → `auth_api_key`.** The library now owns API keys, in a table of the same shape plus
+///   `created_at`. A rename keeps every row, id and hash — the stored hash is the SHA-256 hex of the
+///   raw key in both, so every key already handed to a device keeps working — and keeps the
+///   `ON DELETE CASCADE` `m0008` gave the owner key. `created_at` is `0` for the moved rows: the old
+///   table never recorded it, and a recognisably unknown date beats an invented one.
+/// - **Six columns** on `auth_user` / `auth_session`, which every account read selects, so they are
+///   needed before the first login; and **two tables** for passkeys (unused here: the `passkeys`
+///   feature is off, but the library's account reads join nothing on them and its prune sweeps them).
+///
+/// **Guarded throughout**, for `m0007`'s reason: `m0001_init` builds the auth tables from the *live*
+/// `auth::table_create_statements`, so a database created on 0.5 already has every column and table,
+/// and no `api_key`, by the time this runs. Each piece checks before it acts.
+///
+/// **One-way**, like `m0008`: the previous binary would find its `api_key` gone. `down` is empty.
+mod m0010_relativelylight_0_5 {
+    use relativelylight::auth::upgrade;
+    use sea_orm::{ConnectionTrait, Statement};
+    use sea_orm_migration::prelude::*;
+
+    pub struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            "m0010_relativelylight_0_5"
+        }
+    }
+
+    /// `(table, column)` for each of `upgrade::table_alter_statements()`, in its order — the guard
+    /// each statement is run behind. The library documents the six and their order.
+    const NEW_COLUMNS: [(&str, &str); 6] = [
+        ("auth_user", "passkey_handle"),
+        ("auth_user", "password_changed_at"),
+        ("auth_user", "must_change_password"),
+        ("auth_session", "method"),
+        ("auth_session", "passkey_class"),
+        ("auth_session", "reauth_until"),
+    ];
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
+            move_api_keys(m).await?;
+
+            // `IF NOT EXISTS`, so the `auth_api_key` just renamed into place stays as it is.
+            for stmt in upgrade::table_create_statements(m.get_database_backend()) {
+                m.create_table(stmt).await?;
+            }
+
+            let alters = upgrade::table_alter_statements();
+            if alters.len() != NEW_COLUMNS.len() {
+                return Err(DbErr::Custom(format!(
+                    "m0010: relativelylight reports {} new auth columns, this step knows {}",
+                    alters.len(),
+                    NEW_COLUMNS.len()
+                )));
+            }
+            let mut added_handle = false;
+            for ((table, column), stmt) in NEW_COLUMNS.iter().zip(alters) {
+                if !m.has_column(table, column).await? {
+                    m.alter_table(stmt).await?;
+                    added_handle |= *column == "passkey_handle";
+                }
+            }
+            // The handle's uniqueness. A fresh table has it inline; only a column added above needs
+            // the index (SQLite cannot add a `UNIQUE` column).
+            if added_handle {
+                for stmt in upgrade::index_create_statements() {
+                    m.create_index(stmt).await?;
+                }
+            }
+            Ok(())
+        }
+
+        async fn down(&self, _m: &SchemaManager) -> Result<(), DbErr> {
+            Ok(())
+        }
+    }
+
+    /// Rename our `api_key` to the library's `auth_api_key` and give it `created_at`. Nothing to do on a
+    /// database that never had `api_key` (created on 0.5).
+    async fn move_api_keys(m: &SchemaManager<'_>) -> Result<(), DbErr> {
+        if !m.has_table("api_key").await? {
+            return Ok(());
+        }
+        if m.has_table("auth_api_key").await? {
+            // Only an empty one, which nothing could have written into but a partial earlier run of
+            // the library's own `migrate`. Anything in it is real and an operator's call.
+            let db = m.get_connection();
+            let row = db
+                .query_one_raw(Statement::from_string(
+                    m.get_database_backend(),
+                    r#"SELECT count(*) AS n FROM "auth_api_key""#.to_string(),
+                ))
+                .await?;
+            let n: i64 = match row {
+                Some(r) => r.try_get("", "n")?,
+                None => 0,
+            };
+            if n > 0 {
+                return Err(DbErr::Custom(format!(
+                    "m0010: both api_key and auth_api_key exist and auth_api_key has {n} rows; \
+                     merge them by hand, then drop api_key"
+                )));
+            }
+            m.drop_table(Table::drop().table(Alias::new("auth_api_key")).to_owned()).await?;
+        }
+        m.rename_table(Table::rename().table(Alias::new("api_key"), Alias::new("auth_api_key")).to_owned())
+            .await?;
+        if !m.has_column("auth_api_key", "created_at").await? {
+            m.alter_table(
+                Table::alter()
+                    .table(Alias::new("auth_api_key"))
+                    .add_column(ColumnDef::new(Alias::new("created_at")).big_integer().not_null().default(0))
+                    .to_owned(),
+            )
+            .await?;
+        }
+        tracing::info!("m0010: api_key is now relativelylight's auth_api_key; every key keeps working");
+        Ok(())
     }
 }
